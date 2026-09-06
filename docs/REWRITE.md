@@ -14,7 +14,7 @@ Do not re-litigate the decisions below without asking.
 | Effect | **`effect@4.0.0-rc.112`** exactly (Foldkit's peer pin). Atoms are *not* used; Foldkit's Model replaces them. |
 | Types | **`Schema.Struct` everywhere.** Never `Schema.Class`. Messages via `defineMessageUnion`, commands and events as tagged-struct unions. |
 | Sim core | **Pure reducer.** Physics, command execution, arrivals, phraseology are pure functions over an immutable `WorldState` in the Model, driven by messages. Effects are only for the outside world (fetch, OpenRouter, audio, storage). |
-| Determinism | **PRNG state lives in the Model** (small splitmix64/xorshift). Every random draw (squawks, fleet pick, gate pick, voice pick, arrival timing) goes through it. Replaying the message log reproduces the session exactly. Foldkit DevTools' message log is the event log. |
+| Determinism | **PRNG state lives in the Model** (xorshift32). Every random draw (squawks, fleet pick, gate pick, voice pick, arrival timing) goes through it. The sim advances in fixed 0.1 s steps on a 10 Hz wall-clock `Ticked` message (catch-up capped at 40 steps); the Model keeps a **command log** of `{ tick, callsign, command }`, so init + ticks + that log replays a session exactly. DevTools history is capped at 500 entries (spike finding), so it is a debugging aid, not the event log; `Ticked` is excluded from it. |
 | Scopes | **Canvas** via Foldkit's `Canvas` module for both the ground view and STARS. Chrome (header, strips, log, dialogs) in the Html DSL. |
 | Positions | Ground, Local (tower), later TRACON and En-Route, each a Foldkit **Submodel** contributing its commands, panes, prompt fragments and arrival rules. No mode checks in the domain. |
 | Phraseology | **Phrase tokens**, not string markup: a `Phrase` is an array of `{ text } | { runway } | { taxiways } | { gate } | { frequency } | { digits } | { callsign }` with two renderers, `written` and `spoken`. |
@@ -43,6 +43,13 @@ Do not re-litigate the decisions below without asking.
 - Scaffold reference: `npx create-foldkit-app@latest` (look at its output for the canonical Vite config, but we scaffold by hand to keep control).
 
 **Bun 1.3** is installed. Use it for `bun install`, `bun run <script>`, `bunx`, `bun test`, and to run TypeScript scripts directly (`bun run scripts/build-catalog.ts`).
+
+**Phase 0 spike findings (2026-09-06)**
+- HMR: `@foldkit/vite-plugin` does a full reload and restores the Model; the sim clock continues across an edit.
+- `bun test` runs `foldkit/story` as is (`expect` from `bun:test`); vitest is only needed for Scene tests.
+- `Canvas.view` repaints the whole shape list on every render and does no device-pixel-ratio scaling: size the backing store `css * dpr` and wrap the scene in a `Group` with `scale`. Static layers are memoised per Graph value. 82 moving aircraft plus the MSP graph held 120 fps (p95 9.3 ms).
+- DevTools: history capped at 500 entries (default 100, `maxEntries` clamps to 20..500); the overlay serialises the Model per message, so with a 60-120 Hz tick flood frames went to 200-400 ms while it was open. Hence the 10 Hz tick and `excludeFromHistory: ['Ticked']`. TimeTravel mode rewinds fine.
+- Building the graph inside `update` on load takes ~28 ms (one Foldkit slow-update warning); acceptable.
 
 **vNAS** (`https://data-api.vnas.vatsim.net`)
 - No CORS on `/api/*`. CORS `*` on `/Files/*` (video maps). Hence the baked catalog; an optional user-run CORS proxy (`proxy-worker.js`, `?url=` prefix) enables live mode.
@@ -79,13 +86,13 @@ index.html, vite.config.ts, tsconfig.json, package.json, bunfig.toml
 
 Each phase is one session. Run `bun test` and `bunx tsc --noEmit` before calling a phase done. Ask before committing.
 
-**Phase 0, spike (half a day).** Scaffold Bun + Vite + Foldkit + Effect rc pinned. Load `catalog/airports/MSP.json` through a Schema. Draw the taxiway graph on a Canvas scope. `Tick` subscription moves one aircraft. `PUSH` as a command message. One Story test under `bun test`. DevTools rewind working. This settles: Vite/Foldkit HMR, `bun test` compatibility with Story, canvas performance with 90 aircraft.
+**Phase 0, spike (done 2026-09-06).** Scaffold Bun + Vite + Foldkit + Effect rc pinned. Load `catalog/airports/MSP.json` through a Schema. Draw the taxiway graph on a Canvas scope. `Tick` subscription moves one aircraft. `PUSH` as a command message. One Story test under `bun test`. DevTools rewind working. Findings are in section 2.
 
-**Phase 1, domain.** `src/domain/*` with tests pinning the behaviours in section 5: schemas, PRNG, geometry (feet units), graph builder, A*, physics step, command parser, command executor, phraseology. Port from `legacy/app.js` and `legacy/lib/vnas.mjs`; the MSP map from the catalog is the test fixture.
+**Phase 1, domain (done 2026-09-06).** `src/domain/*` with tests pinning the behaviours in section 5: schemas, PRNG, geometry (feet units), graph builder, routing (Dijkstra with the A* cost model), physics step, command parser, command executor, phraseology, scenario loading, arrivals. The World and its step/execute functions return `SimEvent`s (pilot phrases, system notes, removals, pause/rate) that the app turns into log lines. Three deliberate departures from `legacy/app.js`: taxi routes may name a runway (legacy rejected `TAXI A 12R` as "unfamiliar" although its token resolver accepted it); the automatic "holding short of" line names the hold point (an `HS A3` stop said the departure runway); arrivals taxi from the runway exit to their gate before parking (legacy parked them at the exit node). Position rules (`src/domain/rules.ts`) replace mode checks.
 
-**Phase 2, services and catalog.** `VnasData` with Catalog and Live layers, `VideoMaps`, `Settings`. `scripts/build-catalog.ts` replacing `build-catalog.mjs`, same output contract (section 6). Workflow updated.
+**Phase 2, services and catalog (done 2026-09-06).** `src/domain/vnas.ts` (pure port of `legacy/lib/vnas.mjs`), `src/domain/videomap.ts` (GeoJSON reduced to polygons and lines), `src/services/http.ts` (`HttpText`, the one fetch; an in-memory layer for tests), `VnasData` with `VnasDataCatalog` and `VnasDataLive(proxy)` layers (live mode assembles airport files on the fly and resolves scenarios on demand), `VideoMaps`, `SettingsStore` (legacy `vgt.settings` keys, defaults merged over stored values). `scripts/build-catalog.ts` replaces `build-catalog.mjs`; it validates every file against the schema before writing and reproduced the legacy MSP file byte for byte. The app's `LoadAirport` command goes through `VnasData` supplied as a Foldkit `resources` Layer. Workflow already runs `bun run catalog`, `validate-catalog`, typecheck, tests and the build.
 
-**Phase 3, app and views.** Model/Message/update, Ground position, Canvas ground scope with ASDE-X pavement, strips, log, command bar, settings, help. Parity with Ground mode.
+**Phase 3, app and views.** (`src/app/main.ts` is already a thin harness over the domain: load, 10 Hz tick, command bar, strips and log; the views are placeholders.) Model/Message/update, Ground position, Canvas ground scope with ASDE-X pavement, strips, log, command bar, settings, help. Parity with Ground mode.
 
 **Phase 4, Local position.** STARS canvas scope, flight model, tower commands, arrivals rules, check-ins.
 
@@ -125,16 +132,19 @@ Units: positions are `[lon, lat]`; distances in **feet** on the ground (`FT_LAT 
 
 `catalog/index.json`: `{ built, artccs: [{ id, name, airports: [{ id, name, n, asdex, gates, taxi, stars }] }] }`.
 
-`catalog/airports/{APT}.json`:
+`catalog/airports/{APT}.json` (as the data actually is; `src/domain/catalog.ts` is the schema and `bun run validate-catalog` checks every file):
 ```
 { id, artcc, name, tower: [lon,lat]|null, asdex: videoMapId|null, twrmap: videoMapId|null, updated,
-  init: { jet, prop, pattern }, stars: { host, hostName, tcp, center: [lon,lat], range,
-    maps: [{ id, sid, sn, n, b, av, tdm }], def: [id…], twr: { cs, name, radio, freq }|null, dep: {…}|null }|null,
+  init: { jet, prop, pattern }, stars: { host, hostName, tcp: string|null, center: [lon,lat], range,
+    maps: [{ id, sid, sn, n, b, av, tdm }], def: [id…], twr?: { cs, name, radio, freq }|null (key omitted when absent),
+    dep: {…}|null }|null,
   fleet: [{ a, w, t: [types] }],
-  map: { taxi: [{ n, c: [[lon,lat]…] }], rwy: [{ n: "12R-30L", c, thr, to }], park: { NAME: [lon,lat,hdg] }, spot: {…} },
-  scen: [{ id, name, stu, n, air, gen: [rwys], ac: [{ cs, ty, k: "P"|"R"|"F", at, d, dep, dst, r,
-           tyf?, rte?, alt?, spd?, rmk?, sid?, star?, app?, q?, nm? }] }] }
+  map: { taxi: [{ n, c: [[lon,lat]…] }], rwy: [{ n: "12R-30L", c, thr: string|null, to: string|null }],
+         park: { NAME: [lon,lat,hdg] }, spot: {…} },
+  scen: [{ id, name, stu: string|null, n, air, gen: [rwys], ac: [{ cs, ty, k: "P"|"R"|"F", at, d, dep: string|null,
+           dst: string|null, r, tyf?, rte?, alt?, spd?, rmk?, sid?, star?, app?, q?, nm? }] }] }
 ```
+Scenario aircraft callsigns are not unique across a scenario (ABQ repeats `N2382R`); the loader keeps the first and counts the rest as unplaced.
 Coordinates rounded to 6 decimals. SID = first route token matching `^[A-Z]{2,5}\d$` (with optional `.TRANSITION`); STAR = last token by the same rule. Type strings strip the weight prefix and suffix (`H/B744/L` → `B744`). Scenario aircraft keep `airportId || primaryAirportId`.
 
 Settings (localStorage `vgt.settings`): `key, model, audioModel, proxy, tts, ttsEngine, ttsModel, ttsVoice, voice, radio, mode ("ground"|"tower"), view`. Preserve the key names so users keep their settings.

@@ -1,0 +1,36 @@
+:root {
+  --bg: #0b0e10;
+  --panel: #12181b;
+  --rule: #1f272c;
+  --ink: #d6e0e5;
+  --ink-2: #8496a0;
+  --ink-3: #55646c;
+  --amber: #e0a63a;
+  --cyan: #29b6d8;
+  --green: #5cbf7a;
+  --red: #e0574f;
+  --f-s: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --f-m: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 var(--f-s); }
+.app { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
+.header { display: flex; gap: 12px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--rule); background: var(--panel); }
+.header .brand { font-weight: 600; color: var(--amber); }
+.header .status { color: var(--ink-2); font-family: var(--f-m); font-size: 12px; }
+.header button, .cmd button { background: #1a2226; color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; padding: 4px 10px; font: inherit; cursor: pointer; }
+.header button.on { border-color: var(--amber); color: var(--amber); }
+.main { display: grid; grid-template-columns: 1fr 320px; min-height: 0; }
+.scopeWrap { overflow: auto; padding: 8px; }
+.scope { width: 1280px; height: 800px; display: block; background: #0b0e10; border: 1px solid var(--rule); }
+.side { border-left: 1px solid var(--rule); background: var(--panel); overflow: auto; padding: 8px; font-family: var(--f-m); font-size: 12px; }
+.side .line { padding: 2px 0; border-bottom: 1px solid var(--rule); color: var(--ink-2); }
+.side .line.err { color: var(--red); }
+.side .line.atc { color: var(--ink); }
+.side .line.pilot { color: var(--green); }
+.cmd { display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--rule); background: var(--panel); }
+.cmd input { flex: 1; background: #0b0e10; color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; padding: 6px 8px; font: 13px var(--f-m); }
+.cmd .sel { color: var(--amber); font-family: var(--f-m); min-width: 80px; align-self: center; }
+.side .strips { max-height: 40%; overflow: auto; border-bottom: 1px solid var(--rule); margin-bottom: 6px; }
+.side .strip { padding: 1px 4px; color: var(--ink-2); }
+.side .strip.sel { color: var(--amber); }

@@ -21,15 +21,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: 22
+          bun-version: '1.3.13'
+      - run: bun install --frozen-lockfile
       - name: Build catalog from vNAS
-        run: node build-catalog.mjs
+        run: bun run catalog
+      - run: bun run validate-catalog
+      - run: bun run typecheck
+      - run: bun test
+      - name: Build site (dist/ includes catalog/ and legacy/)
+        run: bun run build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: .
+          path: dist
 
   deploy:
     needs: build
