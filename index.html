@@ -28,10 +28,14 @@
   --green:   #5cbf7a;
   --red:     #e0574f;
   --violet:  #9b8ce8;
+  --map:     #3a7a90;              /* STARS video map lines */
+  --accent: var(--amber);          /* Ground: gold */
+  --accent-ink: #141008;
   --f-d: "Archivo","Helvetica Neue",Arial,sans-serif;
   --f-s: "IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
   --f-m: "IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
 }
+:root[data-mode="tower"]{ --accent:#b388ff; --accent-ink:#160c24 }   /* Tower: purple */
 *{box-sizing:border-box}
 html,body{height:100%}
 body{
@@ -48,7 +52,14 @@ header{
   display:flex;align-items:center;gap:10px;padding:9px 14px;flex-wrap:wrap;
   background:var(--panel);border-bottom:1px solid var(--rule);flex:0 0 auto}
 .brand{font-family:var(--f-d);font-size:15px;font-weight:700;letter-spacing:-.01em;white-space:nowrap}
-.brand span{color:var(--amber)}
+.brand span{color:var(--accent)}
+.brand select.mode{
+  appearance:none;-webkit-appearance:none;font:inherit;color:var(--accent);background:none;border:0;padding:0 14px 0 0;
+  margin:0 -2px;cursor:pointer;max-width:none;border-radius:2px;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238496a0' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 1px center}
+.brand select.mode:hover{text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--ink-3)}
+.brand select.mode option{font-family:var(--f-m);font-size:12px;color:var(--ink);background:var(--panel)}
 .brand small{font-family:var(--f-m);font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3);margin-left:8px;font-weight:400}
 select{
   font-family:var(--f-m);font-size:11.5px;background:var(--bg);color:var(--ink);
@@ -62,12 +73,38 @@ select:disabled{opacity:.5}
   font-family:var(--f-m);font-size:11px;letter-spacing:.06em;padding:5px 10px;
   border:1px solid var(--rule-2);border-radius:2px;color:var(--ink-2);white-space:nowrap}
 .tbtn:hover{color:var(--ink);border-color:var(--ink-3)}
-.tbtn[aria-pressed="true"]{background:var(--amber);color:#141008;border-color:var(--amber);font-weight:600}
+.tbtn[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
 .tbtn.ai-on{border-color:var(--violet);color:var(--violet)}
 
 /* ---------- main ---------- */
 main{flex:1 1 auto;display:grid;grid-template-columns:1fr 296px;min-height:0}
+.scopes{position:relative;display:grid;grid-template-columns:1fr;min-height:0;min-width:0}
+.scopes[data-view="both"]{grid-template-columns:1fr 1fr}
+.scopes[data-view="ground"] #stars,.scopes[data-view="stars"] #scope{display:none}
+:root:not([data-mode="tower"]) .viewbar{display:none}
+.viewbar{display:flex;border:1px solid var(--rule-2);border-radius:2px;overflow:hidden}
+.viewbar button{font-family:var(--f-m);font-size:10px;letter-spacing:.1em;padding:5px 10px;color:var(--ink-3)}
+.viewbar button+button{border-left:1px solid var(--rule-2)}
+.viewbar button:hover{color:var(--ink)}
+.viewbar button[aria-pressed="true"]{color:var(--accent-ink);background:var(--accent);font-weight:600}
 #scope{position:relative;background:var(--bg);overflow:hidden;min-height:0;touch-action:none}
+#stars{position:relative;background:#07090b;border-left:1px solid var(--rule);overflow:hidden;min-height:0;touch-action:none}
+#stars svg{display:block;width:100%;height:100%;cursor:crosshair}
+.sbar{position:absolute;left:12px;top:10px;display:flex;gap:5px;z-index:2}
+.sbar button,.zoombar button{
+  height:26px;padding:0 8px;border:1px solid var(--rule-2);border-radius:2px;background:rgba(11,14,16,.82);
+  font-family:var(--f-m);font-size:10px;letter-spacing:.06em;color:var(--ink-2);line-height:1}
+.sbar button:hover{color:var(--ink)}
+.smaps{
+  position:absolute;left:12px;top:44px;z-index:2;background:rgba(11,14,16,.94);border:1px solid var(--rule);border-radius:2px;
+  padding:8px 10px;max-height:min(60%,420px);overflow-y:auto;font-family:var(--f-m);font-size:10.5px;min-width:200px}
+.smaps label{display:flex;gap:7px;align-items:center;padding:2px 0;color:var(--ink-3);cursor:pointer;white-space:nowrap}
+.smaps label.dcb{color:var(--ink-2)}
+.smaps label b{color:var(--ink-3);font-weight:400;min-width:28px;text-align:right}
+.smaps label i{color:var(--ink-3);font-style:normal;font-size:9.5px}
+.smaps .grp{margin:6px 0 3px;color:var(--accent);letter-spacing:.12em;font-size:9.5px;text-transform:uppercase}
+.smaps input{margin:0}
+#stars .scope-keys{top:auto;bottom:10px;right:12px}
 #scope svg{display:block;width:100%;height:100%;cursor:grab}
 #scope svg.drag{cursor:grabbing}
 .scope-hud{
@@ -107,14 +144,14 @@ aside{background:var(--panel);border-left:1px solid var(--rule);display:flex;fle
 .strip .st{text-align:right;font-size:10px;letter-spacing:.06em;text-transform:uppercase}
 .strip .sub{color:var(--ink-3);font-size:10.5px;grid-column:1/3;display:flex;gap:8px;flex-wrap:wrap;align-items:baseline}
 .strip .sub b{color:var(--ink-2);font-weight:400}
-.strip .sub b.sid{color:var(--amber);font-weight:600;letter-spacing:.04em;min-width:52px}
+.strip .sub b.sid{color:var(--accent);font-weight:600;letter-spacing:.04em;min-width:52px}
 .strip .sub b.sid.star{color:var(--cyan)}
 .strip .sub b.sid.vfr{color:var(--ink-3);font-weight:500}
 .strip .sub b.sid.none{color:var(--ink-3);font-weight:400;font-style:italic}
 .strip .fp{
   grid-column:1/3;margin-top:5px;padding:7px 9px;background:var(--bg);border:1px solid var(--rule);border-radius:2px;
   font-size:10.5px;line-height:1.55;color:var(--ink-2);cursor:default}
-.strip .fp .tags{color:var(--amber);letter-spacing:.05em;font-weight:500}
+.strip .fp .tags{color:var(--accent);letter-spacing:.05em;font-weight:500}
 .strip .fp .rte{color:var(--ink);overflow-wrap:anywhere;margin:2px 0}
 .strip .fp .k{color:var(--ink-3)}
 
@@ -131,10 +168,10 @@ aside{background:var(--panel);border-left:1px solid var(--rule);display:flex;fle
 .line.sys .m{color:var(--ink-3)}
 .line.err .m{color:var(--red)}
 .line.ai .m{color:var(--violet)}
-.line .who{color:var(--amber);font-weight:600}
+.line .who{color:var(--accent);font-weight:600}
 .cmdbar{display:flex;align-items:center;gap:0;border-top:1px solid var(--rule)}
 .cmdbar .sel{
-  font-family:var(--f-m);font-size:12px;color:var(--amber);padding:0 12px;white-space:nowrap;
+  font-family:var(--f-m);font-size:12px;color:var(--accent);padding:0 12px;white-space:nowrap;
   border-right:1px solid var(--rule);align-self:stretch;display:flex;align-items:center;min-width:96px}
 .cmdbar .sel.none{color:var(--ink-3)}
 #cmd{
@@ -149,7 +186,7 @@ aside{background:var(--panel);border-left:1px solid var(--rule);display:flex;fle
 .cmdbar .ptt{min-width:64px;letter-spacing:.12em;font-weight:600}
 .cmdbar .ptt.tx{background:var(--red);border-color:var(--red);color:#fff}
 .cmdbar .ptt.busy{background:var(--violet);border-color:var(--violet);color:#141008}
-.cmdbar .ptt.listen{border-color:var(--amber);color:var(--amber)}
+.cmdbar .ptt.listen{border-color:var(--accent);color:var(--accent)}
 
 /* ---------- dialogs ---------- */
 dialog{
@@ -161,7 +198,7 @@ dialog::backdrop{background:rgba(5,7,8,.72)}
 .dlg-h .x{margin-left:auto;color:var(--ink-3);font-family:var(--f-m);font-size:16px}
 .dlg-b{padding:18px 20px 22px;max-height:min(70vh,620px);overflow-y:auto}
 .dlg-b h3{margin:20px 0 8px;font-family:var(--f-m);font-size:10.5px;letter-spacing:.13em;
-  text-transform:uppercase;color:var(--amber);font-weight:500}
+  text-transform:uppercase;color:var(--accent);font-weight:500}
 .dlg-b h3:first-child{margin-top:0}
 .cmds{display:grid;grid-template-columns:170px 1fr;gap:5px 16px;font-size:12.5px}
 .cmds code{font-family:var(--f-m);font-size:11.5px;color:var(--cyan);background:var(--bg);
@@ -196,7 +233,7 @@ dialog::backdrop{background:rgba(5,7,8,.72)}
 <body>
 
 <header>
-  <span class="brand">vNAS <span>Ground</span> Trainer<small>ATCTrainer command set</small></span>
+  <span class="brand">vNAS <select id="mode" class="mode" aria-label="Position" title="Switch position"><option value="ground">Ground</option><option value="tower">Tower</option></select> Trainer<small>ATCTrainer command set</small></span>
   <select id="artcc" aria-label="ARTCC"></select>
   <select id="apt" aria-label="Airport"></select>
   <select id="scen" aria-label="Scenario"></select>
@@ -207,19 +244,37 @@ dialog::backdrop{background:rgba(5,7,8,.72)}
     <button class="tbtn" id="play" type="button" aria-pressed="true">Running</button>
     <button class="tbtn" id="rate" type="button">1&times;</button>
     <button class="tbtn" id="arr" type="button" aria-pressed="false">Arrivals</button>
+    <div class="viewbar" id="viewbar" role="group" aria-label="Panes">
+      <button type="button" data-view="ground">ASDE-X</button>
+      <button type="button" data-view="both">Both</button>
+      <button type="button" data-view="stars">STARS</button>
+    </div>
   </div>
 </header>
 
 <main>
-  <div id="scope">
-    <div class="scope-keys" id="keys"></div>
-    <div class="scope-hud" id="hud"></div>
-    <div class="zoombar">
-      <button type="button" id="zin" aria-label="Zoom in">+</button>
-      <button type="button" id="zout" aria-label="Zoom out">&minus;</button>
-      <button type="button" id="zfit" aria-label="Fit airport" style="width:auto;padding:0 8px;font-size:10px">FIT</button>
+  <div class="scopes" id="scopes" data-view="ground">
+    <div id="scope">
+      <div class="scope-keys" id="keys"></div>
+      <div class="scope-hud" id="hud"></div>
+      <div class="zoombar">
+        <button type="button" id="zin" aria-label="Zoom in">+</button>
+        <button type="button" id="zout" aria-label="Zoom out">&minus;</button>
+        <button type="button" id="zfit" aria-label="Fit airport" style="width:auto;padding:0 8px;font-size:10px">FIT</button>
+      </div>
+      <div class="overlay" id="overlay"><div>loading…</div></div>
     </div>
-    <div class="overlay" id="overlay"><div>loading…</div></div>
+    <div id="stars">
+      <div class="sbar">
+        <button type="button" id="smaps-btn">MAPS</button>
+        <button type="button" id="srng-in" aria-label="Range down">RNG&minus;</button>
+        <button type="button" id="srng-out" aria-label="Range up">RNG+</button>
+        <button type="button" id="sctr" aria-label="Recentre">CTR</button>
+      </div>
+      <div class="smaps" id="smaps" hidden></div>
+      <div class="scope-keys" id="skeys"></div>
+      <div class="scope-hud" id="shud"></div>
+    </div>
   </div>
   <aside>
     <div class="aside-h"><span>Aircraft</span><b id="cnt"></b></div>
@@ -269,10 +324,24 @@ dialog::backdrop{background:rgba(5,7,8,.72)}
     <h3>Tower</h3>
     <div class="cmds">
       <code>LUAW</code><span>Line up and wait on the departure runway.</span>
-      <code>CTO</code><span>Cleared for takeoff — rolls from the threshold or from line-up.</span>
-      <code>EXIT [taxiway]</code><span>Vacate the runway after landing, at a named taxiway or the nearest.</span>
+      <code>CTO</code><span>Cleared for takeoff — rolls, rotates at Vr and climbs runway heading to the airport's initial altitude.</span>
+      <code>CTL</code><span>Cleared to land. In Tower mode an arrival without it goes around at one mile.</span>
       <code>GA</code><span>Go around (an arrival still on final).</span>
+      <code>EXIT [taxiway]</code><span>Vacate the runway after landing, at a named taxiway or the nearest.</span>
+      <code>FH {hdg}</code><span>Fly heading. <b>TL</b> / <b>TR</b> force the turn direction.</span>
+      <code>CM {alt}</code><span>Climb (or descend) and maintain — feet, hundreds (<b>CM 50</b>) or <b>FL230</b>.</span>
+      <code>CD</code><span>Contact departure — the pilot switches to the departure frequency and drops off 20 seconds later.</span>
     </div>
+
+    <h3>STARS (Tower mode)</h3>
+    <div class="cmds">
+      <code>TRACK</code><span>Start a radar track: the limited data block (beacon + altitude) becomes a full one with callsign, altitude/speed and scratchpad. Alias <b>IC</b>.</span>
+      <code>DROP</code><span>Drop the track. Alias <b>DT</b>.</span>
+    </div>
+    <p>Switch the brand dropdown to <b>Tower</b> for the radar pane: range rings, the facility's
+    STARS video maps (the tower position's DCB list is on by default; <b>MAPS</b> toggles the rest),
+    and one radar return per second with trails. Arrivals check in tracked on a six-mile final and
+    need <b>CTL</b>; departures appear as untracked beacon targets once they roll.</p>
 
     <h3>Transponder &amp; general</h3>
     <div class="cmds">

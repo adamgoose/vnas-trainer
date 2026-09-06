@@ -18,7 +18,7 @@
  * Node 18+, no dependencies.
  */
 import { writeFile, mkdir } from 'node:fs/promises';
-import { API, compactMap, compactScenario, facilityIndex, parseLenientJSON, scenarioForAirport } from './lib/vnas.mjs';
+import { API, compactMap, compactScenario, facilityIndex, parseLenientJSON, scenarioForAirport, starsForAirport } from './lib/vnas.mjs';
 
 const OUT = new URL('./catalog/', import.meta.url);
 const wanted = process.argv.slice(2).filter((a) => !a.startsWith('--')).map((s) => s.toUpperCase());
@@ -63,7 +63,7 @@ console.log(`${airports.length} training airports across ${artccIds.length} ARTC
 const facIndex = {};
 await pool(artccIds, 4, async (id) => {
   const doc = await get(`/artccs/${id}`);
-  facIndex[id] = doc ? facilityIndex(doc) : { facilities: {}, positions: {} };
+  facIndex[id] = doc ? facilityIndex(doc) : { facilities: {}, positions: {}, videoMaps: {} };
   console.log(`  ${id}: ${Object.keys(facIndex[id].facilities).length} facilities`);
 });
 
@@ -103,15 +103,18 @@ await pool(airports, CONCURRENCY, async (a) => {
     asdex: fac.asdex || null,
     twrmap: fac.twrmap || null,
     updated: a.lastUpdatedAt || null,
+    init: { jet: apt?.jetInitialAltitude || null, prop: apt?.propInitialAltitude || null, pattern: apt?.patternAltitude || null },
+    stars: facIndex[a.artccId] ? starsForAirport(facIndex[a.artccId], a.id) : null,
     fleet: (apt?.trainingAircraftSets || []).map((s) => ({ a: s.airlineIcaoCode, w: s.weight || 1, t: s.aircraftTypeCodes || [] })),
     map,
     scen,
   };
   await writeFile(new URL(`airports/${a.id}.json`, OUT), JSON.stringify(doc));
   (index[a.artccId] ||= []).push({ id: a.id, name: doc.name, n: scen.length, asdex: !!doc.asdex,
-    gates: Object.keys(map.park).length, taxi: map.taxi.length });
+    gates: Object.keys(map.park).length, taxi: map.taxi.length, stars: !!doc.stars });
   console.log(`  ${a.id.padEnd(4)} ${doc.name.padEnd(34)} ${String(scen.length).padStart(3)} scenarios  ` +
-    `${String(map.taxi.length).padStart(3)} taxiways  ${String(Object.keys(map.park).length).padStart(3)} gates${doc.asdex ? '  ASDE-X' : ''}`);
+    `${String(map.taxi.length).padStart(3)} taxiways  ${String(Object.keys(map.park).length).padStart(3)} gates${doc.asdex ? '  ASDE-X' : ''}` +
+    `${doc.stars ? `  STARS ${doc.stars.host} ${doc.stars.def.length} maps${doc.stars.dep ? ' dep ' + doc.stars.dep.freq : ''}` : ''}`);
 });
 
 const artccs = Object.keys(index).sort().map((id) => ({

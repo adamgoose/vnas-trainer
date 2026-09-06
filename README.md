@@ -34,6 +34,30 @@ ATCTrainer's CLI does — `1877 PUSH A` matches `DAL1877`.
 
 The **Commands** button in the header has the full reference.
 
+## Positions: Ground and Tower
+
+The gold **Ground** in the brand is a dropdown. **Tower** turns the accent purple and adds:
+
+- **A STARS pane** next to the ASDE-X view (or instead of it — the header switch picks
+  ASDE-X / Both / STARS). Range rings, the facility's STARS video maps fetched live from
+  vNAS, one radar return per second with trails, and click-to-select targets. The maps on
+  by default are the tower position's DCB list — position → TCP → map group, the same chain
+  CRC uses — plus the always-visible ones; **MAPS** toggles any of the facility's maps.
+- **Target tracking.** Departures appear as untracked beacon targets (beacon code +
+  altitude) once they roll. `TRACK` starts a track and shows the full data block: callsign,
+  altitude/speed, and a scratchpad (the SID, or the runway for arrivals). `DROP` drops it.
+- **Contact departure.** `CD` hands the aircraft to the departure position found in the
+  facility data (frequency read back, e.g. "over to Minneapolis Departure 124.700"); the
+  target drops off 20 seconds later.
+- **Flight commands** while airborne: `FH` / `TL` / `TR` headings, `CM` altitudes.
+- **Landing clearance.** Arrivals check in tracked on a six-mile final; without `CTL` they
+  go around at one mile. In Ground mode they land on their own as before.
+- Aircraft rotate at Vr, climb on runway heading to the airport's configured initial
+  altitude (jet or prop, from the training airport data), and leave the simulation after a
+  handoff or 16 nm out.
+
+TRACON and En-Route positions are planned on the same footing.
+
 Every strip shows the flight's **SID** first (STAR for arrivals, VFR, or "no SID"), then
 type, gate or runway, and destination. Selecting a strip expands it into the filed flight
 plan: rules, full type, route, cruise altitude and speed, remarks, assigned squawk.

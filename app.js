@@ -1,7 +1,7 @@
 /* vNAS Ground Trainer — browser app.
    Loads any vNAS training airport (from the baked catalog, or live via a proxy),
    builds the taxiway graph in the browser, and runs the ground simulation. */
-import { API, FILES, compactMap, compactScenario, facilityIndex, parseLenientJSON, scenarioForAirport } from './lib/vnas.mjs';
+import { API, FILES, compactMap, compactScenario, facilityIndex, parseLenientJSON, scenarioForAirport, starsForAirport } from './lib/vnas.mjs';
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -12,10 +12,39 @@ const SET_KEY = 'vgt.settings';
 const SET = {
   key: '', model: 'anthropic/claude-haiku-4.5', audioModel: 'google/gemini-3.5-flash-lite', proxy: '',
   tts: true, ttsEngine: 'browser', ttsModel: 'hexgrad/kokoro-82m', ttsVoice: '', voice: '', radio: true,
+  mode: 'ground',
 };
 try { Object.assign(SET, JSON.parse(localStorage.getItem(SET_KEY) || '{}')); } catch { /* ignore */ }
 function saveSettings() { try { localStorage.setItem(SET_KEY, JSON.stringify(SET)); } catch { /* ignore */ } }
 const aiEnabled = () => !!(SET.key && SET.model);
+
+/* ================= position: Ground (gold) or Tower (purple) ================= */
+const MODES = {
+  ground: { label: 'Ground', placeholder: "DAL1234 PUSH · or type it the way you'd say it on frequency", tips: (rw, tw) => `PUSH · RWY ${rw} TAXI ${tw} · CROSS · LUAW · CTO` },
+  tower: { label: 'Tower', placeholder: "DAL1234 CTO · or type it the way you'd say it on frequency", tips: () => 'LUAW · CTO · TRACK · CD · CTL · GA · FH 090 · CM 5000 · switch on Arrivals' },
+};
+const modeInfo = () => MODES[SET.mode] || MODES.ground;
+function applyMode() {
+  if (!MODES[SET.mode]) SET.mode = 'ground';
+  document.documentElement.dataset.mode = SET.mode;
+  const m = $('#mode');
+  m.value = SET.mode;
+  /* a select is as wide as its widest option; shrink it to the word actually shown */
+  const probe = document.createElement('span');
+  probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;font:inherit';
+  probe.textContent = modeInfo().label;
+  m.parentElement.appendChild(probe);
+  m.style.width = `${Math.ceil(probe.getBoundingClientRect().width) + 16}px`;
+  probe.remove();
+  $('#cmd').placeholder = modeInfo().placeholder;
+  if (A) document.title = `${A.id} · vNAS ${modeInfo().label} Trainer`;
+  /* tower gets the radar; which panes show is remembered separately */
+  const view = SET.mode === 'tower' ? (SET.view || 'both') : 'ground';
+  $('#scopes').dataset.view = view;
+  document.querySelectorAll('#viewbar button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === view)));
+  requestAnimationFrame(() => { if (G) { fit(); sApply(); } });
+}
+if (document.fonts?.ready) document.fonts.ready.then(() => applyMode());
 
 /* ================= data access ================= */
 const cache = new Map();
@@ -60,6 +89,8 @@ async function loadAirport(id, artccId) {
   const fac = fi.facilities[id] || {};
   return {
     id, artcc: artccId, name: fac.name || id, tower: fac.tower || null, asdex: fac.asdex || null, twrmap: fac.twrmap || null,
+    init: { jet: apt?.jetInitialAltitude || null, prop: apt?.propInitialAltitude || null, pattern: apt?.patternAltitude || null },
+    stars: starsForAirport(fi, id),
     fleet: (apt?.trainingAircraftSets || []).map((s) => ({ a: s.airlineIcaoCode, w: s.weight || 1, t: s.aircraftTypeCodes || [] })),
     map: compactMap(mapDoc),
     scen: scen.filter((s) => s.primaryAirportId === id).map((s) => ({ id: s.id, name: s.name, lazy: true }))
@@ -233,7 +264,61 @@ function Aircraft(o) {
     path: null, leg: 0, frac: 0, holdLeg: null, cleared: new Set(), blockedBy: null,
     breakUntil: -1, giveway: null, delay: 0, gate: null, rwy: null, dep: null, dst: null,
     sq: '1200', xpdr: 'S', hist: [],
+    /* flight: altitude ft, targets, turn direction, radar track state */
+    alt: 0, tgtAlt: 0, tgtHdg: 0, tgtSpd: 0, vs: 0, turn: null,
+    tracked: false, handoff: false, handoffAt: 0, ctl: false, radar: null,
   }, o);
+}
+/* ---- flight performance: enough to fly a departure or a go-around ---- */
+const PROP_TYPES = /^(C1\d\d|C2\d\d|C3\d\d|C4\d\d|P\d{2}|PA\d\d|BE\d\d|B190|SW[234]|AT[47]\d|DH8|SF34|E120|C208|PC12|TBM|SR2\d|DA4\d|DA62|M20|AC\d|J328|D328|AN\d|L410|C441|MU2|PAY\d|P180)/;
+const isProp = (ty) => PROP_TYPES.test(String(ty || ''));
+function perf(a) {
+  const prop = isProp(a.ty);
+  return {
+    prop, vr: prop ? 65 : 135, accel: prop ? 4 : 6, climbSpd: prop ? 140 : 250, vs: prop ? 1000 : 2500,
+    initAlt: (prop ? A?.init?.prop : A?.init?.jet) || 5000,
+  };
+}
+function rwyCourse(rw) {
+  const info = G.rwy[rw]; if (!info || info.chain.length < 2) return null;
+  return bearing(NODES[info.chain[0]], NODES[info.chain[1]]);
+}
+function liftoff(a) {
+  const pf = perf(a);
+  const crs = rwyCourse(a.rwy) ?? a.hdg;
+  a.state = 'AIRB'; a.hdg = crs; a.tgtHdg = crs; a.turn = null;
+  a.alt = 0; a.tgtAlt = pf.initAlt; a.tgtSpd = pf.climbSpd; a.vs = pf.vs;
+  a.path = null; a.holdLeg = null; a.xpdr = a.xpdr === 'S' ? 'N' : a.xpdr; a.airborneAt = S.t;
+  line('sys', '', `${a.cs} airborne runway ${a.rwy}, climbing ${a.tgtAlt}`);
+}
+function goAround(a, why) {
+  const crs = rwyCourse(a.rwy) ?? a.hdg;
+  a.state = 'AIRB'; a.hdg = crs; a.tgtHdg = crs; a.turn = null;
+  a.alt = Math.max(a.alt || 0, 50); a.tgtAlt = Math.max(3000, (A?.init?.pattern || 0) + 1500);
+  a.tgtSpd = 160; a.vs = perf(a).vs; a.path = null; a.ctl = false; a.destGate = null; a.goaround = true;
+  say(a, why ? `going around, ${why}` : 'going around', 'pilot');
+}
+function removeAc(a, msg) {
+  a.state = 'DEP'; a.radar = null;
+  S.ac = S.ac.filter((x) => x !== a);
+  if (S.sel === a) { S.sel = null; syncSel(); }
+  if (msg) line('sys', '', msg);
+}
+function stepAir(a, dt) {
+  let d = ((a.tgtHdg - a.hdg + 540) % 360) - 180;
+  if (a.turn === 'L' && d > 0) d -= 360;
+  if (a.turn === 'R' && d < 0) d += 360;
+  const rate = 3 * dt;
+  if (Math.abs(d) <= rate) { a.hdg = a.tgtHdg; a.turn = null; } else a.hdg = (a.hdg + Math.sign(d) * rate + 360) % 360;
+  a.spd = a.spd < a.tgtSpd ? Math.min(a.tgtSpd, a.spd + 3 * dt) : Math.max(a.tgtSpd, a.spd - 2 * dt);
+  const vs = (a.vs || 2000) / 60 * dt;
+  if (a.alt < a.tgtAlt) a.alt = Math.min(a.tgtAlt, a.alt + vs);
+  else if (a.alt > a.tgtAlt) a.alt = Math.max(a.tgtAlt, a.alt - vs * 0.6);
+  a.pos = movePt(a.pos, a.hdg, a.spd * 1.68781 * dt);
+  if (S.tick % 10 === 0) { a.hist.push(a.pos.slice()); if (a.hist.length > 6) a.hist.shift(); }
+  if (a.handoff && S.t - a.handoffAt > 20) { removeAc(a, `${a.cs} with ${A.stars?.dep?.radio || 'departure'}`); return; }
+  const distNm = RC ? Math.hypot(...PS(a.pos)) : 0;
+  if (distNm > 16) removeAc(a, `${a.cs} left the area${a.handoff ? '' : ' without a frequency change'}`);
 }
 const findAc = (q) => {
   q = String(q || '').toUpperCase();
@@ -261,7 +346,7 @@ const TAXI_KT = 16, TURN_KT = 9, PUSH_KT = 4, ROLL_KT = 150, HOLD_FT = 340;
 function aheadConflict(a) {
   if (S.t < a.breakUntil) return null;
   for (const b of S.ac) {
-    if (b === a || b.state === 'PARKED' || b.state === 'DEP' || b.state === 'FINAL') continue;
+    if (b === a || b.state === 'PARKED' || b.state === 'DEP' || b.state === 'FINAL' || b.state === 'AIRB' || b.delay > 0) continue;
     const d = ftBetween(a.pos, b.pos);
     if (d > HOLD_FT || d < 1) continue;
     const rel = (bearing(a.pos, b.pos) - a.hdg + 540) % 360 - 180;
@@ -281,14 +366,23 @@ function step(a, dt) {
     return;
   }
   if (a.state === 'PARKED' || a.state === 'DEP') return;
+  if (a.state === 'AIRB') { stepAir(a, dt); return; }
   if (a.state === 'TKOF') {
-    a.spd = Math.min(ROLL_KT, a.spd + 7 * dt); advance(a, dt);
-    if (!a.path || a.leg >= a.path.length - 1) { a.state = 'DEP'; say(a, 'airborne', 'sys'); }
+    const pf = perf(a);
+    a.spd = Math.min(ROLL_KT, a.spd + pf.accel * dt); advance(a, dt);
+    if (a.spd >= pf.vr || !a.path || a.leg >= a.path.length - 1) liftoff(a);
     return;
   }
   if (a.state === 'FINAL') {
     a.spd = 140; advance(a, dt);
-    if (!a.path || a.leg >= a.path.length - 1) a.state = 'ROLLOUT';
+    if (a.leg >= 1) { a.alt = 0; a.landed = true; }          /* leg 0 is the approach; leg 1+ is the runway */
+    else {
+      const info = G.rwy[a.rwy];
+      const dnm = info ? ftBetween(a.pos, NODES[info.chain[0]]) / 6076 : 0;
+      a.alt = Math.max(0, dnm * 318);                            /* 3° glide */
+      if (SET.mode === 'tower' && !a.ctl && dnm < 1.0) { goAround(a, 'no landing clearance'); return; }
+    }
+    if (!a.path || a.leg >= a.path.length - 1) { a.state = 'ROLLOUT'; a.alt = 0; }
     return;
   }
   if (a.state === 'ROLLOUT') {
@@ -540,8 +634,36 @@ const CMDS = {
     autoExit(a); return null;
   },
   GA(a) {
-    if (a.state !== 'FINAL') return 'not on final';
-    a.state = 'DEP'; say(a, 'going around', 'pilot'); return null;
+    if (a.state !== 'FINAL' || a.landed) return 'not on final';
+    goAround(a); return null;
+  },
+  /* ---- tower ---- */
+  CTL(a) {
+    if (a.state !== 'FINAL' || a.landed) return 'not on final';
+    a.ctl = true; say(a, `cleared to land runway ${a.rwy}`, 'pilot'); return null;
+  },
+  TRACK(a) {
+    if (!a.radar) return 'no radar target';
+    a.tracked = true; line('sys', '', `${a.cs} tracked`); renderStars(); return null;
+  },
+  IC(a) { return CMDS.TRACK(a); },
+  DROP(a) { a.tracked = false; line('sys', '', `${a.cs} track dropped`); renderStars(); return null; },
+  DT(a) { return CMDS.DROP(a); },
+  CD(a) {
+    if (a.state !== 'AIRB' && a.state !== 'TKOF') return 'not airborne';
+    if (a.handoff) return 'already switched';
+    a.handoff = true; a.handoffAt = S.t;
+    const d = A.stars?.dep;
+    say(a, d ? `over to ${d.radio || 'departure'}${d.freq ? ' ' + d.freq : ''}` : 'contact departure', 'pilot');
+    renderStars(); return null;
+  },
+  FH(a, args) { return flyHeading(a, args[0], null); },
+  TL(a, args) { return flyHeading(a, args[0], 'L'); },
+  TR(a, args) { return flyHeading(a, args[0], 'R'); },
+  CM(a, args) {
+    if (a.state !== 'AIRB') return 'not airborne';
+    const alt = parseAlt(args[0]); if (alt == null) return 'altitude?';
+    a.tgtAlt = alt; say(a, `${alt > a.alt ? 'climb' : 'descend'} and maintain ${altWords(alt)}`, 'pilot'); return null;
   },
   SQ(a, args) { if (!args[0]) return 'squawk what?'; a.sq = args[0]; a.xpdr = 'N'; say(a, `squawking ${a.sq}`, 'pilot'); return null; },
   SN(a) { a.xpdr = 'N'; say(a, 'squawking normal', 'pilot'); return null; },
@@ -566,6 +688,26 @@ const CMDS = {
   },
 };
 const GLOBAL_CMDS = new Set(['PAUSE', 'UNPAUSE', 'TAXIALL', 'SIMRATE']);
+const digitsWords = (n) => [...String(n)].map((d) => NATO[d] || d).join(' ');
+function flyHeading(a, arg, dir) {
+  if (a.state !== 'AIRB') return 'not airborne';
+  const h = parseInt(arg, 10);
+  if (!Number.isFinite(h) || h < 1 || h > 360) return 'heading?';
+  a.tgtHdg = h % 360; a.turn = dir;
+  say(a, `${dir === 'L' ? 'turn left ' : dir === 'R' ? 'turn right ' : ''}heading ${digitsWords(String(h).padStart(3, '0'))}`, 'pilot');
+  return null;
+}
+function parseAlt(s) {
+  s = String(s || '').toUpperCase();
+  if (/^FL\d{2,3}$/.test(s)) return parseInt(s.slice(2), 10) * 100;
+  const n = parseInt(s, 10); if (!Number.isFinite(n) || n <= 0) return null;
+  return n <= 450 ? n * 100 : n;                         /* "50" and "FL050" both mean 5,000 */
+}
+function altWords(alt) {
+  if (alt >= 18000) return `flight level ${digitsWords(Math.round(alt / 100))}`;
+  const th = Math.floor(alt / 1000), hu = Math.round((alt % 1000) / 100);
+  return `${th ? digitsWords(th) + ' thousand' : ''}${hu ? ` ${NATO[hu]} hundred` : ''}`.trim();
+}
 
 function runCommand(raw) {
   const toks = raw.trim().split(/\s+/).filter(Boolean);
@@ -605,8 +747,10 @@ function parseJSONish(s) {
   throw new Error('no JSON in reply');
 }
 const CMD_REF = `PUSH [taxiway] | TAXI <taxiways...> [HS <pt>] | RWY <runway> TAXI <taxiways...> |
-HS <pt> | CROSS | RES | HOLD | BREAK | GIVEWAY <callsign> | LUAW | CTO | EXIT | GA |
-SQ <code> | SN | SS | ID | SAY <gate|type|rwy> | DEL | TAXIALL`;
+HS <pt> | CROSS | RES | HOLD | BREAK | GIVEWAY <callsign> | LUAW | CTO | EXIT |
+CTL (cleared to land) | GA (go around) | CD (contact departure / frequency change) |
+FH <hdg> (fly heading) | TL <hdg> | TR <hdg> (turn left/right heading) | CM <alt> (climb/descend and maintain, feet or FL) |
+TRACK (start radar track) | DROP | SQ <code> | SN | SS | ID | SAY <gate|type|rwy> | DEL | TAXIALL`;
 function syncHint() {
   const h = $('#hint');
   h.textContent = aiEnabled() ? `plain English via ${SET.model}` : 'commands only · add a key in Settings';
@@ -619,8 +763,8 @@ function buildPrompt(audio) {
   const roster = S.ac.filter((a) => a.state !== 'DEP' && a.delay <= 0).slice(0, 60).map((a) =>
     `${a.cs} (${a.ty}) ${a.state}${a.gate ? ` gate ${a.gate}` : ''}${a.rwy ? ` rwy ${a.rwy}` : ''}`).join('; ');
   const gates = Object.keys(GATES);
-  const sys = `You are the pilot side of an air traffic control ground simulator at ${A.name} (${A.id}).
-Translate one controller transmission into ATCTrainer commands.
+  const sys = `You are the pilot side of an air traffic control simulator at ${A.name} (${A.id}).
+The controller is working the ${modeInfo().label} position. Translate one controller transmission into ATCTrainer commands.
 
 COMMANDS: ${CMD_REF}
 Taxiways here: ${Object.keys(TW).join(' ') || 'none'}
@@ -949,7 +1093,7 @@ function loadScenario(sc) {
     } else if (r.k === 'F') {
       const info = G.rwy[at]; if (!info) { skipped++; continue; }
       placeOnFinal(a, at, r.nm || 5);
-      a.xpdr = 'N';
+      a.xpdr = 'N'; a.tracked = true; a.ctl = SET.mode !== 'tower';
     } else { skipped++; continue; }
     S.ac.push(a);
   }
@@ -958,7 +1102,7 @@ function loadScenario(sc) {
   } else line('sys', '', `${A.name} — empty field. Switch on Arrivals, or pick a scenario.`);
   const rw = Object.keys(G.rwy)[0] || '—', tw = Object.keys(TW).slice(0, 2).join(' ');
   line('sys', '', Object.keys(TW).length
-    ? `Select an aircraft, then try: PUSH · RWY ${rw} TAXI ${tw} · CROSS · LUAW · CTO`
+    ? `${modeInfo().label} position. Select an aircraft, then try: ${modeInfo().tips(rw, tw)}`
     : `This training map has runways only — no taxiways, so PUSH and TAXI are unavailable here. Try: LUAW · CTO · Arrivals.`);
   nextArr = 0;
   fit(); renderStrips(); syncChrome(); syncSel();
@@ -967,8 +1111,8 @@ function placeOnFinal(a, rw, nm) {
   const info = G.rwy[rw];
   const thr = NODES[info.chain[0]];
   const crs = bearing(NODES[info.chain[0]], NODES[info.chain[1]]);
-  a.pos = movePt(thr, (crs + 180) % 360, nm * 6076); a.hdg = crs; a.spd = 140;
-  a.state = 'FINAL'; a.rwy = rw;
+  a.pos = movePt(thr, (crs + 180) % 360, nm * 6076); a.hdg = crs; a.spd = 140; a.alt = nm * 318;
+  a.state = 'FINAL'; a.rwy = rw; a.landed = false;
   a._origin = a.pos.slice(); a.path = info.chain.slice(); a.leg = 0; a.frac = 0; a.holdLeg = null;
 }
 
@@ -994,10 +1138,12 @@ function maybeArrival() {
     cs: f.a + (100 + Math.floor(Math.random() * 899)), ty: f.t[Math.floor(Math.random() * f.t.length)] || 'C172',
     dep: null, dst: A.id, xpdr: 'N', sq: String(1000 + Math.floor(Math.random() * 6000)),
   });
-  placeOnFinal(a, rw, 3);
+  const tower = SET.mode === 'tower';
+  placeOnFinal(a, rw, tower ? 6 : 3);
+  a.tracked = true; a.ctl = !tower;                       /* tower has to clear them to land */
   if (GATE_NAMES.length) a.destGate = GATE_NAMES[Math.floor(Math.random() * GATE_NAMES.length)];
   S.ac.push(a);
-  line('sys', '', `${a.cs} ${a.ty} on final runway ${rw}${a.destGate ? `, parking ${a.destGate}` : ''}`);
+  line('sys', '', `${a.cs} ${a.ty} ${tower ? '6 mile final' : 'on final'} runway ${rw}${a.destGate ? `, parking ${a.destGate}` : ''}`);
 }
 
 /* ================= rendering ================= */
@@ -1056,7 +1202,7 @@ function buildStatic() {
   /* gates and spots */
   for (const g of Object.values(GATES)) {
     const c = P(g.c);
-    svgEl('circle', { cx: c[0].toFixed(0), cy: c[1].toFixed(0), r: 3.2 * U, opacity: g.spot ? .3 : .45 }, gStatic).style.fill = g.spot ? 'var(--amber)' : 'var(--net)';
+    svgEl('circle', { cx: c[0].toFixed(0), cy: c[1].toFixed(0), r: 3.2 * U, opacity: g.spot ? .3 : .45 }, gStatic).style.fill = g.spot ? 'var(--accent)' : 'var(--net)';
   }
 }
 /* ASDE-X pavement (or the tower-cab map as a fallback), fetched live from vNAS */
@@ -1098,9 +1244,9 @@ async function loadPavement(doc) {
 
 const STATE_COLOR = {
   PARKED: 'var(--ink-3)', PUSH: 'var(--violet)', PUSHED: 'var(--violet)', TAXI: 'var(--green)', SHORT: 'var(--amber)', HOLD: 'var(--red)',
-  LUAW: 'var(--cyan)', TKOF: 'var(--cyan)', FINAL: 'var(--cyan)', ROLLOUT: 'var(--cyan)', DEP: 'var(--ink-3)',
+  LUAW: 'var(--cyan)', TKOF: 'var(--cyan)', FINAL: 'var(--cyan)', ROLLOUT: 'var(--cyan)', AIRB: 'var(--cyan)', DEP: 'var(--ink-3)',
 };
-const STATE_TEXT = { PARKED: 'gate', PUSH: 'push', PUSHED: 'ready', TAXI: 'taxi', SHORT: 'short', HOLD: 'hold', LUAW: 'luaw', TKOF: 'roll', FINAL: 'final', ROLLOUT: 'rollout', DEP: 'airborne' };
+const STATE_TEXT = { PARKED: 'gate', PUSH: 'push', PUSHED: 'ready', TAXI: 'taxi', SHORT: 'short', HOLD: 'hold', LUAW: 'luaw', TKOF: 'roll', FINAL: 'final', ROLLOUT: 'rollout', AIRB: 'airborne', DEP: 'gone' };
 function render() {
   if (!G) return;
   const showTags = view.w < WORLD_W * 0.62;
@@ -1137,7 +1283,7 @@ function render() {
   $('#hud').innerHTML = `${esc(A.id)} · ${active} aircraft · ${S.ac.filter((a) => a.delay <= 0 && (a.state === 'TAXI' || a.state === 'PUSH')).length} moving${pending ? ` · ${pending} pending` : ''}<br>scroll to zoom · drag to pan`;
 }
 function renderStrips() {
-  const rank = (a) => a.delay > 0 ? 8 : ({ TKOF: 0, LUAW: 1, SHORT: 2, TAXI: 3, PUSH: 3, PUSHED: 4, HOLD: 2, FINAL: 0, ROLLOUT: 1, PARKED: 6 })[a.state] ?? 7;
+  const rank = (a) => a.delay > 0 ? 8 : ({ AIRB: 0, TKOF: 0, LUAW: 1, SHORT: 2, TAXI: 3, PUSH: 3, PUSHED: 4, HOLD: 2, FINAL: 0, ROLLOUT: 1, PARKED: 6 })[a.state] ?? 7;
   const list = S.ac.filter((a) => a.state !== 'DEP').sort((a, b) => rank(a) - rank(b) || a.cs.localeCompare(b.cs));
   const pend = list.filter((a) => a.delay > 0).length;
   $('#cnt').textContent = `${list.length - pend} on frequency${pend ? ` · ${pend} pending` : ''}`;
@@ -1153,7 +1299,7 @@ function renderStrips() {
     return `<div class="strip" data-cs="${esc(a.cs)}" aria-selected="${selected}" role="button" tabindex="0"${pending ? ' style="opacity:.55"' : ''}>
       <span class="cs">${esc(a.cs)}</span>
       <span class="st" style="color:${col}">${pending ? 'pending' : (STATE_TEXT[a.state] || a.state)}</span>
-      <span class="sub">${proc}<b>${esc(a.ty)}</b>${a.gate ? `<b>${esc(a.gate)}</b>` : ''}${a.rwy ? `<b>rwy ${esc(a.rwy)}</b>` : ''}${a.dst ? `<span>→ ${esc(a.dst)}</span>` : ''}${a.delay > 0 ? `<b>+${Math.ceil(a.delay)}s</b>` : ''}${a.blockedBy ? `<b>behind ${esc(a.blockedBy)}</b>` : ''}</span>
+      <span class="sub">${proc}<b>${esc(a.ty)}</b>${a.gate ? `<b>${esc(a.gate)}</b>` : ''}${a.rwy ? `<b>rwy ${esc(a.rwy)}</b>` : ''}${a.state === 'AIRB' || a.state === 'FINAL' ? `<b>${Math.round(a.alt / 100) * 100} ft${a.state === 'AIRB' && a.tgtAlt !== a.alt ? ` ↑${a.tgtAlt}` : ''}</b>` : ''}${a.state === 'FINAL' && !a.ctl && SET.mode === 'tower' ? `<b style="color:var(--amber)">no CTL</b>` : ''}${a.handoff ? `<b style="color:var(--accent)">H/O</b>` : a.radar && !a.tracked ? `<b>untracked</b>` : ''}${a.dst ? `<span>→ ${esc(a.dst)}</span>` : ''}${a.delay > 0 ? `<b>+${Math.ceil(a.delay)}s</b>` : ''}${a.blockedBy ? `<b>behind ${esc(a.blockedBy)}</b>` : ''}</span>
       ${selected ? flightPlanHTML(a) : ''}
     </div>`;
   }).join('');
@@ -1174,7 +1320,130 @@ function flightPlanHTML(a) {
     <div class="k">squawk ${esc(a.sq)}</div>
   </div>`;
 }
-function selectAc(a) { S.sel = a; syncSel(); renderStrips(); }
+function selectAc(a) { S.sel = a; syncSel(); renderStrips(); renderStars(); }
+
+/* ================= STARS — the tower's radar display ================= */
+const starsEl = $('#stars');
+const ssvg = document.createElementNS(NS, 'svg');
+ssvg.setAttribute('xmlns', NS);
+starsEl.insertBefore(ssvg, starsEl.firstChild);
+const sMaps = svgEl('g', {}, ssvg), sRings = svgEl('g', {}, ssvg), sTargets = svgEl('g', {}, ssvg);
+let RC = null;                                  /* radar centre [lon, lat] */
+let NM_LON = 60, NM_LAT = 60;
+const PS = (c) => [(c[0] - RC[0]) * NM_LON, (RC[1] - c[1]) * NM_LAT];   /* lon/lat -> nm east, nm south */
+let sview = { x: -15, y: -15, w: 30, h: 30 };
+const STARS_SEL = new Set();                    /* video map ids on the display */
+let starsToken = 0;
+function sApply() {
+  ssvg.setAttribute('viewBox', `${sview.x} ${sview.y} ${sview.w} ${sview.h}`);
+  ssvg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  sHud(); renderStars();
+}
+function sRange(r) { sview = { x: -r, y: -r, w: 2 * r, h: 2 * r }; sApply(); }
+function sZoomAt(cx, cy, k) {
+  const r = ssvg.getBoundingClientRect();
+  const fx = (cx - r.left) / r.width, fy = (cy - r.top) / r.height;
+  const wx = sview.x + sview.w * fx, wy = sview.y + sview.h * fy;
+  const nw = Math.max(6, Math.min(160, sview.w * k)), nh = nw * (sview.h / sview.w);
+  sview = { x: wx - nw * fx, y: wy - nh * fy, w: nw, h: nh };
+  sApply();
+}
+function sHud() {
+  if (!A) return;
+  const st = A.stars;
+  $('#shud').innerHTML = `${st ? `${esc(st.host)} STARS${st.tcp ? ' · TCP ' + esc(st.tcp) : ''}` : 'no STARS configuration for this airport'} · ${(sview.w / 2).toFixed(0)} nm` +
+    `<br>${st?.dep ? `departure ${esc(st.dep.radio || st.dep.cs)} ${esc(st.dep.freq || '')}` : 'no departure position found'} · targets ${S.ac.filter((a) => a.radar).length}`;
+}
+function starsInit(doc) {
+  const st = doc.stars;
+  RC = st?.center || doc.tower || [(G.bounds.lon0 + G.bounds.lon1) / 2, (G.bounds.lat0 + G.bounds.lat1) / 2];
+  NM_LAT = 60; NM_LON = 60 * Math.cos(RC[1] * Math.PI / 180);
+  sMaps.innerHTML = ''; sTargets.innerHTML = ''; sRings.innerHTML = '';
+  for (let r = 5; r <= 60; r += 5) {
+    svgEl('circle', { cx: 0, cy: 0, r, fill: 'none', 'stroke-width': r % 10 ? 0.6 : 1, 'vector-effect': 'non-scaling-stroke', opacity: r % 10 ? .35 : .6 }, sRings).style.stroke = 'var(--rule-2)';
+  }
+  /* the field's runways, from the training map, so the picture is anchored even with no maps loaded */
+  for (const info of Object.values(G.rwy)) {
+    svgEl('polyline', { points: info.chain.map((n) => PS(NODES[n]).map((v) => v.toFixed(4)).join(',')).join(' '), fill: 'none', 'stroke-width': 2, 'vector-effect': 'non-scaling-stroke', opacity: .8 }, sRings).style.stroke = 'var(--ink-3)';
+  }
+  STARS_SEL.clear();
+  if (st) {
+    st.maps.filter((m) => m.av).forEach((m) => STARS_SEL.add(m.id));
+    st.def.slice(0, 4).forEach((id) => STARS_SEL.add(id));
+  }
+  buildMapList(); loadStarsMaps();
+  sRange(15);
+}
+async function loadStarsMaps() {
+  const token = ++starsToken;
+  sMaps.innerHTML = '';
+  if (!A?.stars) return;
+  for (const id of STARS_SEL) showStarsMap(id, token);
+}
+function showStarsMap(id, token = starsToken) {
+  const m = A?.stars?.maps.find((x) => x.id === id); if (!m) return;
+  getJSON(`${FILES}/VideoMaps/${A.artcc}/${id}.geojson`, { mode: 'cors' }).then((gj) => {
+    if (token !== starsToken || !STARS_SEL.has(id) || sMaps.querySelector(`[data-id="${id}"]`)) return;
+    let d = '';
+    for (const f of gj.features || []) {
+      const g = f.geometry; if (!g) continue;
+      const lines = g.type === 'LineString' ? [g.coordinates] : g.type === 'MultiLineString' ? g.coordinates
+        : g.type === 'Polygon' ? g.coordinates : g.type === 'MultiPolygon' ? g.coordinates.flat() : [];
+      for (const l of lines) d += l.map((c, i) => (i ? 'L' : 'M') + PS(c).map((v) => v.toFixed(4)).join(' ')).join('');
+    }
+    if (!d) return;
+    const p = svgEl('path', { d, fill: 'none', 'stroke-width': 1, 'vector-effect': 'non-scaling-stroke', 'data-id': id, opacity: m.b === 'A' ? .85 : .5 }, sMaps);
+    p.style.stroke = 'var(--map)';
+  }).catch((e) => line('sys', '', `map ${m.sn || m.n}: ${e.message}`));
+}
+function buildMapList() {
+  const box = $('#smaps');
+  if (!A?.stars) { box.innerHTML = '<div class="grp">no STARS maps</div>'; return; }
+  const st = A.stars;
+  const row = (m, dcb) => `<label class="${dcb ? 'dcb' : ''}"><input type="checkbox" data-id="${esc(m.id)}"${STARS_SEL.has(m.id) ? ' checked' : ''}><b>${esc(String(m.sid ?? ''))}</b> ${esc(m.sn || m.n)}${m.av ? ' <i>always</i>' : ''}</label>`;
+  const inDef = new Set(st.def);
+  const def = st.def.map((id) => st.maps.find((m) => m.id === id)).filter(Boolean);
+  const rest = st.maps.filter((m) => !inDef.has(m.id) && !m.tdm);
+  box.innerHTML = `<div class="grp">${esc(st.host)} · tower DCB${st.tcp ? ' (' + esc(st.tcp) + ')' : ''}</div>` + def.map((m) => row(m, true)).join('') +
+    (rest.length ? `<div class="grp">other maps (${rest.length})</div>` + rest.map((m) => row(m, false)).join('') : '');
+}
+/* one radar return per sim second for anything airborne or on the runway */
+function radarTick() {
+  for (const a of S.ac) {
+    const vis = a.delay <= 0 && (a.state === 'AIRB' || a.state === 'FINAL' || a.state === 'ROLLOUT' || (a.state === 'TKOF' && a.spd > 40));
+    if (!vis) { a.radar = null; continue; }
+    const hist = a.radar ? [...a.radar.hist, a.radar.pos] : [];
+    a.radar = { pos: a.pos.slice(), alt: a.alt || 0, spd: a.spd, hist: hist.slice(-5) };
+  }
+  renderStars();
+}
+function renderStars() {
+  if (!RC || starsEl.offsetParent === null) return;
+  const px = ssvg.getBoundingClientRect().width / sview.w || 20;   /* px per nm */
+  const fs = 11 / px, sz = 4 / px;
+  let out = '';
+  for (const a of S.ac) {
+    const r = a.radar; if (!r) continue;
+    const [x, y] = PS(r.pos);
+    const col = a.handoff ? 'var(--accent)' : a.tracked ? 'var(--green)' : 'var(--ink-2)';
+    const sel = S.sel === a;
+    r.hist.forEach((h, i) => { const [hx, hy] = PS(h); out += `<circle cx="${hx.toFixed(3)}" cy="${hy.toFixed(3)}" r="${(sz * 0.35).toFixed(3)}" fill="${col}" opacity="${(0.15 + 0.12 * i).toFixed(2)}"/>`; });
+    if (sel) out += `<circle cx="${x.toFixed(3)}" cy="${y.toFixed(3)}" r="${(sz * 2.4).toFixed(3)}" fill="none" stroke="var(--cyan)" stroke-width="${(sz * 0.25).toFixed(3)}" opacity=".9"/>`;
+    out += `<rect x="${(x - sz).toFixed(3)}" y="${(y - sz).toFixed(3)}" width="${(2 * sz).toFixed(3)}" height="${(2 * sz).toFixed(3)}" transform="rotate(45 ${x.toFixed(3)} ${y.toFixed(3)})" fill="${a.tracked ? col : 'none'}" stroke="${col}" stroke-width="${(sz * 0.3).toFixed(3)}"/>`;
+    const lx = x + sz * 3.2, ly = y - sz * 3.2;
+    out += `<line x1="${(x + sz).toFixed(3)}" y1="${(y - sz).toFixed(3)}" x2="${lx.toFixed(3)}" y2="${ly.toFixed(3)}" stroke="${col}" stroke-width="${(sz * 0.2).toFixed(3)}" opacity=".8"/>`;
+    const alt3 = String(Math.max(0, Math.round(r.alt / 100))).padStart(3, '0');
+    const spd2 = String(Math.round(r.spd / 10)).padStart(2, '0');
+    const lines = a.tracked
+      ? [`${a.handoff ? 'H/' : ''}${a.cs}`, `${alt3} ${spd2}`, a.sid ? a.sid.slice(0, 3) : a.state === 'FINAL' || a.goaround ? (a.rwy || '') : (a.ty || '')]
+      : [a.sq, alt3];
+    lines.forEach((t, i) => {
+      out += `<text x="${(lx + sz * 0.4).toFixed(3)}" y="${(ly + fs * (i + 0.85)).toFixed(3)}" font-family="IBM Plex Mono, monospace" font-size="${fs.toFixed(3)}" font-weight="${i === 0 && a.tracked ? 600 : 400}" fill="${sel ? 'var(--cyan)' : col}">${esc(t)}</text>`;
+    });
+  }
+  sTargets.innerHTML = out;
+  sHud();
+}
 function syncSel() { const el = $('#sel'); el.textContent = S.sel ? S.sel.cs : 'no target'; el.classList.toggle('none', !S.sel); }
 function setRunning(v) { S.running = v; const b = $('#play'); b.setAttribute('aria-pressed', v); b.textContent = v ? 'Running' : 'Paused'; }
 function syncChrome() { $('#rate').textContent = S.rate + '×'; syncSel(); }
@@ -1191,8 +1460,9 @@ function physics() {
   if (!S.running || !G) return;
   for (let i = 0; i < n * S.rate; i++) {
     S.t += STEP; S.tick++;
-    for (const a of S.ac) step(a, STEP);
+    for (const a of S.ac.slice()) step(a, STEP);      /* copy: a step may remove an aircraft */
     maybeArrival();
+    if (S.tick % 10 === 0) radarTick();               /* once a sim second, like a sweep */
   }
   renderStrips();
 }
@@ -1219,12 +1489,12 @@ function activateAirport(doc) {
   U = WORLD_W / 1000;
   P = (c) => [(c[0] - B.lon0) * G.FT_LON, (B.lat1 - c[1]) * G.FT_LAT];
   S.ac = []; S.arrivals = false; $('#arr').setAttribute('aria-pressed', 'false');
-  buildStatic(); loadPavement(doc);
+  buildStatic(); loadPavement(doc); starsInit(doc);
   const sel = $('#scen');
   sel.innerHTML = `<option value="">— empty field —</option>` +
     doc.scen.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}${s.ac ? ` — ${s.ac.length}` : ''}</option>`).join('');
   sel.disabled = false;
-  document.title = `${doc.id} · vNAS Ground Trainer`;
+  document.title = `${doc.id} · vNAS ${modeInfo().label} Trainer`;
   fit();
 }
 async function selectScenario(id, pushHash = true) {
@@ -1293,6 +1563,14 @@ async function boot() {
 
 /* ================= input ================= */
 {
+  $('#mode').addEventListener('change', (e) => {
+    SET.mode = e.target.value; saveSettings(); applyMode();
+    if (G) {
+      const rw = Object.keys(G.rwy)[0] || '—', tw = Object.keys(TW).slice(0, 2).join(' ');
+      line('sys', '', `${modeInfo().label} position — try: ${modeInfo().tips(rw, tw)}`);
+    }
+    e.target.blur();
+  });
   $('#artcc').addEventListener('change', (e) => { fillAirports(e.target.value); const first = $('#apt').value; if (first) selectAirport(first); });
   $('#apt').addEventListener('change', (e) => selectAirport(e.target.value));
   $('#scen').addEventListener('change', (e) => selectScenario(e.target.value));
@@ -1305,6 +1583,39 @@ async function boot() {
     nextArr = S.t + 5;
     line('sys', '', S.arrivals ? `arrival generator on — ${A.fleet.length ? A.id + ' fleet mix' : 'generic GA mix'}` : 'arrival generator off');
   });
+  /* STARS pane controls */
+  document.querySelectorAll('#viewbar button').forEach((b) => b.addEventListener('click', () => { SET.view = b.dataset.view; saveSettings(); applyMode(); }));
+  $('#srng-in').addEventListener('click', () => sRange(Math.max(3, Math.round(sview.w / 2 / 1.5))));
+  $('#srng-out').addEventListener('click', () => sRange(Math.min(80, Math.round(sview.w / 2 * 1.5))));
+  $('#sctr').addEventListener('click', () => sRange(15));
+  $('#smaps-btn').addEventListener('click', () => { const p = $('#smaps'); p.hidden = !p.hidden; });
+  $('#smaps').addEventListener('change', (e) => {
+    const cb = e.target; if (!cb.dataset?.id) return;
+    if (cb.checked) { STARS_SEL.add(cb.dataset.id); showStarsMap(cb.dataset.id); }
+    else { STARS_SEL.delete(cb.dataset.id); sMaps.querySelector(`[data-id="${cb.dataset.id}"]`)?.remove(); }
+  });
+  ssvg.addEventListener('wheel', (e) => { e.preventDefault(); sZoomAt(e.clientX, e.clientY, e.deltaY > 0 ? 1.13 : 0.885); }, { passive: false });
+  let sdrag = null;
+  ssvg.addEventListener('pointerdown', (e) => { sdrag = { x: e.clientX, y: e.clientY, vx: sview.x, vy: sview.y, moved: false }; ssvg.setPointerCapture(e.pointerId); });
+  ssvg.addEventListener('pointermove', (e) => {
+    if (!sdrag) return;
+    const r = ssvg.getBoundingClientRect();
+    if (Math.hypot(e.clientX - sdrag.x, e.clientY - sdrag.y) > 3) sdrag.moved = true;
+    sview.x = sdrag.vx - (e.clientX - sdrag.x) * (sview.w / r.width); sview.y = sdrag.vy - (e.clientY - sdrag.y) * (sview.h / r.height);
+    ssvg.setAttribute('viewBox', `${sview.x} ${sview.y} ${sview.w} ${sview.h}`);
+  });
+  ssvg.addEventListener('pointerup', (e) => {
+    if (sdrag && !sdrag.moved && RC) {
+      const r = ssvg.getBoundingClientRect();
+      const wx = sview.x + sview.w * ((e.clientX - r.left) / r.width), wy = sview.y + sview.h * ((e.clientY - r.top) / r.height);
+      let best = null, bd = Infinity;
+      for (const a of S.ac) { if (!a.radar) continue; const [x, y] = PS(a.radar.pos); const d = Math.hypot(x - wx, y - wy); if (d < bd) { bd = d; best = a; } }
+      if (best && bd < sview.w * 0.04) { selectAc(best); $('#cmd').focus(); }
+    }
+    sdrag = null;
+  });
+  ssvg.addEventListener('pointercancel', () => { sdrag = null; });
+
   $('#zin').addEventListener('click', () => { const r = svg.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, 0.7); });
   $('#zout').addEventListener('click', () => { const r = svg.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1.42); });
   $('#zfit').addEventListener('click', fit);
@@ -1459,9 +1770,11 @@ async function boot() {
     if (SET.proxy !== proxyBefore) { cache.clear(); boot(); }
   });
 
-  $('#keys').innerHTML = [['--ink-3', 'at the gate'], ['--violet', 'pushback'], ['--green', 'taxiing'], ['--amber', 'holding short'], ['--red', 'stopped'], ['--cyan', 'runway']]
+  $('#keys').innerHTML = [['--ink-3', 'at the gate'], ['--violet', 'pushback'], ['--green', 'taxiing'], ['--amber', 'holding short'], ['--red', 'stopped'], ['--cyan', 'runway / airborne']]
+    .map(([t, l]) => `<span><i style="background:var(${t})"></i>${l}</span>`).join('');
+  $('#skeys').innerHTML = [['--ink-2', 'untracked · beacon + alt'], ['--green', 'tracked · TRACK'], ['--accent', 'handoff · CD'], ['--map', 'video map']]
     .map(([t, l]) => `<span><i style="background:var(${t})"></i>${l}</span>`).join('');
 }
 
-syncHint(); syncChrome(); setRunning(true);
+applyMode(); syncHint(); syncChrome(); setRunning(true);
 boot();
