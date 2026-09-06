@@ -9,10 +9,10 @@
  *   bun run catalog              # every ARTCC
  *   bun run catalog ZMP ZLA      # just these
  */
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { Schema } from 'effect'
 
-import { AirportFile, type CatalogIndex } from '../src/domain/catalog'
+import { AirportFile, type CatalogIndex, decodeCatalogIndex } from '../src/domain/catalog'
 import { API, type ArtccDocument, type CompactScenario, type FacilityIndex, type GeoJson, type VnasScenario, type VnasTrainingAirport, assembleAirport, compactMap, compactScenario, facilityIndex, parseLenientJSON, scenarioForAirport } from '../src/domain/vnas'
 
 const OUT = new URL('../catalog/', import.meta.url)
@@ -131,8 +131,17 @@ await pool(airports, CONCURRENCY, async (a) => {
   )
 })
 
-const artccs = Object.keys(index)
-  .sort()
-  .map((id) => ({ id, name: artccName[id] ?? id, airports: index[id]!.sort((a, b) => a.id.localeCompare(b.id)) }))
+/** A partial build keeps the other ARTCCs' entries from the index already on disk. */
+const previous: CatalogIndex | null =
+  wanted.length > 0
+    ? await readFile(new URL('index.json', OUT), 'utf8')
+        .then((text) => decodeCatalogIndex(JSON.parse(text)))
+        .catch(() => null)
+    : null
+const kept = (previous?.artccs ?? []).filter((a) => !artccIds.includes(a.id))
+const built = Object.keys(index).map((id) => ({ id, name: artccName[id] ?? id, airports: index[id]!.sort((a, b) => a.id.localeCompare(b.id)) }))
+const artccs = [...kept, ...built].sort((a, b) => a.id.localeCompare(b.id))
 await writeFile(new URL('index.json', OUT), JSON.stringify({ built: new Date().toISOString(), artccs }))
-console.log(`\nWrote catalog/index.json + ${artccs.reduce((n, a) => n + a.airports.length, 0)} airport files.`)
+console.log(
+  `\nWrote catalog/index.json (${artccs.length} ARTCCs${kept.length > 0 ? `, ${kept.length} kept from the previous index` : ''}) + ${built.reduce((n, a) => n + a.airports.length, 0)} airport files.`,
+)

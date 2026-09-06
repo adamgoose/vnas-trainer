@@ -63,6 +63,8 @@ Do not re-litigate the decisions below without asking.
 - No CORS on `/api/*`. CORS `*` on `/Files/*` (video maps). Hence the baked catalog; an optional user-run CORS proxy (`proxy-worker.js`, `?url=` prefix) enables live mode.
 - Endpoints used: `/api/artcc-summaries`, `/api/artccs/{ARTCC}` (facility tree, positions, STARS config, video map metadata), `/api/training/airport-summaries`, `/api/training/airports/{APT}`, `/api/training/airports/{APT}/map` (GeoJSON), `/api/training/scenario-summaries`, `/api/training/scenarios/{ULID}`, `/Files/VideoMaps/{ARTCC}/{id}.geojson`.
 - Some airport maps are not valid JSON: `//` comment lines, `010` headings, trailing commas. Repair before parsing (see `lib/vnas.mjs` `parseLenientJSON`).
+- Re-verified 2026-09-06 with curl: `/api/*` GET responses carry no `Access-Control-Allow-Origin`; `/Files/*` sends `*`. So browsers need the catalog or a proxy for `/api`, never for video maps. `scripts/dev-proxy.ts` (`bun run proxy`, port 8787, vNAS host only) is the local equivalent of `legacy/proxy-worker.js`; live mode through it lists every scenario for an airport (the catalog keeps only those with surface aircraft) and fetches each on demand.
+- `scripts/build-catalog.ts ZMP` (a partial build) merges into the existing `catalog/index.json`; the legacy builder overwrote it, which is how a 195-airport catalog ended up with a 12-airport index.
 - Training map spec: features `runway` (LineString, name `"12R - 30L"`, first end primary), `taxiway` (LineString), `parking` and `spot` (Point, `heading`). Vertices within **100 ft** merge into one node.
 - The `vnas-api` skill in this environment documents the rest.
 

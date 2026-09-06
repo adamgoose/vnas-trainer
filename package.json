@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "catalog": "bun run scripts/build-catalog.ts",
-    "validate-catalog": "bun run scripts/validate-catalog.ts"
+    "validate-catalog": "bun run scripts/validate-catalog.ts",
+    "proxy": "bun run scripts/dev-proxy.ts"
   },
   "dependencies": {
     "@effect/platform-browser": "4.0.0-rc.112",
