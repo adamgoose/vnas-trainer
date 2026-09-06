@@ -8,7 +8,12 @@ import { Command, Dom, Mount } from 'foldkit'
 
 import { storeVideoMap } from './mapCache'
 import { Message } from './message'
+import { parseTranslation } from '../domain/prompt'
+import { Microphone } from '../services/microphone'
+import { OpenRouter } from '../services/openRouter'
+import { Recognition } from '../services/recognition'
 import { Settings, SettingsStore } from '../services/settings'
+import { Speech } from '../services/speech'
 import { VideoMaps } from '../services/videoMaps'
 import { DataSource, VnasData } from '../services/vnasData'
 
@@ -151,4 +156,173 @@ export const ScopeSurface = Mount.defineStream('ScopeSurface', {
     )
     return Stream.merge(sizes, wheels)
   },
+})
+
+// AUDIO AND AI
+
+export const StartRecording = Command.define('StartRecording', {
+  messages: [Message.CompletedStartRecording, Message.FailedStartRecording],
+  execute: Effect.gen(function* () {
+    const mic = yield* Microphone
+    yield* mic.start
+    return Message.CompletedStartRecording()
+  }).pipe(Effect.catch((e) => Effect.succeed(Message.FailedStartRecording({ error: e.message })))),
+})
+
+export const StopRecording = Command.define('StopRecording', {
+  messages: [Message.CompletedStopRecording, Message.FailedStopRecording],
+  execute: Effect.gen(function* () {
+    const mic = yield* Microphone
+    const recording = yield* mic.stop
+    return Message.CompletedStopRecording({ wavBase64: recording?.wavBase64 ?? null, seconds: recording?.seconds ?? 0 })
+  }).pipe(Effect.catch((e) => Effect.succeed(Message.FailedStopRecording({ error: e.message })))),
+})
+
+export const TranslateText = Command.define('TranslateText', {
+  args: { key: Schema.String, model: Schema.String, system: Schema.String, user: Schema.String, said: Schema.String },
+  messages: [Message.CompletedTranslate, Message.FailedTranslate],
+  execute: ({ key, model, system, user, said }) =>
+    Effect.gen(function* () {
+      const openRouter = yield* OpenRouter
+      const reply = yield* openRouter.chat(
+        key,
+        model,
+        [
+          { role: 'system', content: system },
+          { role: 'user', content: `${user}\n\nCONTROLLER SAID: ${JSON.stringify(said)}` },
+        ],
+        400,
+      )
+      const translation = yield* Effect.try({ try: () => parseTranslation(reply), catch: (e) => new Error(String(e instanceof Error ? e.message : e)) })
+      return Message.CompletedTranslate({ translation, said })
+    }).pipe(Effect.catch((e) => Effect.succeed(Message.FailedTranslate({ error: e.message, audio: false })))),
+})
+
+export const TranslateAudio = Command.define('TranslateAudio', {
+  args: { key: Schema.String, model: Schema.String, system: Schema.String, user: Schema.String, wavBase64: Schema.String },
+  messages: [Message.CompletedTranslate, Message.FailedTranslate],
+  execute: ({ key, model, system, user, wavBase64 }) =>
+    Effect.gen(function* () {
+      const openRouter = yield* OpenRouter
+      const reply = yield* openRouter.chat(
+        key,
+        model,
+        [
+          { role: 'system', content: system },
+          { role: 'user', content: [{ type: 'text', text: user }, { type: 'input_audio', input_audio: { data: wavBase64, format: 'wav' } }] },
+        ],
+        500,
+      )
+      const translation = yield* Effect.try({ try: () => parseTranslation(reply), catch: (e) => new Error(String(e instanceof Error ? e.message : e)) })
+      return Message.CompletedTranslate({ translation, said: translation.transcript ?? '(spoken)' })
+    }).pipe(Effect.catch((e) => Effect.succeed(Message.FailedTranslate({ error: e.message, audio: true })))),
+})
+
+export const UtteranceFields = {
+  callsign: Schema.String,
+  text: Schema.String,
+  engine: Schema.Literals(['browser', 'openrouter']),
+  key: Schema.String,
+  model: Schema.String,
+  providerVoice: Schema.String,
+  browserVoice: Schema.String,
+  radio: Schema.Boolean,
+}
+
+export const Speak = Command.define('Speak', {
+  args: UtteranceFields,
+  messages: [Message.CompletedSpeak],
+  execute: (utterance) =>
+    Effect.gen(function* () {
+      const speech = yield* Speech
+      yield* speech.speak(utterance)
+      return Message.CompletedSpeak()
+    }),
+})
+
+export const StopSpeaking = Command.define('StopSpeaking', {
+  messages: [Message.CompletedStopSpeaking],
+  execute: Effect.gen(function* () {
+    const speech = yield* Speech
+    yield* speech.stop
+    return Message.CompletedStopSpeaking()
+  }),
+})
+
+export const StartRecognition = Command.define('StartRecognition', {
+  messages: [Message.CompletedStartRecognition, Message.FailedStartRecognition],
+  execute: Effect.gen(function* () {
+    const recognition = yield* Recognition
+    yield* recognition.start
+    return Message.CompletedStartRecognition()
+  }).pipe(Effect.catch((e) => Effect.succeed(Message.FailedStartRecognition({ error: e.message })))),
+})
+
+export const StopRecognition = Command.define('StopRecognition', {
+  messages: [Message.CompletedStopRecognition],
+  execute: Effect.gen(function* () {
+    const recognition = yield* Recognition
+    yield* recognition.stop
+    return Message.CompletedStopRecognition()
+  }),
+})
+
+export const ProbeRecognition = Command.define('ProbeRecognition', {
+  messages: [Message.CompletedProbeRecognition],
+  execute: Effect.gen(function* () {
+    const recognition = yield* Recognition
+    return Message.CompletedProbeRecognition({ available: recognition.available })
+  }),
+})
+
+export const LoadBrowserVoices = Command.define('LoadBrowserVoices', {
+  messages: [Message.CompletedLoadBrowserVoices],
+  execute: Effect.gen(function* () {
+    const speech = yield* Speech
+    return Message.CompletedLoadBrowserVoices({ voices: yield* speech.browserVoices })
+  }),
+})
+
+export const LoadModels = Command.define('LoadModels', {
+  args: { key: Schema.String },
+  messages: [Message.CompletedLoadModels, Message.FailedLoadModels],
+  execute: ({ key }) =>
+    Effect.gen(function* () {
+      const openRouter = yield* OpenRouter
+      const speech = yield* Speech
+      const models = yield* openRouter.models(key)
+      yield* speech.rememberSpeechModels(models.speech)
+      return Message.CompletedLoadModels({ models })
+    }).pipe(Effect.catch((e) => Effect.succeed(Message.FailedLoadModels({ error: e.message })))),
+})
+
+export const TestKey = Command.define('TestKey', {
+  args: { key: Schema.String, model: Schema.String },
+  messages: [Message.CompletedTestKey],
+  execute: ({ key, model }) =>
+    Effect.gen(function* () {
+      const openRouter = yield* OpenRouter
+      const reply = yield* openRouter.chat(key, model, [{ role: 'user', content: 'Reply with exactly the JSON {"ok":true} and nothing else.' }], 30)
+      const ok = /"ok"\s*:\s*true/.test(reply)
+      return Message.CompletedTestKey({ ok, detail: ok ? `works — ${model} answered` : `answered, but not as JSON: ${reply.slice(0, 60)}` })
+    }).pipe(Effect.catch((e) => Effect.succeed(Message.CompletedTestKey({ ok: false, detail: `failed: ${e.message}` })))),
+})
+
+export const TEST_VOICE_SAMPLE = 'Runway three zero left, taxi via quebec, charlie, hold short of runway one two right, Delta ten forty-seven'
+
+export const TestVoice = Command.define('TestVoice', {
+  args: UtteranceFields,
+  messages: [Message.CompletedTestVoice],
+  execute: (utterance) =>
+    Effect.gen(function* () {
+      const speech = yield* Speech
+      const seconds = yield* speech.test(utterance)
+      return Message.CompletedTestVoice({
+        ok: true,
+        detail:
+          utterance.engine === 'openrouter' && utterance.key !== ''
+            ? `played ${utterance.model}${utterance.providerVoice !== '' ? ' · ' + utterance.providerVoice : ''} (${seconds.toFixed(1)}s)`
+            : 'playing browser voice',
+      })
+    }).pipe(Effect.catch((e) => Effect.succeed(Message.CompletedTestVoice({ ok: false, detail: `speech failed: ${e.message}` })))),
 })

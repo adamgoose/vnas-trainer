@@ -91,6 +91,22 @@ export type Dialog = typeof Dialog.Type
 export const DeepLink = Schema.Struct({ airport: Schema.NullOr(Schema.String), scenario: Schema.NullOr(Schema.String) })
 export type DeepLink = typeof DeepLink.Type
 
+export const PttState = Schema.Literals(['idle', 'tx', 'busy', 'listen'])
+export type PttState = typeof PttState.Type
+
+export const ModelCatalogue = Schema.Struct({
+  ids: Schema.Array(Schema.String),
+  audioIds: Schema.Array(Schema.String),
+  speech: Schema.Record(Schema.String, Schema.NullOr(Schema.Array(Schema.String))),
+})
+export type ModelCatalogue = typeof ModelCatalogue.Type
+
+export const BrowserVoice = Schema.Struct({ name: Schema.String, lang: Schema.String })
+export type BrowserVoice = typeof BrowserVoice.Type
+
+export const SettingsStatus = Schema.Struct({ text: Schema.String, kind: Schema.Literals(['', 'ok', 'bad']) })
+export type SettingsStatus = typeof SettingsStatus.Type
+
 export const Model = Schema.Struct({
   settings: Settings,
   deepLink: DeepLink,
@@ -116,7 +132,14 @@ export const Model = Schema.Struct({
   commandLog: Schema.Array(CommandRecord),
   dialog: Dialog,
   draft: Settings,
-  settingsStatus: Schema.String,
+  settingsStatus: SettingsStatus,
+  /** OpenRouter model lists once loaded in Settings */
+  models: Schema.NullOr(ModelCatalogue),
+  browserVoices: Schema.Array(BrowserVoice),
+  ptt: PttState,
+  /** the transient "translating…" line shown at the top of the log */
+  pendingAi: Schema.NullOr(Schema.String),
+  recognitionAvailable: Schema.Boolean,
 })
 export type Model = typeof Model.Type
 
@@ -142,7 +165,12 @@ export const initialModel: Model = {
   commandLog: [],
   dialog: 'none',
   draft: defaultSettings,
-  settingsStatus: '',
+  settingsStatus: { text: '', kind: '' },
+  models: null,
+  browserVoices: [],
+  ptt: 'idle',
+  pendingAi: null,
+  recognitionAvailable: false,
 }
 
 export const worldOf = (model: Model): World | null => (model.airport._tag === 'Ready' ? model.airport.world : null)

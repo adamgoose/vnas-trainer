@@ -1,23 +1,50 @@
 /**
  * init and update. Data loading is a chain of Commands (settings, deep link,
  * index, airport, scenario, pavement); the simulation advances on Ticked; every
- * SimEvent becomes a log line here.
+ * SimEvent becomes a log line here and, for pilot lines, a Speak command.
+ * Plain-English transmissions go to OpenRouter and come back as commands.
  */
 import { Option } from 'effect'
 import { Command, Update } from 'foldkit'
 import { evo } from 'foldkit/struct'
 
-import { BlurCommand, FocusCommand, LoadAirport, LoadIndex, LoadPavement, LoadScenario, LoadSettings, ReadDeepLink, ReplaceDeepLink, SaveSettings } from './commands'
+import {
+  BlurCommand,
+  FocusCommand,
+  LoadAirport,
+  LoadBrowserVoices,
+  LoadIndex,
+  LoadModels,
+  LoadPavement,
+  LoadScenario,
+  LoadSettings,
+  ProbeRecognition,
+  ReadDeepLink,
+  ReplaceDeepLink,
+  SaveSettings,
+  Speak,
+  StartRecognition,
+  StartRecording,
+  StopRecognition,
+  StopRecording,
+  StopSpeaking,
+  TEST_VOICE_SAMPLE,
+  TestKey,
+  TestVoice,
+  TranslateAudio,
+  TranslateText,
+} from './commands'
 import { Message } from './message'
 import { AirportLoad, type AirportInfo, IndexLoad, type LogLine, type Model, Pavement, infoOf, initialModel, worldOf } from './model'
 import type { Services } from './subscriptions'
 import { TICK_MS } from './subscriptions'
 import type { AirportFile, CatalogIndex } from '../domain/catalog'
 import { type AtcCommand, executeCommand, parseCommandLine } from '../domain/commands'
-import { written } from '../domain/phrase'
+import { type Phrase, spoken, spokenCallsign, spokenFreeText, written } from '../domain/phrase'
 import { MAX_STEPS_PER_TICK, stepWorldTimes } from '../domain/physics'
+import { type Translation, buildPrompt } from '../domain/prompt'
 import { loadScenario } from '../domain/scenario'
-import { SimEvent, type World, makeWorld } from '../domain/world'
+import { SimEvent, type World, makeWorld, matchCallsign } from '../domain/world'
 import { type PositionMode, positionFor } from '../positions'
 import { StarsOut, starsInit, starsUpdate } from '../positions/local/stars'
 import { type Settings, defaultSettings } from '../services/settings'
@@ -25,6 +52,7 @@ import { sourceForProxy } from '../services/vnasData'
 import { BUTTON_IN, BUTTON_OUT, WHEEL_IN, WHEEL_OUT, fit, hitTest, pan, resize, zoomAt, zoomCentre } from '../view/viewport'
 
 export type Return = Update.Return<Model, Message, Services>
+type Commands = NonNullable<Return['commands']>
 
 export const WORLD_SEED = 20260906
 
@@ -33,6 +61,12 @@ export const positionLabel = (mode: PositionMode): string => positionFor(mode).l
 export const positionTips = (mode: PositionMode, world: World): string => positionFor(mode).tips(world)
 
 export const aiEnabled = (settings: Settings): boolean => settings.key !== '' && settings.model !== ''
+
+/** OpenRouter keys start with `sk-or-`; anything else in the key field is almost certainly a paste mistake. */
+export const looksLikeOpenRouterKey = (key: string): boolean => /^sk-or-/.test(key)
+
+const keyWarning = (key: string): string | null =>
+  key !== '' && !looksLikeOpenRouterKey(key) ? `that doesn't look like an OpenRouter key (they start with sk-or-); check the key field` : null
 
 // INIT
 
@@ -51,30 +85,57 @@ const withWorld = (model: Model, world: World): Model =>
 const pushLog = (model: Model, kind: LogLine['kind'], who: string | null, text: string): Model =>
   evo(model, { log: (log) => [{ kind, time: worldOf(model)?.simTime ?? 0, who, text }, ...log].slice(0, 140) })
 
-export const applyEvents = (model: Model, events: ReadonlyArray<SimEvent>): Model =>
-  events.reduce(
-    (m, event) =>
-      SimEvent.match(event, {
-        PilotSaid: ({ callsign, phrase }) => pushLog(m, 'pilot', callsign, written(phrase)),
-        SystemNote: ({ text }) => pushLog(m, 'sys', null, text),
-        Removed: ({ callsign, text }) => pushLog(evo(m, { selected: (s) => (s === callsign ? null : s) }), 'sys', null, text),
-        SetRunning: ({ running }) => evo(m, { running: () => running, lastTickAt: () => null }),
-        SetRate: ({ rate }) => evo(m, { rate: () => rate }),
+/** A Speak command for the current voice settings; `raw` text already ends the way a pilot would. */
+const speakCommand = (settings: Settings, callsign: string, text: string) =>
+  Speak({
+    callsign,
+    text,
+    engine: settings.ttsEngine,
+    key: settings.key,
+    model: settings.ttsModel,
+    providerVoice: settings.ttsVoice,
+    browserVoice: settings.voice,
+    radio: settings.radio,
+  })
+
+/** What the voice says for a sim pilot line: the phrase, then the callsign unless the phrase already carries it. */
+export const utteranceFor = (callsign: string, phrase: Phrase): string =>
+  phrase.some((t) => t._tag === 'Callsign') ? spoken(phrase) : `${spoken(phrase)}, ${spokenCallsign(callsign)}`
+
+export type Applied = Readonly<{ model: Model; commands: Commands }>
+
+export const applyEvents = (model: Model, events: ReadonlyArray<SimEvent>, options: Readonly<{ quiet?: boolean }> = {}): Applied =>
+  events.reduce<Applied>(
+    ({ model: m, commands }, event) =>
+      SimEvent.match<Applied>(event, {
+        PilotSaid: ({ callsign, phrase }) =>
+          options.quiet === true
+            ? { model: m, commands }
+            : {
+                model: pushLog(m, 'pilot', callsign, written(phrase)),
+                commands: m.settings.tts ? [...commands, speakCommand(m.settings, callsign, utteranceFor(callsign, phrase))] : commands,
+              },
+        SystemNote: ({ text }) => ({ model: pushLog(m, 'sys', null, text), commands }),
+        Removed: ({ callsign, text }) => ({ model: pushLog(evo(m, { selected: (s) => (s === callsign ? null : s) }), 'sys', null, text), commands }),
+        SetRunning: ({ running }) => ({ model: evo(m, { running: () => running, lastTickAt: () => null }), commands }),
+        SetRate: ({ rate }) => ({ model: evo(m, { rate: () => rate }), commands }),
       }),
-    model,
+    { model, commands: [] },
   )
 
-const runCommand = (model: Model, callsign: string | null, command: AtcCommand): Model => {
+type Ran = Readonly<{ model: Model; commands: Commands; ok: boolean }>
+
+const runCommand = (model: Model, callsign: string | null, command: AtcCommand, quiet = false): Ran => {
   const world = worldOf(model)
   if (world === null) {
-    return model
+    return { model, commands: [], ok: false }
   }
   const result = executeCommand(world, callsign, command)
   if ('error' in result) {
-    return pushLog(model, 'err', callsign, `unable — ${result.error}`)
+    return { model: pushLog(model, 'err', callsign, `unable — ${result.error}`), commands: [], ok: false }
   }
   const recorded = evo(withWorld(model, result.world), { commandLog: (log) => [...log, { tick: world.tick, callsign, command }] })
-  return applyEvents(recorded, result.events)
+  return { ...applyEvents(recorded, result.events, { quiet }), ok: true }
 }
 
 const airportInfo = (airport: AirportFile): AirportInfo => ({
@@ -124,8 +185,8 @@ const applyScenario = (model: Model, scenarioId: string | null, scenario: Parame
       ? `${positionLabel(model.settings.mode)} position. Select an aircraft, then try: ${positionTips(model.settings.mode, loaded.world)}`
       : 'This training map has runways only — no taxiways, so PUSH and TAXI are unavailable here. Try: LUAW · CTO · Arrivals.'
   return {
-    model: pushLog(announced, 'sys', null, tips),
-    commands: [ReplaceDeepLink({ airport: info.id, scenario: scenarioId })],
+    model: pushLog(announced.model, 'sys', null, tips),
+    commands: [...announced.commands, ReplaceDeepLink({ airport: info.id, scenario: scenarioId })],
   }
 }
 
@@ -159,13 +220,78 @@ const foldStars = (artcc: string) =>
       }),
   })
 
+// AI
+
+const promptFor = (model: Model, world: World, audio: boolean) =>
+  buildPrompt({ world, airportName: infoOf(model)?.name ?? world.airport.name, positionLabel: positionLabel(model.settings.mode), selected: model.selected, audio })
+
+const pttIdle = (model: Model): Model => evo(model, { ptt: () => 'idle', pendingAi: () => null })
+
+/**
+ * Run a translated transmission: select, execute each command with the pilot's
+ * per-command lines suppressed, then log and speak the model's single readback.
+ */
+export const applyTranslation = (model: Model, translation: Translation, said: string): Return => {
+  const world = worldOf(model)
+  if (world === null) {
+    return { model: pttIdle(model) }
+  }
+  const named = translation.callsign !== null ? matchCallsign(world, translation.callsign) : null
+  const callsign = named?.callsign ?? (translation.callsign === null ? model.selected : null)
+  const logged = pushLog(pttIdle(model), 'atc', null, said)
+  if (callsign === null) {
+    return {
+      model: pushLog(logged, 'err', null, `no aircraft matched "${translation.callsign ?? '—'}"${translation.readback !== null ? ' — ' + translation.readback : ''}`),
+    }
+  }
+  const selected = evo(logged, { selected: () => callsign })
+  const ran = translation.commands.reduce<Ran>(
+    (state, line) => {
+      const w = worldOf(state.model)
+      if (w === null) {
+        return state
+      }
+      const parsed = parseCommandLine(w, callsign, `${callsign} ${line}`)
+      if (parsed._tag === 'Parsed') {
+        const out = runCommand(state.model, parsed.callsign, parsed.command, true)
+        return { model: out.model, commands: [...state.commands, ...out.commands], ok: state.ok && out.ok }
+      }
+      const error = parsed._tag === 'Invalid' ? `unable — ${parsed.error}` : `could not run "${line}"`
+      return { model: pushLog(state.model, 'err', callsign, error), commands: state.commands, ok: false }
+    },
+    { model: selected, commands: [], ok: true },
+  )
+  if (translation.readback === null || !ran.ok) {
+    return { model: ran.model, commands: ran.commands }
+  }
+  const spokenText = translation.spoken ?? spokenFreeText(translation.readback)
+  return {
+    model: pushLog(ran.model, 'pilot', callsign, translation.readback),
+    commands: ran.model.settings.tts ? [...ran.commands, speakCommand(ran.model.settings, callsign, spokenText)] : ran.commands,
+  }
+}
+
+const status = (model: Model, text: string, kind: Model['settingsStatus']['kind']): Model => evo(model, { settingsStatus: () => ({ text, kind }) })
+
+const draftUtterance = (model: Model, callsign: string, text: string) =>
+  TestVoice({
+    callsign,
+    text,
+    engine: model.draft.ttsEngine,
+    key: model.draft.key.trim(),
+    model: model.draft.ttsModel.trim() || defaultSettings.ttsModel,
+    providerVoice: model.draft.ttsVoice,
+    browserVoice: model.draft.voice,
+    radio: model.draft.radio,
+  })
+
 // UPDATE
 
 export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
     CompletedLoadSettings: ({ settings }) => ({
       model: evo(model, { settings: () => settings, draft: () => settings }),
-      commands: [ReadDeepLink()],
+      commands: [ReadDeepLink(), ProbeRecognition()],
     }),
 
     CompletedReadDeepLink: ({ airport, scenario }) => ({
@@ -267,7 +393,7 @@ export const update = (model: Model, message: Message): Return =>
         return { model: clocked }
       }
       const stepped = stepWorldTimes(world, n * model.rate)
-      return { model: applyEvents(withWorld(clocked, stepped.world), stepped.events) }
+      return applyEvents(withWorld(clocked, stepped.world), stepped.events)
     },
 
     ChangedPosition: ({ mode }) => {
@@ -383,20 +509,21 @@ export const update = (model: Model, message: Message): Return =>
         return { model: entered }
       }
       if (parsed._tag === 'Unknown') {
+        if (!aiEnabled(model.settings)) {
+          return { model: pushLog(entered, 'err', null, 'unrecognised command — see Commands, or add an OpenRouter key in Settings for plain English') }
+        }
+        const prompt = promptFor(model, world, false)
         return {
-          model: pushLog(
-            entered,
-            'err',
-            null,
-            aiEnabled(model.settings) ? 'plain-English translation arrives in Phase 5' : 'not a command — set an OpenRouter key in Settings for plain English',
-          ),
+          model: evo(entered, { pendingAi: () => 'translating…' }),
+          commands: [TranslateText({ key: model.settings.key, model: model.settings.model, system: prompt.system, user: prompt.user, said: text })],
         }
       }
       const logged = pushLog(evo(entered, { selected: (s) => parsed.callsign ?? s }), 'atc', null, text)
       if (parsed._tag === 'Invalid') {
         return { model: pushLog(logged, 'err', parsed.callsign, `unable — ${parsed.error}`) }
       }
-      return { model: runCommand(logged, parsed.callsign, parsed.command) }
+      const ran = runCommand(logged, parsed.callsign, parsed.command)
+      return { model: ran.model, commands: ran.commands }
     },
 
     PressedHistoryUp: () => {
@@ -415,33 +542,29 @@ export const update = (model: Model, message: Message): Return =>
     PressedSlash: () => ({ model, commands: [FocusCommand()] }),
     PressedEscape: () => ({ model, commands: [BlurCommand()] }),
 
-    IssuedCommand: ({ callsign, command }) => ({ model: runCommand(model, callsign, command) }),
+    IssuedCommand: ({ callsign, command }) => {
+      const ran = runCommand(model, callsign, command)
+      return { model: ran.model, commands: ran.commands }
+    },
 
     ClickedSpeaker: () => {
       const settings = { ...model.settings, tts: !model.settings.tts }
       return {
         model: pushLog(evo(model, { settings: () => settings }), 'sys', null, settings.tts ? 'pilot voices on' : 'pilot voices off'),
-        commands: [SaveSettings({ settings })],
+        commands: [SaveSettings({ settings }), ...(settings.tts ? [] : [StopSpeaking()])],
       }
     },
 
     ClickedHelp: () => ({ model: evo(model, { dialog: () => 'help' }) }),
 
-    ClickedSettings: () => ({ model: evo(model, { dialog: () => 'settings', draft: () => model.settings, settingsStatus: () => '' }) }),
+    ClickedSettings: () => ({
+      model: status(evo(model, { dialog: () => 'settings', draft: () => model.settings }), '', ''),
+      commands: [LoadBrowserVoices(), ...(model.settings.key !== '' && model.models === null ? [LoadModels({ key: model.settings.key })] : [])],
+    }),
 
     ClosedDialog: () => ({ model: evo(model, { dialog: () => 'none' }) }),
 
     UpdatedDraft: ({ draft }) => ({ model: evo(model, { draft: () => draft }) }),
-
-    ClickedPane: ({ view }) => {
-      const settings = { ...model.settings, view }
-      return { model: evo(model, { settings: () => settings, draft: () => settings }), commands: [SaveSettings({ settings })] }
-    },
-
-    GotStars: ({ message }) => {
-      const info = infoOf(model)
-      return foldStars(info?.artcc ?? '')(model, { message, world: worldOf(model) })
-    },
 
     ClickedSaveSettings: () => {
       const d = model.draft
@@ -454,8 +577,9 @@ export const update = (model: Model, message: Message): Return =>
         proxy: d.proxy.trim(),
       }
       const saved = evo(model, { settings: () => settings, draft: () => settings, dialog: () => 'none' })
+      const warning = keyWarning(settings.key)
       const logged = pushLog(
-        saved,
+        warning === null ? saved : pushLog(saved, 'err', null, warning),
         'sys',
         null,
         aiEnabled(settings) ? `plain-English commands on via OpenRouter (${settings.model})` : 'plain-English commands off — command syntax only',
@@ -466,4 +590,137 @@ export const update = (model: Model, message: Message): Return =>
         commands: [SaveSettings({ settings }), ...(proxyChanged ? [LoadIndex({ source: sourceForProxy(settings.proxy) })] : [])],
       }
     },
+
+    ClickedPane: ({ view }) => {
+      const settings = { ...model.settings, view }
+      return { model: evo(model, { settings: () => settings, draft: () => settings }), commands: [SaveSettings({ settings })] }
+    },
+
+    GotStars: ({ message }) => {
+      const info = infoOf(model)
+      return foldStars(info?.artcc ?? '')(model, { message, world: worldOf(model) })
+    },
+
+    // PUSH-TO-TALK
+
+    PressedPtt: () => {
+      if (worldOf(model) === null || model.ptt !== 'idle') {
+        return { model }
+      }
+      if (aiEnabled(model.settings)) {
+        return { model: evo(model, { ptt: () => 'tx' }), commands: [StartRecording()] }
+      }
+      if (!model.recognitionAvailable) {
+        return { model: pushLog(model, 'err', null, 'no speech recognition in this browser — add an OpenRouter key in Settings for audio') }
+      }
+      return { model: evo(model, { ptt: () => 'listen' }), commands: [StartRecognition()] }
+    },
+
+    ReleasedPtt: () => {
+      if (model.ptt === 'tx') {
+        return { model, commands: [StopRecording()] }
+      }
+      if (model.ptt === 'listen') {
+        return { model: evo(model, { ptt: () => 'idle' }), commands: [StopRecognition()] }
+      }
+      return { model }
+    },
+
+    CompletedStartRecording: () => ({ model }),
+
+    FailedStartRecording: ({ error }) => ({ model: pushLog(pttIdle(model), 'err', null, `microphone unavailable (${error})`) }),
+
+    CompletedStopRecording: ({ wavBase64, seconds }) => {
+      const world = worldOf(model)
+      if (wavBase64 === null || world === null) {
+        return { model: pushLog(pttIdle(model), 'sys', null, 'transmission too short') }
+      }
+      const prompt = promptFor(model, world, true)
+      return {
+        model: evo(model, { ptt: () => 'busy', pendingAi: () => `transcribing ${seconds.toFixed(1)}s…` }),
+        commands: [
+          TranslateAudio({
+            key: model.settings.key,
+            model: model.settings.audioModel || model.settings.model,
+            system: prompt.system,
+            user: prompt.user,
+            wavBase64,
+          }),
+        ],
+      }
+    },
+
+    FailedStopRecording: ({ error }) => ({ model: pushLog(pttIdle(model), 'err', null, `could not encode audio (${error})`) }),
+
+    CompletedTranslate: ({ translation, said }) => applyTranslation(model, translation, said),
+
+    FailedTranslate: ({ error, audio }) => ({
+      model: pushLog(pttIdle(model), 'err', null, audio ? `could not understand that transmission (${error})` : `could not translate that (${error}) — try the command syntax`),
+    }),
+
+    CompletedStartRecognition: () => ({ model }),
+
+    FailedStartRecognition: ({ error }) => ({ model: pushLog(pttIdle(model), 'err', null, `speech recognition unavailable (${error})`) }),
+
+    CompletedStopRecognition: () => ({ model }),
+
+    HeardRecognition: ({ text }) => update(evo(model, { commandText: () => text }), Message.SubmittedCommand()),
+
+    FailedRecognition: ({ error }) => ({ model: pushLog(pttIdle(model), 'err', null, `speech recognition: ${error}`) }),
+
+    EndedRecognition: () => ({ model: model.ptt === 'listen' ? evo(model, { ptt: () => 'idle' }) : model }),
+
+    CompletedSpeak: () => ({ model }),
+    CompletedStopSpeaking: () => ({ model }),
+
+    ReportedSpeechFallback: ({ error }) => ({ model: pushLog(model, 'err', null, `OpenRouter voice failed (${error}) — falling back to the browser voice`) }),
+
+    CompletedLoadBrowserVoices: ({ voices }) => ({ model: evo(model, { browserVoices: () => voices }) }),
+
+    CompletedProbeRecognition: ({ available }) => ({ model: evo(model, { recognitionAvailable: () => available }) }),
+
+    // SETTINGS
+
+    ClickedLoadModels: () => {
+      const key = model.draft.key.trim()
+      if (key === '') {
+        return { model: status(model, 'enter a key first', 'bad') }
+      }
+      const warning = keyWarning(key)
+      return { model: status(model, warning ?? 'loading model list…', warning === null ? '' : 'bad'), commands: [LoadModels({ key })] }
+    },
+
+    CompletedLoadModels: ({ models }) => ({
+      model: status(evo(model, { models: () => models }), `${models.ids.length} models loaded, ${models.audioIds.length} with audio input, ${Object.keys(models.speech).length} speech models`, 'ok'),
+    }),
+
+    FailedLoadModels: ({ error }) => ({ model: status(model, `could not load models: ${error}`, 'bad') }),
+
+    ClickedTestKey: () => {
+      const key = model.draft.key.trim()
+      const chat = model.draft.model.trim()
+      if (key === '' || chat === '') {
+        return { model: status(model, 'enter a key and a model first', 'bad') }
+      }
+      const warning = keyWarning(key)
+      if (warning !== null) {
+        return { model: status(model, warning, 'bad') }
+      }
+      return { model: status(model, 'testing…', ''), commands: [TestKey({ key, model: chat })] }
+    },
+
+    CompletedTestKey: ({ ok, detail }) => ({ model: status(model, detail, ok ? 'ok' : 'bad') }),
+
+    ClickedTestVoice: () => {
+      if (model.draft.ttsEngine === 'openrouter' && model.draft.key.trim() === '') {
+        return { model: status(model, 'OpenRouter voices need an API key', 'bad') }
+      }
+      const warning = model.draft.ttsEngine === 'openrouter' ? keyWarning(model.draft.key.trim()) : null
+      if (warning !== null) {
+        return { model: status(model, warning, 'bad') }
+      }
+      return { model: status(model, model.draft.ttsEngine === 'openrouter' ? 'fetching speech…' : '', ''), commands: [draftUtterance(model, 'DAL1047', TEST_VOICE_SAMPLE)] }
+    },
+
+    CompletedTestVoice: ({ detail, ok }) => ({ model: status(model, detail, ok ? 'ok' : 'bad') }),
   })

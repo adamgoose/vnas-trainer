@@ -147,6 +147,11 @@ aside { background: var(--panel); border-left: 1px solid var(--rule); display: f
 .field small { grid-column: 2; color: var(--ink-3); font-size: 11px; line-height: 1.5; }
 .dlg-f { display: flex; gap: 8px; justify-content: flex-end; align-items: center; padding: 12px 20px; border-top: 1px solid var(--rule); }
 .dlg-f .status { margin-right: auto; font-family: var(--f-m); font-size: 11px; color: var(--ink-3); }
+.dlg-f .status.ok { color: var(--green); }
+.dlg-f .status.bad { color: var(--red); }
+.cmdbar .ptt.tx { background: var(--red); border-color: var(--red); color: #fff; }
+.cmdbar .ptt.busy { background: var(--violet); border-color: var(--violet); color: #141008; }
+.cmdbar .ptt.listen { border-color: var(--accent); color: var(--accent); }
 
 @media (max-width: 880px) {
   main { grid-template-columns: 1fr; grid-template-rows: 1fr 210px; }

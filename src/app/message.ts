@@ -3,6 +3,8 @@ import { defineMessageUnion } from 'foldkit/message'
 
 import { AirportFile, CatalogIndex, Scenario } from '../domain/catalog'
 import { AtcCommand } from '../domain/commands'
+import { Translation } from '../domain/prompt'
+import { BrowserVoice, ModelCatalogue } from './model'
 import { StarsMessage } from '../positions/local/stars'
 import { Settings } from '../services/settings'
 
@@ -54,5 +56,31 @@ export const Message = defineMessageUnion({
   ClickedSaveSettings: {},
   ClickedPane: { view: Schema.Literals(['ground', 'both', 'stars']) },
   GotStars: { message: StarsMessage },
+  PressedPtt: {},
+  ReleasedPtt: {},
+  CompletedStartRecording: {},
+  FailedStartRecording: { error: Schema.String },
+  CompletedStopRecording: { wavBase64: Schema.NullOr(Schema.String), seconds: Schema.Number },
+  FailedStopRecording: { error: Schema.String },
+  CompletedTranslate: { translation: Translation, said: Schema.String },
+  FailedTranslate: { error: Schema.String, audio: Schema.Boolean },
+  CompletedStartRecognition: {},
+  FailedStartRecognition: { error: Schema.String },
+  CompletedStopRecognition: {},
+  HeardRecognition: { text: Schema.String },
+  FailedRecognition: { error: Schema.String },
+  EndedRecognition: {},
+  CompletedSpeak: {},
+  CompletedStopSpeaking: {},
+  ReportedSpeechFallback: { error: Schema.String },
+  CompletedLoadBrowserVoices: { voices: Schema.Array(BrowserVoice) },
+  CompletedProbeRecognition: { available: Schema.Boolean },
+  ClickedLoadModels: {},
+  CompletedLoadModels: { models: ModelCatalogue },
+  FailedLoadModels: { error: Schema.String },
+  ClickedTestKey: {},
+  CompletedTestKey: { ok: Schema.Boolean, detail: Schema.String },
+  ClickedTestVoice: {},
+  CompletedTestVoice: { detail: Schema.String, ok: Schema.Boolean },
 })
 export type Message = typeof Message.Type

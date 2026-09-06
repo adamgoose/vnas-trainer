@@ -6,6 +6,7 @@ import type { Html, HtmlBuilder } from 'foldkit/html'
 
 import { Message } from '../app/message'
 import type { Model } from '../app/model'
+import { professionalVoices } from '../domain/voices'
 import type { Settings } from '../services/settings'
 
 const shell = (title: string, body: ReadonlyArray<Html>, footer: ReadonlyArray<Html>, h: HtmlBuilder<Message>): Html =>
@@ -101,15 +102,47 @@ const field = (h: HtmlBuilder<Message>, id: string, label: string, control: Html
   ...(note === null ? [] : [h.small([], [note])]),
 ]
 
-const textInput = (h: HtmlBuilder<Message>, model: Model, id: string, key: keyof Settings, placeholder: string, type = 'text'): Html =>
+const textInput = (h: HtmlBuilder<Message>, model: Model, id: string, key: keyof Settings, placeholder: string, type = 'text', list: string | null = null): Html =>
   h.input([
     h.Id(id),
     h.Type(type),
     h.Autocomplete('off'),
     h.Placeholder(placeholder),
     h.Value(String(model.draft[key])),
+    ...(list === null ? [] : [h.List(list)]),
     h.OnInput((value) => Message.UpdatedDraft({ draft: { ...model.draft, [key]: value } })),
   ])
+
+const datalist = (h: HtmlBuilder<Message>, id: string, ids: ReadonlyArray<string>): Html =>
+  h.datalist([h.Id(id)], ids.map((value) => h.option([h.Value(value)], [])))
+
+const voiceSelect = (h: HtmlBuilder<Message>, model: Model): Html => {
+  const draft = model.draft
+  if (draft.ttsEngine === 'browser') {
+    return h.select(
+      [h.Id('s-voice'), h.OnChange((value) => Message.UpdatedDraft({ draft: { ...draft, voice: value } }))],
+      [
+        h.option([h.Value(''), h.Selected(draft.voice === '')], ['auto — varies per aircraft']),
+        ...model.browserVoices.map((v) => h.option([h.Value(v.name), h.Selected(draft.voice === v.name)], [`${v.name} (${v.lang})`])),
+      ],
+    )
+  }
+  const voices = model.models?.speech[draft.ttsModel.trim()] ?? null
+  const shown = voices === null ? [] : professionalVoices(voices)
+  const hidden = voices === null ? 0 : voices.length - shown.length
+  return h.select(
+    [h.Id('s-voice'), h.OnChange((value) => Message.UpdatedDraft({ draft: { ...draft, ttsVoice: value } }))],
+    model.models === null
+      ? [h.option([h.Value('')], ['load the model list for voices'])]
+      : voices === null || voices.length === 0
+        ? [h.option([h.Value('')], ['provider default (this model lists no voices)'])]
+        : [
+            h.option([h.Value(''), h.Selected(draft.ttsVoice === '')], ['auto — varies per aircraft']),
+            ...shown.map((v) => h.option([h.Value(v), h.Selected(draft.ttsVoice === v)], [v])),
+            ...(hidden > 0 ? [h.option([h.Value(''), h.Disabled(true)], [`— ${hidden} stylised voices hidden —`])] : []),
+          ],
+  )
+}
 
 const checkbox = (h: HtmlBuilder<Message>, model: Model, id: string, key: 'tts' | 'radio', note: string): Html =>
   h.div(
@@ -138,15 +171,20 @@ export const settingsView = (model: Model, h: HtmlBuilder<Message>): Html =>
       ]),
       h.div([h.Class('field')], [
         ...field(h, 's-key', 'OpenRouter API key', textInput(h, model, 's-key', 'key', 'sk-or-v1-…', 'password')),
-        ...field(h, 's-model', 'Model', h.div([h.Class('row')], [textInput(h, model, 's-model', 'model', 'anthropic/claude-haiku-4.5'), h.button([h.Class('tbtn'), h.Type('button'), h.Disabled(true), h.Title('Model lists arrive with the AI phase')], ['Load list'])]),
-          'Any OpenRouter model id. Fast, cheap models do this job well — the prompt is small and the reply is a few lines of JSON.'),
+        ...field(h, 's-model', 'Model', h.div([h.Class('row')], [textInput(h, model, 's-model', 'model', 'anthropic/claude-haiku-4.5', 'text', 'models'), h.button([h.Class('tbtn'), h.Type('button'), h.OnClick(Message.ClickedLoadModels())], ['Load list'])]),
+          model.models === null
+            ? 'Any OpenRouter model id. Fast, cheap models do this job well — the prompt is small and the reply is a few lines of JSON.'
+            : `${model.models.ids.length} models available on OpenRouter (${model.models.audioIds.length} accept audio) — start typing in a Model box to filter.`),
       ]),
+      datalist(h, 'models', model.models?.ids ?? []),
+      datalist(h, 'audiomodels', model.models?.audioIds ?? []),
+      datalist(h, 'ttsmodels', Object.keys(model.models?.speech ?? {}).sort()),
       h.h3([], ['Audio · push-to-talk and pilot voices']),
       h.p([], [
         'Hold the ', h.b([], ['PTT']), ' button (or hold ', h.b([], ['Space']), ' while the command box isn\'t focused), say the transmission, release. With an OpenRouter key, the recording goes to an audio-capable model that transcribes it and translates it into commands in one step. Without a key, the browser\'s own speech recognition is used where available and the words are treated as typed. Pilots read back through the browser\'s speech synthesis by default, or through an OpenRouter speech model.',
       ]),
       h.div([h.Class('field')], [
-        ...field(h, 's-audio', 'Audio model', textInput(h, model, 's-audio', 'audioModel', 'google/gemini-3.5-flash-lite'), 'Must accept audio input. Gemini Flash models are fast and cheap for this.'),
+        ...field(h, 's-audio', 'Audio model', textInput(h, model, 's-audio', 'audioModel', 'google/gemini-3.5-flash-lite', 'text', 'audiomodels'), 'Must accept audio input — Load list above fills this picker with only those models. Gemini Flash models are fast and cheap for this.'),
         ...field(h, 's-tts', 'Speak pilot transmissions', checkbox(h, model, 's-tts', 'tts', 'readbacks, hold-shorts, ready calls')),
         ...field(h, 's-engine', 'Voice engine', h.select(
           [h.Id('s-engine'), h.OnChange((v) => Message.UpdatedDraft({ draft: { ...model.draft, ttsEngine: v === 'openrouter' ? 'openrouter' : 'browser' } }))],
@@ -155,10 +193,8 @@ export const settingsView = (model: Model, h: HtmlBuilder<Message>): Html =>
             h.option([h.Value('openrouter'), h.Selected(model.draft.ttsEngine === 'openrouter')], ['OpenRouter text-to-speech (uses your key)']),
           ],
         )),
-        ...field(h, 's-ttsmodel', 'TTS model', textInput(h, model, 's-ttsmodel', 'ttsModel', 'hexgrad/kokoro-82m'), 'Any OpenRouter speech model. Kokoro is a fraction of a cent per call with many English voices. Priced per character.'),
-        ...field(h, 's-voice', 'Pilot voice', h.input([h.Id('s-voice'), h.Type('text'), h.Placeholder('auto — varies per aircraft'), h.Value(model.draft.ttsEngine === 'openrouter' ? model.draft.ttsVoice : model.draft.voice),
-          h.OnInput((value) => Message.UpdatedDraft({ draft: model.draft.ttsEngine === 'openrouter' ? { ...model.draft, ttsVoice: value } : { ...model.draft, voice: value } }))]),
-          'Voice pickers arrive with the audio phase; a name typed here is kept.'),
+        ...field(h, 's-ttsmodel', 'TTS model', textInput(h, model, 's-ttsmodel', 'ttsModel', 'hexgrad/kokoro-82m', 'text', 'ttsmodels'), 'Any OpenRouter speech model. Kokoro is a fraction of a cent per call with many English voices; Deepgram Aura-2, Gemini TTS and MiniMax sound richer and cost more. Priced per character.'),
+        ...field(h, 's-voice', 'Pilot voice', voiceSelect(h, model)),
         ...field(h, 's-radio', 'Radio effect', checkbox(h, model, 's-radio', 'radio', 'band-limit OpenRouter voices like a VHF receiver')),
       ]),
       h.h3([], ['Data source']),
@@ -172,9 +208,9 @@ export const settingsView = (model: Model, h: HtmlBuilder<Message>): Html =>
       ]),
     ],
     [
-      h.span([h.Class('status')], [model.settingsStatus]),
-      h.button([h.Class('tbtn'), h.Type('button'), h.Disabled(true), h.Title('Arrives with the AI phase')], ['Test key']),
-      h.button([h.Class('tbtn'), h.Type('button'), h.Disabled(true), h.Title('Arrives with the audio phase')], ['Test voice']),
+      h.span([h.Class(`status ${model.settingsStatus.kind}`)], [model.settingsStatus.text]),
+      h.button([h.Class('tbtn'), h.Type('button'), h.OnClick(Message.ClickedTestKey())], ['Test key']),
+      h.button([h.Class('tbtn'), h.Type('button'), h.OnClick(Message.ClickedTestVoice())], ['Test voice']),
       h.button([h.Class('tbtn'), h.Type('button'), h.AriaPressed('true'), h.OnClick(Message.ClickedSaveSettings())], ['Save']),
     ],
     h,

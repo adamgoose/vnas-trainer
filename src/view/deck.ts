@@ -12,8 +12,10 @@ const placeholder = (model: Model): string => positionFor(model.settings.mode).p
 
 const hint = (model: Model): Readonly<{ text: string; ai: boolean }> =>
   aiEnabled(model.settings)
-    ? { text: `AI on · ${model.settings.model}`, ai: true }
-    : { text: 'AI off · command syntax only', ai: false }
+    ? { text: `plain English via ${model.settings.model}`, ai: true }
+    : { text: 'commands only · add a key in Settings', ai: false }
+
+const PTT_LABEL: Readonly<Record<Model['ptt'], string>> = { idle: 'PTT', tx: 'TX', busy: '…', listen: 'REC' }
 
 export const deckView = (model: Model, h: HtmlBuilder<Message>): Html => {
   const hintText = hint(model)
@@ -22,7 +24,9 @@ export const deckView = (model: Model, h: HtmlBuilder<Message>): Html => {
     [
       h.div(
         [h.Id('log')],
-        model.log.map((line) =>
+        [
+          ...(model.pendingAi === null ? [] : [h.div([h.Class('line ai')], [h.span([h.Class('t')], ['']), h.span([h.Class('m')], [model.pendingAi])])]),
+          ...model.log.map((line) =>
           h.div(
             [h.Class(`line ${line.kind}`)],
             [
@@ -31,6 +35,7 @@ export const deckView = (model: Model, h: HtmlBuilder<Message>): Html => {
             ],
           ),
         ),
+        ],
       ),
       h.div(
         [h.Class('cmdbar')],
@@ -58,7 +63,17 @@ export const deckView = (model: Model, h: HtmlBuilder<Message>): Html => {
             [h.Class('tbtn tts'), h.Type('button'), h.AriaPressed(model.settings.tts ? 'true' : 'false'), h.Title('Speak pilot transmissions'), h.OnClick(Message.ClickedSpeaker())],
             ['🔊'],
           ),
-          h.button([h.Class('tbtn ptt'), h.Type('button'), h.Disabled(true), h.Title('Push to talk arrives with the audio phase')], ['PTT']),
+          h.button(
+            [
+              h.Class(`tbtn ptt${model.ptt === 'idle' ? '' : ' ' + model.ptt}`),
+              h.Type('button'),
+              h.Title('Push to talk — hold, or hold Space outside the command box'),
+              h.OnPointerDown(() => Option.some(Message.PressedPtt())),
+              h.OnPointerUp(() => Option.some(Message.ReleasedPtt())),
+              h.OnPointerLeave(() => Option.some(Message.ReleasedPtt())),
+            ],
+            [PTT_LABEL[model.ptt]],
+          ),
         ],
       ),
     ],

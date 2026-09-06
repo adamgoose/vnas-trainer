@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { Command, given, message, model, story } from 'foldkit/story'
 
-import { FocusCommand, LoadAirport, LoadIndex, LoadPavement, LoadScenario, LoadSettings, ReadDeepLink, ReplaceDeepLink, SaveSettings } from '../src/app/commands'
+import { FocusCommand, LoadAirport, LoadBrowserVoices, LoadIndex, LoadPavement, LoadScenario, LoadSettings, ProbeRecognition, ReadDeepLink, ReplaceDeepLink, SaveSettings, Speak } from '../src/app/commands'
 import { Message } from '../src/app/message'
 import { type Model, initialModel, worldOf } from '../src/app/model'
 import { init, update } from '../src/app/update'
@@ -38,7 +38,8 @@ describe('boot chain', () => {
       update,
       given(initialModel),
       message(Message.CompletedLoadSettings({ settings: defaultSettings })),
-      Command.expectExact(ReadDeepLink),
+      Command.expectExact(ReadDeepLink, ProbeRecognition),
+      Command.resolve(ProbeRecognition, Message.CompletedProbeRecognition({ available: false })),
       Command.resolve(ReadDeepLink, Message.CompletedReadDeepLink({ airport: null, scenario: null })),
       Command.expectExact(LoadIndex({ source: DataSource.Catalog() })),
       Command.resolve(LoadIndex, Message.CompletedLoadIndex({ index })),
@@ -204,6 +205,8 @@ describe('commands and selection', () => {
       given(ready()),
       message(Message.UpdatedCommandText({ value: 'AAL894 PUSH' })),
       message(Message.SubmittedCommand()),
+      Command.expectExact(Speak),
+      Command.resolve(Speak, Message.CompletedSpeak()),
       model((m) => {
         expect(m.commandText).toBe('')
         expect(m.selected).toBe('AAL894')
@@ -314,7 +317,12 @@ describe('settings', () => {
       update,
       given(ready()),
       message(Message.ClickedSettings()),
-      model((m) => expect(m.dialog).toBe('settings')),
+      Command.expectExact(LoadBrowserVoices),
+      Command.resolve(LoadBrowserVoices, Message.CompletedLoadBrowserVoices({ voices: [{ name: 'Samantha', lang: 'en-US' }] })),
+      model((m) => {
+        expect(m.dialog).toBe('settings')
+        expect(m.browserVoices).toEqual([{ name: 'Samantha', lang: 'en-US' }])
+      }),
       message(Message.UpdatedDraft({ draft: { ...defaultSettings, key: ' sk-1 ', model: '  ', proxy: ' https://p/?url= ' } })),
       message(Message.ClickedSaveSettings()),
       Command.expectExact(
