@@ -133,6 +133,13 @@ aside{background:var(--panel);border-left:1px solid var(--rule);display:flex;fle
 #cmd::placeholder{color:var(--ink-3)}
 .cmdbar .hint{font-family:var(--f-m);font-size:10px;color:var(--ink-3);padding:0 14px;white-space:nowrap;letter-spacing:.05em}
 .cmdbar .hint.ai{color:var(--violet)}
+.cmdbar .tbtn{margin-right:8px;user-select:none;-webkit-user-select:none;touch-action:none}
+.cmdbar .tts{font-size:13px;padding:4px 8px}
+.cmdbar .tts[aria-pressed="false"]{opacity:.45;background:none;color:var(--ink-3);border-color:var(--rule-2)}
+.cmdbar .ptt{min-width:64px;letter-spacing:.12em;font-weight:600}
+.cmdbar .ptt.tx{background:var(--red);border-color:var(--red);color:#fff}
+.cmdbar .ptt.busy{background:var(--violet);border-color:var(--violet);color:#141008}
+.cmdbar .ptt.listen{border-color:var(--amber);color:var(--amber)}
 
 /* ---------- dialogs ---------- */
 dialog{
@@ -219,6 +226,8 @@ dialog::backdrop{background:rgba(5,7,8,.72)}
         placeholder="DAL1234 PUSH · or type it the way you'd say it on frequency">
     </form>
     <span class="hint" id="hint"></span>
+    <button class="tbtn tts" id="tts-btn" type="button" aria-pressed="true" title="Speak pilot transmissions">&#x1F50A;</button>
+    <button class="tbtn ptt" id="ptt" type="button" title="Push to talk — hold, or hold Space outside the command box">PTT</button>
   </div>
 </div>
 
@@ -230,7 +239,8 @@ dialog::backdrop{background:rgba(5,7,8,.72)}
     callsign the way ATCTrainer's CLI does: <code class="inl">1877 PUSH A</code> matches
     <b>DAL1877</b>. With an OpenRouter key in Settings, plain English works too: anything that
     isn't a recognised command is sent to your chosen model, translated into these commands, and
-    read back by the pilot.</p>
+    read back by the pilot. Hold <b>PTT</b> (or <b>Space</b> outside the command box) to say it
+    instead of typing it.</p>
 
     <h3>Ground</h3>
     <div class="cmds">
@@ -299,6 +309,36 @@ dialog::backdrop{background:rgba(5,7,8,.72)}
       <small id="s-models-note">Any OpenRouter model id. Fast, cheap models do this job well — the prompt is small and the reply is a few lines of JSON.</small>
     </div>
 
+    <h3>Audio · push-to-talk and pilot voices</h3>
+    <p>Hold the <b>PTT</b> button (or hold <b>Space</b> while the command box isn't focused),
+    say the transmission, release. With an OpenRouter key, the recording goes to an
+    audio-capable model that transcribes it and translates it into commands in one step.
+    Without a key, the browser's own speech recognition is used where available (Chrome,
+    Edge, Safari) and the words are treated as typed. Pilots read back through the browser's
+    speech synthesis by default, or through an OpenRouter speech model if you'd rather not hear the
+    operating system's voices.</p>
+    <div class="field">
+      <label for="s-audio">Audio model</label>
+      <input id="s-audio" list="audiomodels" autocomplete="off" placeholder="google/gemini-3.5-flash-lite">
+      <datalist id="audiomodels"></datalist>
+      <small>Must accept audio input — <b>Load list</b> above fills this picker with only those models. Gemini Flash models are fast and cheap for this.</small>
+      <label for="s-tts">Speak pilot transmissions</label>
+      <div class="row"><input id="s-tts" type="checkbox" style="width:auto" checked><span style="color:var(--ink-3);font-size:11px">readbacks, hold-shorts, ready calls</span></div>
+      <label for="s-engine">Voice engine</label>
+      <select id="s-engine">
+        <option value="browser">Browser speech synthesis (free, offline)</option>
+        <option value="openrouter">OpenRouter text-to-speech (uses your key)</option>
+      </select>
+      <label for="s-ttsmodel">TTS model</label>
+      <input id="s-ttsmodel" list="ttsmodels" autocomplete="off" placeholder="hexgrad/kokoro-82m">
+      <datalist id="ttsmodels"></datalist>
+      <small id="s-tts-note">Any OpenRouter speech model. Kokoro is a fraction of a cent per call with many English voices; Deepgram Aura-2, Gemini TTS and MiniMax sound richer and cost more. Priced per character.</small>
+      <label for="s-voice">Pilot voice</label>
+      <select id="s-voice"><option value="">auto — varies per aircraft</option></select>
+      <label for="s-radio">Radio effect</label>
+      <div class="row"><input id="s-radio" type="checkbox" style="width:auto" checked><span style="color:var(--ink-3);font-size:11px">band-limit OpenRouter voices like a VHF receiver</span></div>
+    </div>
+
     <h3>Data source</h3>
     <p>By default airports and scenarios come from the <b>catalog</b> baked into this site
     (rebuilt from vNAS on a schedule). vNAS's own API does not allow browser requests, so to load
@@ -313,6 +353,7 @@ dialog::backdrop{background:rgba(5,7,8,.72)}
   <div class="dlg-f">
     <span class="status" id="s-status"></span>
     <button class="tbtn" id="s-test" type="button">Test key</button>
+    <button class="tbtn" id="s-testvoice" type="button">Test voice</button>
     <button class="tbtn" id="s-save" type="button" aria-pressed="true">Save</button>
   </div>
 </dialog>

@@ -9,7 +9,10 @@ const NS = 'http://www.w3.org/2000/svg';
 
 /* ================= settings ================= */
 const SET_KEY = 'vgt.settings';
-const SET = { key: '', model: 'anthropic/claude-haiku-4.5', proxy: '' };
+const SET = {
+  key: '', model: 'anthropic/claude-haiku-4.5', audioModel: 'google/gemini-3.5-flash-lite', proxy: '',
+  tts: true, ttsEngine: 'browser', ttsModel: 'hexgrad/kokoro-82m', ttsVoice: '', voice: '', radio: true,
+};
 try { Object.assign(SET, JSON.parse(localStorage.getItem(SET_KEY) || '{}')); } catch { /* ignore */ }
 function saveSettings() { try { localStorage.setItem(SET_KEY, JSON.stringify(SET)); } catch { /* ignore */ } }
 const aiEnabled = () => !!(SET.key && SET.model);
@@ -381,7 +384,16 @@ function line(kind, who, msg) {
   while (LOG.children.length > 140) LOG.lastChild.remove();
   return el;
 }
-const say = (a, msg, kind) => line(kind || 'pilot', a.cs, msg);
+/* While an AI-translated transmission executes, the per-command pilot replies are
+   suppressed: the model's single readback stands in for all of them. */
+let quiet = 0;
+const say = (a, msg, kind) => {
+  const k = kind || 'pilot';
+  if (k === 'pilot' && quiet) return null;
+  const el = line(k, a.cs, msg);
+  if (k === 'pilot') speak(a, msg);
+  return el;
+};
 
 /* ================= commands ================= */
 function resolveTaxiTokens(toks) {
@@ -576,10 +588,10 @@ const orHeaders = () => ({
   Authorization: 'Bearer ' + SET.key, 'Content-Type': 'application/json',
   'HTTP-Referer': location.origin, 'X-Title': 'vNAS Ground Trainer',
 });
-async function orChat(messages, maxTokens = 400) {
+async function orChat(messages, maxTokens = 400, model = SET.model) {
   const r = await fetch(`${OR}/chat/completions`, {
     method: 'POST', headers: orHeaders(),
-    body: JSON.stringify({ model: SET.model, messages, temperature: 0, max_tokens: maxTokens }),
+    body: JSON.stringify({ model, messages, temperature: 0, max_tokens: maxTokens }),
   });
   if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error(`HTTP ${r.status} ${t.slice(0, 160)}`); }
   const j = await r.json();
@@ -600,49 +612,315 @@ function syncHint() {
   h.textContent = aiEnabled() ? `plain English via ${SET.model}` : 'commands only · add a key in Settings';
   h.classList.toggle('ai', aiEnabled());
   $('#set-btn').classList.toggle('ai-on', aiEnabled());
+  $('#tts-btn').setAttribute('aria-pressed', String(!!SET.tts));
 }
-async function askAI(text) {
-  if (!aiEnabled()) { line('err', '', 'unrecognised command — see Commands, or add an OpenRouter key in Settings for plain English'); return; }
-  const roster = S.ac.filter((a) => a.state !== 'DEP').slice(0, 60).map((a) =>
+/* shared prompt for typed and spoken transmissions */
+function buildPrompt(audio) {
+  const roster = S.ac.filter((a) => a.state !== 'DEP' && a.delay <= 0).slice(0, 60).map((a) =>
     `${a.cs} (${a.ty}) ${a.state}${a.gate ? ` gate ${a.gate}` : ''}${a.rwy ? ` rwy ${a.rwy}` : ''}`).join('; ');
   const gates = Object.keys(GATES);
-  const pending = line('ai', '', 'translating…');
-  try {
-    const sys = `You are the pilot side of an air traffic control ground simulator at ${A.name} (${A.id}).
+  const sys = `You are the pilot side of an air traffic control ground simulator at ${A.name} (${A.id}).
 Translate one controller transmission into ATCTrainer commands.
 
 COMMANDS: ${CMD_REF}
 Taxiways here: ${Object.keys(TW).join(' ') || 'none'}
 Runways: ${Object.keys(G.rwy).join(' ')}
 Gates and spots (${gates.length}): ${gates.slice(0, 40).join(' ')}${gates.length > 40 ? ' …' : ''}
-
+${audio ? `
+The controller's transmission is the attached audio: a radio call using standard ICAO/FAA phraseology.
+Callsigns are spoken with airline telephony (Delta = DAL, American = AAL, United = UAL, Southwest = SWA,
+SkyWest = SKW, Endeavor = EDV, Brickyard = RPA, Envoy = ENY, JetBlue = JBU, Sun Country = SCX, Alaska = ASA,
+Spirit = NKS, Frontier = FFT, FedEx = FDX, UPS = UPS, ExecJet = EJA) and flight numbers in group form
+("Delta ten forty-seven" = DAL1047); N-numbers are spelled in the NATO alphabet. Match against the roster.
+` : ''}
 Reply with ONLY a JSON object:
-{"callsign":"<exact callsign from the roster, or null>",
+{${audio ? '"transcript":"<what the controller said, verbatim, in standard written phraseology>",\n ' : ''}"callsign":"<exact callsign from the roster, or null>",
  "commands":["<command line>", ...],
  "readback":"<how the pilot would read it back, one short line, no callsign prefix>"}
 If the transmission is not an instruction to a specific aircraft, use "callsign":null and an empty commands array with a readback explaining briefly.`;
-    const user = `AIRCRAFT ON FREQUENCY: ${roster || 'none'}
-CURRENTLY SELECTED: ${S.sel ? S.sel.cs : 'none'}
-
-CONTROLLER SAID: ${JSON.stringify(text)}`;
-    const out = parseJSONish(await orChat([{ role: 'system', content: sys }, { role: 'user', content: user }]));
-    pending.remove();
-    const a = out.callsign ? findAc(out.callsign) : S.sel;
-    if (!a) { line('err', '', `no aircraft matched "${out.callsign || '—'}"${out.readback ? ' — ' + out.readback : ''}`); return; }
-    S.sel = a;
-    line('atc', null, text);
-    let bad = false;
+  const user = `AIRCRAFT ON FREQUENCY: ${roster || 'none'}
+CURRENTLY SELECTED: ${S.sel ? S.sel.cs : 'none'}`;
+  return { sys, user };
+}
+/* run a translated transmission: select, execute, read back */
+function applyTranslation(out, said) {
+  const a = out.callsign ? findAc(out.callsign) : S.sel;
+  if (said) line('atc', null, said);
+  if (!a) { line('err', '', `no aircraft matched "${out.callsign || '—'}"${out.readback ? ' — ' + out.readback : ''}`); return; }
+  S.sel = a;
+  let bad = false;
+  quiet++;
+  try {
     for (const c of out.commands || []) {
       const r = runCommand(`${a.cs} ${c}`);
       if (r.unknown) { line('err', a.cs, `could not run "${c}"`); bad = true; }
       else if (!r.ok) bad = true;
     }
-    if (out.readback && !bad) line('pilot', a.cs, out.readback);
-    renderStrips();
+  } finally { quiet--; }
+  if (out.readback && !bad) { line('pilot', a.cs, out.readback); speak(a, out.readback, { raw: true }); }
+  syncSel(); renderStrips();
+}
+async function askAI(text) {
+  if (!aiEnabled()) { line('err', '', 'unrecognised command — see Commands, or add an OpenRouter key in Settings for plain English'); return; }
+  const pending = line('ai', '', 'translating…');
+  try {
+    const { sys, user } = buildPrompt(false);
+    const out = parseJSONish(await orChat([{ role: 'system', content: sys }, { role: 'user', content: `${user}\n\nCONTROLLER SAID: ${JSON.stringify(text)}` }]));
+    pending.remove();
+    applyTranslation(out, text);
   } catch (e) {
     pending.remove();
     line('err', '', `could not translate that (${e.message}) — try the command syntax`);
   }
+}
+async function askAIAudio(wavB64, secs) {
+  const pending = line('ai', '', `transcribing ${secs.toFixed(1)}s…`);
+  setPtt('busy');
+  try {
+    const { sys, user } = buildPrompt(true);
+    const out = parseJSONish(await orChat([
+      { role: 'system', content: sys },
+      { role: 'user', content: [{ type: 'text', text: user }, { type: 'input_audio', input_audio: { data: wavB64, format: 'wav' } }] },
+    ], 500, SET.audioModel || SET.model));
+    pending.remove();
+    applyTranslation(out, out.transcript || '(spoken)');
+  } catch (e) {
+    pending.remove();
+    line('err', '', `could not understand that transmission (${e.message})`);
+  } finally { setPtt(ptt ? 'tx' : 'idle'); }
+}
+
+/* ================= audio: push-to-talk ================= */
+let ptt = false, mediaStream = null, recorder = null, chunks = [], recStart = 0, webRec = null;
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+function setPtt(state) {
+  const b = $('#ptt');
+  b.className = 'tbtn ptt' + (state === 'idle' ? '' : ' ' + state);
+  b.textContent = { idle: 'PTT', tx: 'TX', busy: '…', listen: 'REC' }[state] || 'PTT';
+}
+async function pttStart() {
+  if (ptt || !G) return;
+  ptt = true;
+  if (!aiEnabled()) {                       /* keyless: browser speech recognition, words treated as typed */
+    if (!SR) { ptt = false; line('err', '', 'no speech recognition in this browser — add an OpenRouter key in Settings for audio'); return; }
+    try {
+      webRec = new SR(); webRec.lang = 'en-US'; webRec.interimResults = false; webRec.maxAlternatives = 1;
+      webRec.onresult = (e) => { const t = e.results[0]?.[0]?.transcript; if (t) submitText(t); };
+      webRec.onerror = (e) => {
+        if (e.error !== 'aborted' && e.error !== 'no-speech') line('err', '', `speech recognition: ${e.error}`);
+        ptt = false; webRec = null; setPtt('idle');
+      };
+      webRec.onend = () => { if (!ptt) { webRec = null; setPtt('idle'); } };
+      webRec.start(); setPtt('listen');
+    } catch (e) { ptt = false; line('err', '', `speech recognition unavailable (${e.message})`); }
+    return;
+  }
+  setPtt('tx');
+  try { mediaStream = mediaStream || await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch (e) { ptt = false; setPtt('idle'); line('err', '', `microphone unavailable (${e.message})`); return; }
+  if (!ptt) return;                          /* released before the mic came up */
+  chunks = [];
+  recorder = new MediaRecorder(mediaStream);
+  recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  recorder.onstop = async () => {
+    const secs = (performance.now() - recStart) / 1000;
+    const blob = new Blob(chunks, { type: recorder.mimeType });
+    if (secs < 0.4 || !blob.size) { line('sys', '', 'transmission too short'); setPtt('idle'); return; }
+    try { askAIAudio(await encodeWav16k(blob), secs); }
+    catch (e) { line('err', '', `could not encode audio (${e.message})`); setPtt('idle'); }
+  };
+  recorder.start(); recStart = performance.now();
+}
+function pttStop() {
+  if (!ptt) return;
+  ptt = false;
+  if (webRec) { const r = webRec; webRec = null; setPtt('idle'); try { r.stop(); } catch { /* ignore */ } return; }
+  if (recorder && recorder.state !== 'inactive') recorder.stop(); else setPtt('idle');
+}
+/* any browser recording -> 16 kHz mono 16-bit WAV, base64 (what audio models expect) */
+async function encodeWav16k(blob) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ac = new AC();
+  const src = await ac.decodeAudioData(await blob.arrayBuffer());
+  ac.close?.();
+  const rate = 16000, frames = Math.max(1, Math.ceil(src.duration * rate));
+  const off = new OfflineAudioContext(1, frames, rate);
+  const node = off.createBufferSource(); node.buffer = src; node.connect(off.destination); node.start();
+  const pcm = (await off.startRendering()).getChannelData(0);
+  const buf = new ArrayBuffer(44 + pcm.length * 2), v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + pcm.length * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true);
+  v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, 'data'); v.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) { const s = Math.max(-1, Math.min(1, pcm[i])); v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true); }
+  const bytes = new Uint8Array(buf); let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+/* ================= audio: pilot voices ================= */
+const TELEPHONY = {
+  AAL: 'American', DAL: 'Delta', UAL: 'United', SWA: 'Southwest', SKW: 'SkyWest', EDV: 'Endeavor', RPA: 'Brickyard',
+  ENY: 'Envoy', JBU: 'JetBlue', SCX: 'Sun Country', ASA: 'Alaska', NKS: 'Spirit', FFT: 'Frontier', FDX: 'FedEx', UPS: 'UPS',
+  EJA: 'ExecJet', LXJ: 'Flexjet', JIA: 'Blue Streak', ASH: 'Air Shuttle', QXE: 'Horizon', AWI: 'Wisconsin', GJS: 'Lindbergh',
+  PDT: 'Piedmont', CPZ: 'Compass', ACA: 'Air Canada', JZA: 'Jazz', WJA: 'WestJet', BAW: 'Speedbird', DLH: 'Lufthansa',
+  AFR: 'Air France', KLM: 'KLM', UAE: 'Emirates', ICE: 'Ice Air', AAY: 'Allegiant', HAL: 'Hawaiian', MXY: 'Breeze',
+  VRD: 'Redwood', AMX: 'Aeromexico', VIV: 'Viva', VOI: 'Volaris', CFG: 'Condor', VIR: 'Virgin', ABX: 'Abex', GTI: 'Giant',
+  ATN: 'Air Transport', CKS: 'Connie', SWQ: 'Swift', BMJ: 'Bemidji', MTN: 'Mountain', LYM: 'Key Lime', JTL: 'Jet Linx',
+};
+const NATO = { A: 'alpha', B: 'bravo', C: 'charlie', D: 'delta', E: 'echo', F: 'foxtrot', G: 'golf', H: 'hotel', I: 'india', J: 'juliet',
+  K: 'kilo', L: 'lima', M: 'mike', N: 'november', O: 'oscar', P: 'papa', Q: 'quebec', R: 'romeo', S: 'sierra', T: 'tango',
+  U: 'uniform', V: 'victor', W: 'whiskey', X: 'x-ray', Y: 'yankee', Z: 'zulu', 0: 'zero', 1: 'one', 2: 'two', 3: 'three',
+  4: 'four', 5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'niner' };
+const spell = (s) => [...s].map((c) => NATO[c] || c).join(' ');
+function spokenCallsign(cs) {
+  const m = /^([A-Z]{3})(\d{1,4})([A-Z]{0,2})$/.exec(cs);
+  if (m && TELEPHONY[m[1]]) {
+    const d = m[2];
+    const group = d.length === 4 ? `${+d.slice(0, 2)} ${d[2] === '0' ? 'zero ' + d[3] : d.slice(2)}` : d.length === 3 ? `${d[0]} ${d[1] === '0' ? 'zero ' + d[2] : d.slice(1)}` : `${+d}`;
+    return `${TELEPHONY[m[1]]} ${group}${m[3] ? ' ' + spell(m[3]) : ''}`;
+  }
+  if (/^N[0-9A-Z]+$/.test(cs)) return spell(cs);
+  return m ? `${spell(m[1])} ${spell(m[2])}${m[3] ? ' ' + spell(m[3]) : ''}` : spell(cs);
+}
+const csHash = (cs) => [...cs].reduce((s, c) => (s * 31 + c.charCodeAt(0)) >>> 0, 7);
+
+/* ---- browser engine ---- */
+let VOICES = [];
+function loadVoices() {
+  if (!('speechSynthesis' in window)) return;
+  VOICES = speechSynthesis.getVoices().filter((v) => /^en/i.test(v.lang));
+  if ($('#s-engine').value === 'browser') fillVoiceSelect();
+}
+if ('speechSynthesis' in window) { loadVoices(); speechSynthesis.addEventListener('voiceschanged', loadVoices); }
+function speakBrowser(cs, text, voiceName = SET.voice) {
+  if (!('speechSynthesis' in window)) return;
+  const h = csHash(cs);
+  const u = new SpeechSynthesisUtterance(text);
+  const v = (voiceName && VOICES.find((x) => x.name === voiceName)) || (VOICES.length ? VOICES[h % VOICES.length] : null);
+  if (v) u.voice = v;
+  u.rate = 1.05 + ((h >> 4) % 3) * 0.06; u.pitch = 0.85 + ((h >> 8) % 6) * 0.06; u.volume = 1;
+  speechSynthesis.speak(u);
+}
+
+/* ---- OpenRouter engine: POST /audio/speech, decoded and played through a VHF-ish filter ---- */
+let TTS_MODELS = null;                    /* id -> { voices: [] | null } */
+async function loadTtsModels() {
+  if (TTS_MODELS) return TTS_MODELS;
+  const j = await getJSON(`${OR}/models?output_modalities=speech`);
+  TTS_MODELS = {};
+  for (const m of j.data || []) TTS_MODELS[m.id] = { voices: m.supported_voices || null, name: m.name || m.id };
+  $('#ttsmodels').innerHTML = Object.keys(TTS_MODELS).sort().map((id) => `<option value="${esc(id)}">`).join('');
+  return TTS_MODELS;
+}
+/* voices that are plainly English, when the provider encodes language in the name */
+function englishVoices(list) {
+  const en = list.filter((v) => /(^|[-_])(en|gb|us)([-_]|$)|^(af|am|bf|bm)_|^English_/i.test(v));
+  return en.length ? en : list;
+}
+function pickVoice(cs, model = SET.ttsModel, voice = SET.ttsVoice) {
+  if (voice) return voice;
+  const list = TTS_MODELS?.[model]?.voices;
+  if (!list || !list.length) return undefined;
+  const en = englishVoices(list);
+  return en[csHash(cs) % en.length];
+}
+let actx = null;
+function audioCtx() {
+  actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+  if (actx.state === 'suspended') actx.resume().catch(() => {});
+  return actx;
+}
+const TTS_CACHE = new Map();
+async function fetchSpeech(text, model, voice) {
+  const key = `${model}|${voice || ''}|${text}`;
+  if (TTS_CACHE.has(key)) return TTS_CACHE.get(key);
+  const p = (async () => {
+    const body = { model, input: text, response_format: 'mp3' };
+    if (voice) body.voice = voice;
+    const r = await fetch(`${OR}/audio/speech`, { method: 'POST', headers: orHeaders(), body: JSON.stringify(body) });
+    if (!r.ok) { const t = await r.text().catch(() => ''); let msg = t.slice(0, 160); try { msg = JSON.parse(t).error?.message || msg; } catch { /* keep */ } throw new Error(`HTTP ${r.status} ${msg}`); }
+    return audioCtx().decodeAudioData(await r.arrayBuffer());
+  })();
+  TTS_CACHE.set(key, p);
+  p.catch(() => TTS_CACHE.delete(key));
+  if (TTS_CACHE.size > 200) TTS_CACHE.delete(TTS_CACHE.keys().next().value);
+  return p;
+}
+let playing = null;
+function playBuffer(buf, radio = SET.radio) {
+  return new Promise((resolve) => {
+    const ac = audioCtx();
+    const src = ac.createBufferSource(); src.buffer = buf;
+    let node = src;
+    if (radio) {
+      /* VHF receiver: ~300–3000 Hz passband, a little grit, then squash the dynamics */
+      const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 320; hp.Q.value = 0.9;
+      const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3000; lp.Q.value = 0.9;
+      const shaper = ac.createWaveShaper();
+      const curve = new Float32Array(1024);
+      for (let i = 0; i < 1024; i++) { const x = (i / 511.5) - 1; curve[i] = Math.tanh(x * 2.2) / Math.tanh(2.2); }
+      shaper.curve = curve;
+      const comp = ac.createDynamicsCompressor();
+      comp.threshold.value = -28; comp.ratio.value = 8; comp.attack.value = 0.003; comp.release.value = 0.12;
+      const gain = ac.createGain(); gain.gain.value = 1.25;
+      node.connect(hp); hp.connect(lp); lp.connect(shaper); shaper.connect(comp); comp.connect(gain); node = gain;
+    }
+    node.connect(ac.destination);
+    playing = src;
+    src.onended = () => { if (playing === src) playing = null; resolve(); };
+    src.start();
+  });
+}
+/* one transmission at a time; fetches run ahead of playback */
+const AQ = []; let pumping = false;
+let ttsWarned = false;
+async function pump() {
+  if (pumping) return; pumping = true;
+  while (AQ.length) {
+    const it = AQ.shift();
+    try { await playBuffer(await it.audio, it.radio); }
+    catch (e) {
+      if (!ttsWarned) { ttsWarned = true; line('err', '', `OpenRouter voice failed (${e.message}) — falling back to the browser voice`); }
+      speakBrowser(it.cs, it.text);
+    }
+  }
+  pumping = false;
+}
+function speakOR(cs, text, model = SET.ttsModel, voice = SET.ttsVoice, radio = SET.radio) {
+  if (!TTS_MODELS) loadTtsModels().catch(() => {});
+  const v = pickVoice(cs, model, voice);
+  AQ.push({ cs, text, radio, audio: fetchSpeech(text, model, v) });
+  pump();
+}
+function stopSpeaking() {
+  AQ.length = 0;
+  if (playing) { try { playing.stop(); } catch { /* ignore */ } playing = null; }
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+}
+function fillVoiceSelect() {
+  const sel = $('#s-voice');
+  const engine = $('#s-engine').value;
+  if (engine === 'browser') {
+    sel.innerHTML = '<option value="">auto — varies per aircraft</option>' +
+      VOICES.map((v) => `<option value="${esc(v.name)}">${esc(v.name)} (${esc(v.lang)})</option>`).join('');
+    sel.value = VOICES.some((v) => v.name === SET.voice) ? SET.voice : '';
+  } else {
+    const model = $('#s-ttsmodel').value.trim();
+    const list = TTS_MODELS?.[model]?.voices;
+    if (!TTS_MODELS) sel.innerHTML = '<option value="">loading voices…</option>';
+    else if (!list || !list.length) sel.innerHTML = '<option value="">provider default (this model lists no voices)</option>';
+    else sel.innerHTML = '<option value="">auto — varies per aircraft</option>' + list.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+    sel.value = list && list.includes(SET.ttsVoice) ? SET.ttsVoice : '';
+  }
+}
+
+/* raw: a model-written readback already ends the way a pilot would; don't append the callsign */
+function speak(a, text, opts = {}) {
+  if (!SET.tts) return;
+  const utter = opts.raw ? text : `${text}, ${spokenCallsign(a.cs)}`;
+  if (SET.ttsEngine === 'openrouter' && SET.key) speakOR(a.cs, utter);
+  else speakBrowser(a.cs, utter);
 }
 
 /* ================= scenarios ================= */
@@ -892,7 +1170,8 @@ function physics() {
   renderStrips();
 }
 setInterval(physics, STEP * 1000);
-window.__vgt = { S, get G() { return G; }, get A() { return A; }, runCommand };
+window.__vgt = { S, get G() { return G; }, get A() { return A; }, runCommand, applyTranslation, spokenCallsign, encodeWav16k, pttStart, pttStop, SET,
+  loadTtsModels, pickVoice, englishVoices, fetchSpeech, playBuffer, speakOR, stopSpeaking, get queue() { return AQ.length; } };
 (function frame() { render(); requestAnimationFrame(frame); })();
 
 /* ================= airport activation ================= */
@@ -1043,37 +1322,88 @@ async function boot() {
     if (e.key === 'ArrowUp') { if (hi < hist.length - 1) { hi++; e.target.value = hist[hi]; } e.preventDefault(); }
     else if (e.key === 'ArrowDown') { if (hi > 0) { hi--; e.target.value = hist[hi]; } else { hi = -1; e.target.value = ''; } e.preventDefault(); }
   });
-  $('#cmdform').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const inp = $('#cmd');
-    const v = inp.value.trim(); if (!v || !G) return;
-    hist.unshift(v); hi = -1; inp.value = '';
+  window.submitText = (v) => {
+    v = String(v || '').trim(); if (!v || !G) return;
+    hist.unshift(v); hi = -1;
     const r = runCommand(v);
     if (r.unknown) askAI(v);
     else if (r.ok) line('atc', null, v);
     syncSel(); renderStrips();
+  };
+  $('#cmdform').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const inp = $('#cmd'); const v = inp.value; inp.value = '';
+    submitText(v);
+  });
+
+  /* push-to-talk: on-screen button, or hold Space outside the command box */
+  const pttBtn = $('#ptt');
+  pttBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); pttBtn.setPointerCapture(e.pointerId); pttStart(); });
+  ['pointerup', 'pointercancel'].forEach((ev) => pttBtn.addEventListener(ev, () => pttStop()));
+  pttBtn.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') e.preventDefault(); });
+  const typing = () => { const el = document.activeElement; return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') && el.id !== 'ptt'; };
+  addEventListener('keydown', (e) => {
+    if (e.key !== ' ' || e.repeat || typing() || document.querySelector('dialog[open]')) return;
+    e.preventDefault(); pttStart();
+  });
+  addEventListener('keyup', (e) => { if (e.key === ' ' && ptt) { e.preventDefault(); pttStop(); } });
+  addEventListener('blur', () => pttStop());
+  $('#tts-btn').addEventListener('click', () => {
+    SET.tts = !SET.tts; saveSettings(); syncHint();
+    if (!SET.tts) stopSpeaking();
+    line('sys', '', SET.tts ? 'pilot voices on' : 'pilot voices off');
   });
   $('#help-btn').addEventListener('click', () => $('#help').showModal());
   $('#help-x').addEventListener('click', () => $('#help').close());
   addEventListener('keydown', (e) => {
     if (e.key === '/' && document.activeElement !== $('#cmd') && !document.querySelector('dialog[open]')) { e.preventDefault(); $('#cmd').focus(); }
+    if (e.key === 'Escape' && document.activeElement === $('#cmd')) $('#cmd').blur();   /* free Space for PTT */
   });
 
   /* settings */
   const status = (msg, cls) => { const s = $('#s-status'); s.textContent = msg || ''; s.className = 'status ' + (cls || ''); };
   $('#set-btn').addEventListener('click', () => {
-    $('#s-key').value = SET.key; $('#s-model').value = SET.model; $('#s-proxy').value = SET.proxy; status('');
+    $('#s-key').value = SET.key; $('#s-model').value = SET.model; $('#s-proxy').value = SET.proxy;
+    $('#s-audio').value = SET.audioModel; $('#s-tts').checked = !!SET.tts; $('#s-radio').checked = !!SET.radio;
+    $('#s-engine').value = SET.ttsEngine; $('#s-ttsmodel').value = SET.ttsModel;
+    loadVoices(); fillVoiceSelect();
+    if (SET.ttsEngine === 'openrouter') loadTtsModels().then(fillVoiceSelect).catch((e) => status(`could not load speech models: ${e.message}`, 'bad'));
+    status('');
     $('#settings').showModal();
+  });
+  $('#s-engine').addEventListener('change', () => {
+    fillVoiceSelect();
+    if ($('#s-engine').value === 'openrouter') loadTtsModels().then(fillVoiceSelect).catch((e) => status(`could not load speech models: ${e.message}`, 'bad'));
+  });
+  $('#s-ttsmodel').addEventListener('input', () => { if ($('#s-engine').value === 'openrouter') fillVoiceSelect(); });
+  $('#s-testvoice').addEventListener('click', () => {
+    const engine = $('#s-engine').value, model = $('#s-ttsmodel').value.trim() || 'hexgrad/kokoro-82m', voice = $('#s-voice').value;
+    const sample = 'Runway three zero left, taxi via Quebec Charlie, hold short of one two right, Delta ten forty-seven';
+    if (engine === 'openrouter') {
+      const key = $('#s-key').value.trim();
+      if (!key) { status('OpenRouter voices need an API key', 'bad'); return; }
+      const saved = SET.key; SET.key = key;
+      status('fetching speech…');
+      fetchSpeech(sample, model, pickVoice('DAL1047', model, voice))
+        .then((buf) => { status(`playing ${model}${voice ? ' · ' + voice : ''} (${buf.duration.toFixed(1)}s)`, 'ok'); return playBuffer(buf, $('#s-radio').checked); })
+        .catch((e) => status(`speech failed: ${e.message}`, 'bad'))
+        .finally(() => { SET.key = saved; });
+    } else { speakBrowser('DAL1047', sample, voice); status('playing browser voice', 'ok'); }
   });
   $('#set-x').addEventListener('click', () => $('#settings').close());
   $('#s-models').addEventListener('click', async () => {
     status('loading model list…');
     try {
       const j = await getJSON(`${OR}/models`);
-      const ids = (j.data || []).map((m) => m.id).sort();
+      const all = (j.data || []);
+      const ids = all.map((m) => m.id).sort();
+      const audio = all.filter((m) => (m.architecture?.input_modalities || []).includes('audio')).map((m) => m.id).sort();
       $('#models').innerHTML = ids.map((id) => `<option value="${esc(id)}">`).join('');
-      $('#s-models-note').textContent = `${ids.length} models available on OpenRouter — start typing in the Model box to filter.`;
-      status(`${ids.length} models loaded`, 'ok');
+      $('#audiomodels').innerHTML = audio.map((id) => `<option value="${esc(id)}">`).join('');
+      const tts = await loadTtsModels();
+      if ($('#s-engine').value === 'openrouter') fillVoiceSelect();
+      $('#s-models-note').textContent = `${ids.length} models available on OpenRouter (${audio.length} accept audio) — start typing in a Model box to filter.`;
+      status(`${ids.length} models loaded, ${audio.length} with audio input, ${Object.keys(tts).length} speech models`, 'ok');
     } catch (e) { status(`could not load models: ${e.message}`, 'bad'); }
   });
   $('#s-test').addEventListener('click', async () => {
@@ -1092,6 +1422,10 @@ async function boot() {
   $('#s-save').addEventListener('click', () => {
     const proxyBefore = SET.proxy;
     SET.key = $('#s-key').value.trim(); SET.model = $('#s-model').value.trim() || 'anthropic/claude-haiku-4.5';
+    SET.audioModel = $('#s-audio').value.trim() || 'google/gemini-3.5-flash-lite';
+    SET.tts = $('#s-tts').checked; SET.radio = $('#s-radio').checked;
+    SET.ttsEngine = $('#s-engine').value; SET.ttsModel = $('#s-ttsmodel').value.trim() || 'hexgrad/kokoro-82m';
+    if (SET.ttsEngine === 'openrouter') SET.ttsVoice = $('#s-voice').value; else SET.voice = $('#s-voice').value;
     SET.proxy = $('#s-proxy').value.trim();
     saveSettings(); syncHint(); $('#settings').close();
     line('sys', '', aiEnabled() ? `plain-English commands on via OpenRouter (${SET.model})` : 'plain-English commands off — command syntax only');

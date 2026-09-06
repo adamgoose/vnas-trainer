@@ -5,8 +5,8 @@ vNAS training airport. Pick an ARTCC, an airport and one of the facility's own t
 scenarios; aircraft appear at the gates and runways the scenario author placed them, and
 taxi along the facility's real training-map centrelines over its ASDE-X pavement.
 
-No server code, no build toolchain, no accounts. Optionally, bring your own OpenRouter
-key to say things the way you'd say them on frequency.
+No server code, no build toolchain, no accounts. Pilots read back out loud. Optionally,
+bring your own OpenRouter key to type or push-to-talk the way you'd say it on frequency.
 
 ```
 index.html          the trainer (markup + styles)
@@ -88,6 +88,39 @@ commands, run, and read back by the pilot.
 The key lives in your browser's `localStorage` and is only ever sent to
 `openrouter.ai`, which allows browser requests directly. Fast, cheap models do this job
 fine — the prompt is small and the answer is a few lines of JSON.
+
+---
+
+## Audio: push-to-talk and pilot voices
+
+Hold **PTT** in the command bar, or hold **Space** while the command box isn't focused
+(Escape blurs it), say the transmission, release.
+
+- **With an OpenRouter key**, the recording is resampled to 16 kHz mono WAV in the browser
+  and sent to the **audio model** from Settings (default `google/gemini-3.5-flash-lite`;
+  **Load list** fills the picker with every model that accepts audio input). One call
+  transcribes the call, matches the spoken callsign to the roster (airline telephony,
+  group-form flight numbers, NATO N-numbers) and returns the commands plus a readback.
+- **Without a key**, the browser's own speech recognition is used where it exists (Chrome,
+  Edge, Safari) and the words are treated as if typed, so they need to be command syntax.
+
+Pilots read back out loud: readbacks, hold-short calls, ready-to-taxi and clear-of-runway
+calls, each ending with the spoken callsign (a model-written readback is spoken as is).
+Two voice engines, chosen in Settings:
+
+- **Browser speech synthesis** (default, free, offline). Every aircraft gets a consistent
+  voice, rate and pitch of its own, or pick one voice for all.
+- **OpenRouter text-to-speech** through `/api/v1/audio/speech` with your key. Pick any
+  speech model (default `hexgrad/kokoro-82m`, a fraction of a cent per call; Deepgram
+  Aura-2, Gemini TTS, MiniMax and others sound richer and cost more, priced per
+  character). The voice picker lists the voices that model advertises; **auto** spreads
+  the English ones across aircraft by callsign. Audio is decoded with Web Audio, played
+  one transmission at a time, cached per phrase, and optionally band-limited like a VHF
+  receiver (**Radio effect**). If a request fails, that line falls back to the browser
+  voice and the log says so once.
+
+**Test voice** in Settings plays a sample taxi clearance with whatever is selected. The
+speaker button in the command bar mutes everything.
 
 ---
 
