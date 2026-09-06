@@ -21,7 +21,7 @@ const aiEnabled = () => !!(SET.key && SET.model);
 /* ================= position: Ground (gold) or Tower (purple) ================= */
 const MODES = {
   ground: { label: 'Ground', placeholder: "DAL1234 PUSH · or type it the way you'd say it on frequency", tips: (rw, tw) => `PUSH · RWY ${rw} TAXI ${tw} · CROSS · LUAW · CTO` },
-  tower: { label: 'Tower', placeholder: "DAL1234 CTO · or type it the way you'd say it on frequency", tips: () => 'LUAW · CTO · TRACK · CD · CTL · GA · FH 090 · CM 5000 · switch on Arrivals' },
+  tower: { label: 'Local', placeholder: "DAL1234 CTO · or type it the way you'd say it on frequency", tips: () => 'LUAW · CTO · TRACK · CD · CTL · GA · FH 090 · CM 5000 · switch on Arrivals' },   /* mode key stays "tower" */
 };
 const modeInfo = () => MODES[SET.mode] || MODES.ground;
 function applyMode() {
@@ -409,7 +409,7 @@ function step(a, dt) {
     if (a.state !== 'SHORT') {
       a.state = 'SHORT';
       const nm = legRwy(a, a.holdLeg);
-      say(a, `holding short of ${a.rwy || nm || 'the runway'}`, 'pilot');
+      say(a, `holding short of ${a.rwy || nm ? `{r:${a.rwy || nm}}` : 'the runway'}`, 'pilot');
     }
     return;
   }
@@ -442,9 +442,9 @@ function arriveEnd(a) {
   if (a.state === 'PUSH') { a.state = 'PUSHED'; a.spd = 0; say(a, 'ready to taxi', 'pilot'); return; }
   if (a.state === 'TAXI' || a.state === 'SHORT') {
     a.spd = 0;
-    if (a._luaw) { a._luaw = false; a.state = 'LUAW'; say(a, `lined up runway ${a.rwy}`, 'pilot'); return; }
-    if (a.destGate) { a.state = 'PARKED'; a.gate = a.destGate; a.destGate = null; say(a, `in the blocks at ${a.gate}`, 'pilot'); return; }
-    if (a.rwy) { a.state = 'SHORT'; say(a, `holding short of ${a.rwy}`, 'pilot'); return; }
+    if (a._luaw) { a._luaw = false; a.state = 'LUAW'; say(a, `lined up runway {r:${a.rwy}}`, 'pilot'); return; }
+    if (a.destGate) { a.state = 'PARKED'; a.gate = a.destGate; a.destGate = null; say(a, `in the blocks at {g:${a.gate}}`, 'pilot'); return; }
+    if (a.rwy) { a.state = 'SHORT'; say(a, `holding short of {r:${a.rwy}}`, 'pilot'); return; }
     a.state = 'HOLD'; say(a, 'holding', 'pilot');
   }
 }
@@ -464,7 +464,7 @@ function autoExit(a) {
   const r = astar(nearestNode(a.pos), bestNode, { rwPen: 0 });
   if (r) { setPathFrom(a, r); a.state = 'TAXI'; a.holdLeg = null; } else a.state = 'HOLD';
   a.rwy = null;
-  say(a, `clear of the runway${NODE_TW[bestNode] ? ' at ' + [...NODE_TW[bestNode]][0] : ''}`, 'pilot');
+  say(a, `clear of the runway${NODE_TW[bestNode] ? ` at {t:${[...NODE_TW[bestNode]][0]}}` : ''}`, 'pilot');
 }
 
 /* ================= log ================= */
@@ -473,11 +473,45 @@ function line(kind, who, msg) {
   const el = document.createElement('div');
   el.className = 'line ' + kind;
   const mm = String(Math.floor(S.t / 60)).padStart(2, '0'), ss = String(Math.floor(S.t % 60)).padStart(2, '0');
-  el.innerHTML = `<span class="t">${mm}:${ss}</span><span class="m">${who ? `<span class="who">${esc(who)}</span> ` : ''}${esc(msg)}</span>`;
+  el.innerHTML = `<span class="t">${mm}:${ss}</span><span class="m">${who ? `<span class="who">${esc(who)}</span> ` : ''}${esc(plain(msg))}</span>`;
   LOG.prepend(el);
   while (LOG.children.length > 140) LOG.lastChild.remove();
   return el;
 }
+/* ---- phraseology markup ----
+   Sim messages tag identifiers so the log shows the written form and the voice
+   says the spoken one:  {r:30L} runway  {t:A1} taxiway  {g:E16} gate/spot
+   {f:124.700} frequency  {n:4521} digits  {c:DAL1047} callsign. */
+const MARK_RE = /\{([rtgfnc]):([^}]*)\}/g;
+const RW_SIDE = { L: 'left', R: 'right', C: 'center' };
+const spellOut = (t) => [...String(t)].map((c) => NATO[c] || c).join(' ');
+const spokenRunway = (t) => String(t).split('-').map((p) => {
+  const m = /^(\d{1,2})([LRC])?$/.exec(p);
+  return m ? `${digitsWords(m[1])}${m[2] ? ' ' + RW_SIDE[m[2]] : ''}` : spellOut(p);
+}).join(', ');
+/* single letters and short alphanumerics are spelled; a long name like ALLEY is a word;
+   a space-separated list ("Q C W3") gets a pause between items */
+const spokenIdent = (t) => String(t).trim().split(/\s+/).map((x) => (/^[A-Z]{5,}$/.test(x) ? x.toLowerCase() : spellOut(x))).join(', ');
+const spokenFreq = (t) => { const [a, b = ''] = String(t).split('.'); const frac = b.replace(/0+$/, '') || '0'; return `${digitsWords(a)} point ${digitsWords(frac)}`; };
+const plain = (s) => String(s).replace(MARK_RE, (_, k, v) => v);
+const spoken = (s) => String(s).replace(MARK_RE, (_, k, v) =>
+  k === 'r' ? spokenRunway(v) : (k === 't' || k === 'g') ? spokenIdent(v) : k === 'f' ? spokenFreq(v)
+    : k === 'n' ? digitsWords(v) : k === 'c' ? spokenCallsign(v) : v);
+/* best effort for free text the model wrote without a spoken form */
+function spokenFallback(s) {
+  const names = Object.values(TELEPHONY).join('|').replace(/ /g, '\\s');
+  return String(s || '')
+    .replace(new RegExp(`\\b(${names})\\s+(\\d{1,4})([A-Z]{0,2})\\b`, 'g'), (m, n, d, sfx) => `${n} ${groupNumber(d)}${sfx ? ' ' + spell(sfx) : ''}`)
+    .replace(/\b([A-Z]{3})(\d{1,4})([A-Z]{0,2})\b/g, (m) => spokenCallsign(m))       /* a written callsign like DAL1047 */
+    .replace(/\bN(\d[0-9A-Z]{1,5})\b/g, (m) => spell(m))
+    .replace(/\b(\d{3})\.(\d{1,3})\b/g, (m) => spokenFreq(m))
+    .replace(/\b(runway|rwy)\s+(\d{1,2}[LRC]?)\b/gi, (m, w, r) => `runway ${spokenRunway(r.toUpperCase())}`)
+    .replace(/\b(\d{1,2})([LRC])\b/g, (m, d, s) => `${digitsWords(d)} ${RW_SIDE[s]}`)
+    .replace(/\b(squawk(?:ing)?|heading)\s+(\d{3,4})\b/gi, (m, w, d) => `${w} ${digitsWords(d)}`)
+    .replace(/\b(via|taxiway|short of|hold short|at|exit at|gate|spot)\s+((?:[A-Z]{1,2}\d{0,2}\b[\s,]*)+)/g,
+      (m, w, list) => `${w} ${list.replace(/\b([A-Z]{1,2}\d{0,2})\b/g, (t) => spellOut(t))}`);
+}
+
 /* While an AI-translated transmission executes, the per-command pilot replies are
    suppressed: the model's single readback stands in for all of them. */
 let quiet = 0;
@@ -485,7 +519,7 @@ const say = (a, msg, kind) => {
   const k = kind || 'pilot';
   if (k === 'pilot' && quiet) return null;
   const el = line(k, a.cs, msg);
-  if (k === 'pilot') speak(a, msg);
+  if (k === 'pilot') speak(a, spoken(msg), { raw: String(msg).includes(`{c:${a.cs}}`) });
   return el;
 };
 
@@ -533,7 +567,14 @@ function routeSummary(a) {
     if (d < 300 && out.length && runs.length > 2) continue;
     if (out[out.length - 1] !== nm) out.push(nm);
   }
-  return out.join(' ');
+  /* runs of taxiways share one tag so the spoken form pauses between them */
+  const parts = [];
+  for (const nm of out) {
+    if (RWSET.has(nm)) parts.push(`{r:${nm}}`);
+    else if (parts.length && parts[parts.length - 1].startsWith('{t:')) parts[parts.length - 1] = parts[parts.length - 1].replace(/\}$/, ` ${nm}}`);
+    else parts.push(`{t:${nm}}`);
+  }
+  return parts.join(' ');
 }
 
 const CMDS = {
@@ -547,7 +588,7 @@ const CMDS = {
     if (target === spot.n) nodes = [spot.n, spot.n];
     else { const r = astar(spot.n, target, { rwPen: 9e5 }); nodes = (r && r.length > 1) ? r : [spot.n, spot.n]; }
     a.path = nodes; a.leg = 0; a.frac = 0; a.holdLeg = null; a.state = 'PUSH';
-    say(a, `pushing back off ${a.gate}`, 'pilot'); return null;
+    say(a, `pushing back off {g:${a.gate}}`, 'pilot'); return null;
   },
   TAXI(a, args) {
     const hsAt = args.findIndex((t) => t.toUpperCase() === 'HS');
@@ -569,14 +610,14 @@ const CMDS = {
     const r = resolveTaxiTokens(toks); if (r.err) return r.err;
     const err = beginTaxi(a, r.path, null, rw); if (err) return err;
     if (hsAt >= 0 && rest[hsAt + 1]) CMDS.HS(a, [rest[hsAt + 1]]);
-    say(a, `runway ${rw}, taxi via ${routeSummary(a) || 'the field'}`, 'pilot'); return null;
+    say(a, `runway {r:${rw}}, taxi via ${routeSummary(a) || 'the field'}`, 'pilot'); return null;
   },
   HS(a, args) {
     if (!args.length || !a.path) return 'hold short of what?';
     const T = args[0].toUpperCase();
     for (let i = a.leg; i + 1 < a.path.length; i++) {
       const nm = edgeName(a.path[i], a.path[i + 1]);
-      if (nm === T || nm === (G.rwy[T] && G.rwy[T].rw)) { a.holdLeg = i; say(a, `hold short of ${T}`, 'pilot'); return null; }
+      if (nm === T || nm === (G.rwy[T] && G.rwy[T].rw)) { a.holdLeg = i; say(a, `hold short of ${G.rwy[T] || RWSET.has(T) ? `{r:${T}}` : `{t:${T}}`}`, 'pilot'); return null; }
     }
     return `${T} is not on the route`;
   },
@@ -586,7 +627,7 @@ const CMDS = {
     a.cleared.add(nm);
     a.holdLeg = firstRwyLeg(a, a.leg);
     if (a.state === 'SHORT') a.state = 'TAXI';
-    say(a, `crossing ${args[0] ? args[0].toUpperCase() : nm}`, 'pilot'); return null;
+    say(a, `crossing {r:${args[0] ? args[0].toUpperCase() : nm}}`, 'pilot'); return null;
   },
   RES(a) {
     if (a.holdLeg != null) return CMDS.CROSS(a, []);
@@ -601,7 +642,7 @@ const CMDS = {
   GIVEWAY(a, args) {
     if (!args.length) return 'give way to whom?';
     const o = findAc(args[0]); if (!o) return `no aircraft ${args[0]}`;
-    a.giveway = o.cs; say(a, `giving way to ${o.cs}`, 'pilot'); return null;
+    a.giveway = o.cs; say(a, `giving way to {c:${o.cs}}`, 'pilot'); return null;
   },
   GW(a, args) { return CMDS.GIVEWAY(a, args); },
   LUAW(a) {
@@ -627,7 +668,7 @@ const CMDS = {
       setPathFrom(a, r.concat(chain.slice(1)));
     } else setPathFrom(a, chain);
     a.holdLeg = null; a.state = 'TKOF'; a._luaw = false;
-    say(a, `cleared for takeoff runway ${a.rwy}`, 'pilot'); return null;
+    say(a, `cleared for takeoff runway {r:${a.rwy}}`, 'pilot'); return null;
   },
   EXIT(a) {
     if (a.state !== 'ROLLOUT' && a.state !== 'HOLD') return 'not on a landing roll';
@@ -640,7 +681,7 @@ const CMDS = {
   /* ---- tower ---- */
   CTL(a) {
     if (a.state !== 'FINAL' || a.landed) return 'not on final';
-    a.ctl = true; say(a, `cleared to land runway ${a.rwy}`, 'pilot'); return null;
+    a.ctl = true; say(a, `cleared to land runway {r:${a.rwy}}`, 'pilot'); return null;
   },
   TRACK(a) {
     if (!a.radar) return 'no radar target';
@@ -654,7 +695,7 @@ const CMDS = {
     if (a.handoff) return 'already switched';
     a.handoff = true; a.handoffAt = S.t;
     const d = A.stars?.dep;
-    say(a, d ? `over to ${d.radio || 'departure'}${d.freq ? ' ' + d.freq : ''}` : 'contact departure', 'pilot');
+    say(a, d ? `over to ${d.radio || 'departure'}${d.freq ? ` {f:${d.freq}}` : ''}` : 'contact departure', 'pilot');
     renderStars(); return null;
   },
   FH(a, args) { return flyHeading(a, args[0], null); },
@@ -665,16 +706,16 @@ const CMDS = {
     const alt = parseAlt(args[0]); if (alt == null) return 'altitude?';
     a.tgtAlt = alt; say(a, `${alt > a.alt ? 'climb' : 'descend'} and maintain ${altWords(alt)}`, 'pilot'); return null;
   },
-  SQ(a, args) { if (!args[0]) return 'squawk what?'; a.sq = args[0]; a.xpdr = 'N'; say(a, `squawking ${a.sq}`, 'pilot'); return null; },
+  SQ(a, args) { if (!args[0]) return 'squawk what?'; a.sq = args[0]; a.xpdr = 'N'; say(a, `squawking {n:${a.sq}}`, 'pilot'); return null; },
   SN(a) { a.xpdr = 'N'; say(a, 'squawking normal', 'pilot'); return null; },
   SS(a) { a.xpdr = 'S'; say(a, 'squawk standby', 'pilot'); return null; },
   ID(a) { a.xpdr = 'I'; say(a, 'ident', 'pilot'); setTimeout(() => { if (a.xpdr === 'I') a.xpdr = 'N'; }, 4000); return null; },
   SAY(a, args) {
     const w = (args[0] || '').toUpperCase();
-    if (w === 'GATE') say(a, `we're at ${a.gate || 'no gate'}`, 'pilot');
+    if (w === 'GATE') say(a, a.gate ? `we're at {g:${a.gate}}` : `we're not at a gate`, 'pilot');
     else if (w === 'TYPE') say(a, `we're a ${a.ty}`, 'pilot');
-    else if (w === 'RWY' || w === 'RUNWAY') say(a, a.rwy ? `expecting runway ${a.rwy}` : 'no runway assigned', 'pilot');
-    else say(a, `${a.ty} at ${a.gate || '—'}, ${a.dep || A.id} to ${a.dst || '—'}`, 'pilot');
+    else if (w === 'RWY' || w === 'RUNWAY') say(a, a.rwy ? `expecting runway {r:${a.rwy}}` : 'no runway assigned', 'pilot');
+    else say(a, `${a.ty} at ${a.gate ? `{g:${a.gate}}` : 'the ramp'}, ${a.dep || A.id} to ${a.dst || '—'}`, 'pilot');
     return null;
   },
   DEL(a) { S.ac = S.ac.filter((x) => x !== a); if (S.sel === a) S.sel = null; line('sys', '', `${a.cs} deleted`); return null; },
@@ -694,7 +735,7 @@ function flyHeading(a, arg, dir) {
   const h = parseInt(arg, 10);
   if (!Number.isFinite(h) || h < 1 || h > 360) return 'heading?';
   a.tgtHdg = h % 360; a.turn = dir;
-  say(a, `${dir === 'L' ? 'turn left ' : dir === 'R' ? 'turn right ' : ''}heading ${digitsWords(String(h).padStart(3, '0'))}`, 'pilot');
+  say(a, `${dir === 'L' ? 'turn left ' : dir === 'R' ? 'turn right ' : ''}heading {n:${String(h).padStart(3, '0')}}`, 'pilot');
   return null;
 }
 function parseAlt(s) {
@@ -763,25 +804,42 @@ function buildPrompt(audio) {
   const roster = S.ac.filter((a) => a.state !== 'DEP' && a.delay <= 0).slice(0, 60).map((a) =>
     `${a.cs} (${a.ty}) ${a.state}${a.gate ? ` gate ${a.gate}` : ''}${a.rwy ? ` rwy ${a.rwy}` : ''}`).join('; ');
   const gates = Object.keys(GATES);
+  const twys = Object.keys(TW);
+  /* identifiers with their spoken forms, so "alpha one" resolves to A1 and "one two left" to 12L */
+  const twyList = twys.map((t) => (/^[A-Z]{1,2}\d{0,2}$/.test(t) ? `${t} (${spellOut(t)})` : t)).join(', ') || 'none';
+  const rwyList = Object.keys(G.rwy).map((r) => `${r} (${spokenRunway(r)})`).join(', ');
+  const telephony = Object.entries(TELEPHONY).filter(([k]) => S.ac.some((a) => a.cs.startsWith(k))).map(([k, v]) => `${v} = ${k}`).join(', ');
   const sys = `You are the pilot side of an air traffic control simulator at ${A.name} (${A.id}).
-The controller is working the ${modeInfo().label} position. Translate one controller transmission into ATCTrainer commands.
+The controller is working the ${modeInfo().label} position. Translate one controller transmission into ATCTrainer commands and produce the pilot's readback.
 
 COMMANDS: ${CMD_REF}
-Taxiways here: ${Object.keys(TW).join(' ') || 'none'}
-Runways: ${Object.keys(G.rwy).join(' ')}
+
+THIS AIRPORT
+Runways: ${rwyList}
+Taxiways: ${twyList}
 Gates and spots (${gates.length}): ${gates.slice(0, 40).join(' ')}${gates.length > 40 ? ' …' : ''}
+${A.stars?.dep ? `Departure frequency: ${A.stars.dep.freq} (${A.stars.dep.radio || A.stars.dep.cs})` : ''}
+
+PHRASEOLOGY — how the controller talks, and what it maps to
+- Letters are the ICAO alphabet (alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey x-ray yankee zulu). Numbers are spoken digit by digit: "niner" = 9, "tree" = 3, "fife" = 5.
+- Runways: "runway one two left" = 12L, "runway three zero right" = 30R, "runway four" = 4. Taxiways: "alpha" = A, "alpha one" = A1, "kilo ten" = K10 — resolve against the taxiway list above; a taxiway name that is a word (ALLEY) is said as a word.
+- Callsigns: airline telephony plus the flight number in COMBINED group form, never digit by digit — "Delta ten forty-seven" = DAL1047, "FedEx nineteen ninety-two" = FDX1992, "American eight ninety-four" = AAL894, "SkyWest thirty-five twenty-one" = SKW3521, "Southwest twelve hundred" = SWA1200, "Delta ten" = DAL10. GA aircraft are spelled: "November four two sierra tango" = N42ST, often shortened to the last three ("four two sierra tango" or "two sierra tango"). Always pick the matching callsign from the roster, never invent one.${telephony ? `\n  Telephony on frequency now: ${telephony}.` : ''}
+- Ground: "push back approved" → PUSH; "push back approved, tail east onto alpha" → PUSH A; "runway three zero left, taxi via quebec, charlie" → RWY 30L TAXI Q C; "taxi to gate echo one six via bravo" → TAXI B E16; "hold short of runway one two right" as part of a taxi → append HS 12R to that taxi command, on its own → HS 12R; "cross runway one two right" → CROSS; "continue taxi" / "resume" → RES; "hold position" / "stop" → HOLD; "give way to the Delta seven thirty-seven" → GIVEWAY <that callsign>; "expedite" → BREAK; "monitor tower" / "contact ground" → no command, readback only.
+- Tower: "line up and wait" → LUAW; "cleared for takeoff" → CTO; "cleared to land" → CTL; "go around" → GA; "fly heading zero niner zero" → FH 090; "turn left/right heading two seven zero" → TL 270 / TR 270; "climb and maintain five thousand" → CM 5000; "climb and maintain flight level two three zero" → CM FL230; "contact departure" → CD; "exit at alpha five" → EXIT A5.
+- Transponder: "squawk four five two one" → SQ 4521; "ident" → ID; "squawk standby" → SS; "squawk normal" → SN.
+- Several instructions in one transmission are several commands, in the order spoken. A transmission that is only a callsign check-in, an acknowledgement, or addressed to nobody in the roster produces no commands.
 ${audio ? `
-The controller's transmission is the attached audio: a radio call using standard ICAO/FAA phraseology.
-Callsigns are spoken with airline telephony (Delta = DAL, American = AAL, United = UAL, Southwest = SWA,
-SkyWest = SKW, Endeavor = EDV, Brickyard = RPA, Envoy = ENY, JetBlue = JBU, Sun Country = SCX, Alaska = ASA,
-Spirit = NKS, Frontier = FFT, FedEx = FDX, UPS = UPS, ExecJet = EJA) and flight numbers in group form
-("Delta ten forty-seven" = DAL1047); N-numbers are spelled in the NATO alphabet. Match against the roster.
+AUDIO: the attached recording is the controller's push-to-talk transmission over a VHF radio — it may be clipped, fast, or noisy. Use the roster and the identifier lists above to resolve anything ambiguous (a taxiway you cannot hear clearly is one that exists here). Do not transcribe what is not there; if nothing usable was said, return no commands and say so in the readback.
 ` : ''}
+READBACK RULES
+- "readback": the pilot's readback in standard WRITTEN phraseology with written identifiers, e.g. "Runway 30L, taxi via Q C, hold short 12R, Delta 1047". Read back the instruction, not a commentary. End with the callsign (written form).
+- "spoken": the exact words for text-to-speech, every identifier spelled out: runways as digits plus left/right/center ("runway three zero left"), taxiways in the ICAO alphabet ("quebec, charlie"), gates likewise ("echo one six"), headings, squawk codes and beacon codes digit by digit using "niner", altitudes as "five thousand" / "flight level two three zero", frequencies as digits with "point" ("one two four point seven"), the callsign in telephony with the combined flight number ("Delta ten forty-seven", "FedEx nineteen ninety-two" — not "one nine nine two") — never leave a bare abbreviation like "30L" or "Q" in the spoken text.
+
 Reply with ONLY a JSON object:
-{${audio ? '"transcript":"<what the controller said, verbatim, in standard written phraseology>",\n ' : ''}"callsign":"<exact callsign from the roster, or null>",
+{${audio ? '"transcript":"<what the controller said, in standard written phraseology with written identifiers, e.g. DAL1047, runway 30L, taxi via Q C, hold short 12R>",\n ' : ''}"callsign":"<exact callsign from the roster, or null>",
  "commands":["<command line>", ...],
- "readback":"<how the pilot would read it back, one short line, no callsign prefix>"}
-If the transmission is not an instruction to a specific aircraft, use "callsign":null and an empty commands array with a readback explaining briefly.`;
+ "readback":"<written readback>",
+ "spoken":"<spoken readback>"}`;
   const user = `AIRCRAFT ON FREQUENCY: ${roster || 'none'}
 CURRENTLY SELECTED: ${S.sel ? S.sel.cs : 'none'}`;
   return { sys, user };
@@ -801,7 +859,7 @@ function applyTranslation(out, said) {
       else if (!r.ok) bad = true;
     }
   } finally { quiet--; }
-  if (out.readback && !bad) { line('pilot', a.cs, out.readback); speak(a, out.readback, { raw: true }); }
+  if (out.readback && !bad) { line('pilot', a.cs, out.readback); speak(a, out.spoken || spokenFallback(out.readback), { raw: true }); }
   syncSel(); renderStrips();
 }
 async function askAI(text) {
@@ -917,13 +975,19 @@ const NATO = { A: 'alpha', B: 'bravo', C: 'charlie', D: 'delta', E: 'echo', F: '
   U: 'uniform', V: 'victor', W: 'whiskey', X: 'x-ray', Y: 'yankee', Z: 'zulu', 0: 'zero', 1: 'one', 2: 'two', 3: 'three',
   4: 'four', 5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'niner' };
 const spell = (s) => [...s].map((c) => NATO[c] || c).join(' ');
+const ONES = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'niner', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+const numWords = (n) => (n < 20 ? ONES[n] : `${TENS[Math.floor(n / 10)]}${n % 10 ? '-' + ONES[n % 10] : ''}`);
+/* airline flight numbers in group form: 1047 -> "ten forty-seven", 894 -> "eight ninety-four", 1004 -> "ten zero four" */
+function groupNumber(d) {
+  const pair = (p) => (p === '00' ? 'hundred' : p[0] === '0' ? `zero ${ONES[+p[1]]}` : numWords(+p));
+  if (d.length === 4) return `${numWords(+d.slice(0, 2))} ${pair(d.slice(2))}`;
+  if (d.length === 3) return `${ONES[+d[0]]} ${pair(d.slice(1))}`;
+  return numWords(+d);
+}
 function spokenCallsign(cs) {
   const m = /^([A-Z]{3})(\d{1,4})([A-Z]{0,2})$/.exec(cs);
-  if (m && TELEPHONY[m[1]]) {
-    const d = m[2];
-    const group = d.length === 4 ? `${+d.slice(0, 2)} ${d[2] === '0' ? 'zero ' + d[3] : d.slice(2)}` : d.length === 3 ? `${d[0]} ${d[1] === '0' ? 'zero ' + d[2] : d.slice(1)}` : `${+d}`;
-    return `${TELEPHONY[m[1]]} ${group}${m[3] ? ' ' + spell(m[3]) : ''}`;
-  }
+  if (m && TELEPHONY[m[1]]) return `${TELEPHONY[m[1]]} ${groupNumber(m[2])}${m[3] ? ' ' + spell(m[3]) : ''}`;
   if (/^N[0-9A-Z]+$/.test(cs)) return spell(cs);
   return m ? `${spell(m[1])} ${spell(m[2])}${m[3] ? ' ' + spell(m[3]) : ''}` : spell(cs);
 }
@@ -962,11 +1026,18 @@ function englishVoices(list) {
   const en = list.filter((v) => /(^|[-_])(en|gb|us)([-_]|$)|^(af|am|bf|bm)_|^English_/i.test(v));
   return en.length ? en : list;
 }
+/* no singing, whispering, sulking or Santa on frequency: keep the plain, professional voices */
+const VANITY = /whisper|sing|seduc|upset|sad|angry|frustrat|excit|cheer|happy|sarcas|confus|shame|jealous|curious|playful|santa|radiant|magnetic|captivat|compelling|graceful|expressive|narrator|aussie|bloke|girl|boy|kid|child|teen|elf|robot|monster|witch|ghost|pirate|cowboy|fear|scared|cry|laugh|drunk|sleepy|asmr|passionate|warrior|queen|king|prince|anime|comedian|whimsical|lovely|sentimental|stress|bossy|imposing|soft-spoken|storyteller|jovial|partner|strong-willed|debat|kind-hearted|upbeat|^none$/i;
+const EMOTION_SUFFIX = /_(neutral|sad|happy|angry|frustrated|excited|confident|cheerful|curious|sarcasm|confused|shameful|jealousy|calm|serious|surprised|disgusted|fearful)$/i;
+function professionalVoices(list) {
+  const out = list.filter((v) => !VANITY.test(v) && (!EMOTION_SUFFIX.test(v) || /_neutral$/i.test(v)));
+  return out.length ? out : list;
+}
 function pickVoice(cs, model = SET.ttsModel, voice = SET.ttsVoice) {
   if (voice) return voice;
   const list = TTS_MODELS?.[model]?.voices;
   if (!list || !list.length) return undefined;
-  const en = englishVoices(list);
+  const en = professionalVoices(englishVoices(list));
   return en[csHash(cs) % en.length];
 }
 let actx = null;
@@ -1054,7 +1125,11 @@ function fillVoiceSelect() {
     const list = TTS_MODELS?.[model]?.voices;
     if (!TTS_MODELS) sel.innerHTML = '<option value="">loading voices…</option>';
     else if (!list || !list.length) sel.innerHTML = '<option value="">provider default (this model lists no voices)</option>';
-    else sel.innerHTML = '<option value="">auto — varies per aircraft</option>' + list.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+    else {
+      const shown = professionalVoices(list);
+      sel.innerHTML = '<option value="">auto — varies per aircraft</option>' + shown.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('') +
+        (shown.length < list.length ? `<option value="" disabled>— ${list.length - shown.length} stylised voices hidden —</option>` : '');
+    }
     sel.value = list && list.includes(SET.ttsVoice) ? SET.ttsVoice : '';
   }
 }
@@ -1094,6 +1169,7 @@ function loadScenario(sc) {
       const info = G.rwy[at]; if (!info) { skipped++; continue; }
       placeOnFinal(a, at, r.nm || 5);
       a.xpdr = 'N'; a.tracked = true; a.ctl = SET.mode !== 'tower';
+      if (SET.mode === 'tower') setTimeout(() => { if (S.ac.includes(a) && a.state === 'FINAL') checkIn(a, r.nm || 5); }, 400 + S.ac.length * 60);
     } else { skipped++; continue; }
     S.ac.push(a);
   }
@@ -1114,6 +1190,12 @@ function placeOnFinal(a, rw, nm) {
   a.pos = movePt(thr, (crs + 180) % 360, nm * 6076); a.hdg = crs; a.spd = 140; a.alt = nm * 318;
   a.state = 'FINAL'; a.rwy = rw; a.landed = false;
   a._origin = a.pos.slice(); a.path = info.chain.slice(); a.leg = 0; a.frac = 0; a.holdLeg = null;
+}
+
+/* "Minneapolis Tower, Delta ten forty-seven, six mile final, runway three zero right" */
+function checkIn(a, nm) {
+  const who = A.stars?.twr?.radio || `${A.name.replace(/\s+(ATCT|Tower).*$/i, '')} Tower`;
+  say(a, `${who}, {c:${a.cs}}, ${numWords(Math.round(nm))} mile final, runway {r:${a.rwy}}`, 'pilot');
 }
 
 /* arrivals from the airport's own weighted fleet table */
@@ -1140,10 +1222,11 @@ function maybeArrival() {
   });
   const tower = SET.mode === 'tower';
   placeOnFinal(a, rw, tower ? 6 : 3);
-  a.tracked = true; a.ctl = !tower;                       /* tower has to clear them to land */
+  a.tracked = true; a.ctl = !tower;                       /* local has to clear them to land */
   if (GATE_NAMES.length) a.destGate = GATE_NAMES[Math.floor(Math.random() * GATE_NAMES.length)];
   S.ac.push(a);
   line('sys', '', `${a.cs} ${a.ty} ${tower ? '6 mile final' : 'on final'} runway ${rw}${a.destGate ? `, parking ${a.destGate}` : ''}`);
+  if (tower) checkIn(a, 6);
 }
 
 /* ================= rendering ================= */
@@ -1468,7 +1551,8 @@ function physics() {
 }
 setInterval(physics, STEP * 1000);
 window.__vgt = { S, get G() { return G; }, get A() { return A; }, runCommand, applyTranslation, spokenCallsign, encodeWav16k, pttStart, pttStop, SET,
-  loadTtsModels, pickVoice, englishVoices, fetchSpeech, playBuffer, speakOR, stopSpeaking, get queue() { return AQ.length; } };
+  loadTtsModels, pickVoice, englishVoices, fetchSpeech, playBuffer, speakOR, stopSpeaking, get queue() { return AQ.length; },
+  spoken, plain, spokenFallback, buildPrompt };
 (function frame() { render(); requestAnimationFrame(frame); })();
 
 /* ================= airport activation ================= */
@@ -1716,7 +1800,7 @@ async function boot() {
   $('#s-ttsmodel').addEventListener('input', () => { if ($('#s-engine').value === 'openrouter') fillVoiceSelect(); });
   $('#s-testvoice').addEventListener('click', () => {
     const engine = $('#s-engine').value, model = $('#s-ttsmodel').value.trim() || 'hexgrad/kokoro-82m', voice = $('#s-voice').value;
-    const sample = 'Runway three zero left, taxi via Quebec Charlie, hold short of one two right, Delta ten forty-seven';
+    const sample = 'Runway three zero left, taxi via quebec, charlie, hold short of runway one two right, Delta ten forty-seven';
     if (engine === 'openrouter') {
       const key = $('#s-key').value.trim();
       if (!key) { status('OpenRouter voices need an API key', 'bad'); return; }

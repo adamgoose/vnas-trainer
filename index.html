@@ -233,7 +233,7 @@ dialog::backdrop{background:rgba(5,7,8,.72)}
 <body>
 
 <header>
-  <span class="brand">vNAS <select id="mode" class="mode" aria-label="Position" title="Switch position"><option value="ground">Ground</option><option value="tower">Tower</option></select> Trainer<small>ATCTrainer command set</small></span>
+  <span class="brand">vNAS <select id="mode" class="mode" aria-label="Position" title="Switch position"><option value="ground">Ground</option><option value="tower">Local</option></select> Trainer<small>ATCTrainer command set</small></span>
   <select id="artcc" aria-label="ARTCC"></select>
   <select id="apt" aria-label="Airport"></select>
   <select id="scen" aria-label="Scenario"></select>
@@ -325,7 +325,7 @@ dialog::backdrop{background:rgba(5,7,8,.72)}
     <div class="cmds">
       <code>LUAW</code><span>Line up and wait on the departure runway.</span>
       <code>CTO</code><span>Cleared for takeoff — rolls, rotates at Vr and climbs runway heading to the airport's initial altitude.</span>
-      <code>CTL</code><span>Cleared to land. In Tower mode an arrival without it goes around at one mile.</span>
+      <code>CTL</code><span>Cleared to land. As Local, an arrival without it goes around at one mile.</span>
       <code>GA</code><span>Go around (an arrival still on final).</span>
       <code>EXIT [taxiway]</code><span>Vacate the runway after landing, at a named taxiway or the nearest.</span>
       <code>FH {hdg}</code><span>Fly heading. <b>TL</b> / <b>TR</b> force the turn direction.</span>
@@ -333,14 +333,14 @@ dialog::backdrop{background:rgba(5,7,8,.72)}
       <code>CD</code><span>Contact departure — the pilot switches to the departure frequency and drops off 20 seconds later.</span>
     </div>
 
-    <h3>STARS (Tower mode)</h3>
+    <h3>STARS (Local position)</h3>
     <div class="cmds">
       <code>TRACK</code><span>Start a radar track: the limited data block (beacon + altitude) becomes a full one with callsign, altitude/speed and scratchpad. Alias <b>IC</b>.</span>
       <code>DROP</code><span>Drop the track. Alias <b>DT</b>.</span>
     </div>
-    <p>Switch the brand dropdown to <b>Tower</b> for the radar pane: range rings, the facility's
+    <p>Switch the brand dropdown to <b>Local</b> for the radar pane: range rings, the facility's
     STARS video maps (the tower position's DCB list is on by default; <b>MAPS</b> toggles the rest),
-    and one radar return per second with trails. Arrivals check in tracked on a six-mile final and
+    and one radar return per second with trails. Arrivals check in on frequency, tracked, on a six-mile final and
     need <b>CTL</b>; departures appear as untracked beacon targets once they roll.</p>
 
     <h3>Transponder &amp; general</h3>

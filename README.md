@@ -34,9 +34,9 @@ ATCTrainer's CLI does — `1877 PUSH A` matches `DAL1877`.
 
 The **Commands** button in the header has the full reference.
 
-## Positions: Ground and Tower
+## Positions: Ground and Local
 
-The gold **Ground** in the brand is a dropdown. **Tower** turns the accent purple and adds:
+The gold **Ground** in the brand is a dropdown. **Local** (tower) turns the accent purple and adds:
 
 - **A STARS pane** next to the ASDE-X view (or instead of it — the header switch picks
   ASDE-X / Both / STARS). Range rings, the facility's STARS video maps fetched live from
@@ -50,8 +50,9 @@ The gold **Ground** in the brand is a dropdown. **Tower** turns the accent purpl
   facility data (frequency read back, e.g. "over to Minneapolis Departure 124.700"); the
   target drops off 20 seconds later.
 - **Flight commands** while airborne: `FH` / `TL` / `TR` headings, `CM` altitudes.
-- **Landing clearance.** Arrivals check in tracked on a six-mile final; without `CTL` they
-  go around at one mile. In Ground mode they land on their own as before.
+- **Landing clearance.** Arrivals check in on frequency ("Minneapolis Tower, Delta ten
+  forty-seven, six mile final, runway three zero right"), tracked, on a six-mile final;
+  without `CTL` they go around at one mile. In Ground mode they land on their own as before.
 - Aircraft rotate at Vr, climb on runway heading to the airport's configured initial
   altitude (jet or prop, from the training airport data), and leave the simulation after a
   handoff or 16 nm out.
@@ -141,14 +142,35 @@ Two voice engines, chosen in Settings:
 - **OpenRouter text-to-speech** through `/api/v1/audio/speech` with your key. Pick any
   speech model (default `hexgrad/kokoro-82m`, a fraction of a cent per call; Deepgram
   Aura-2, Gemini TTS, MiniMax and others sound richer and cost more, priced per
-  character). The voice picker lists the voices that model advertises; **auto** spreads
-  the English ones across aircraft by callsign. Audio is decoded with Web Audio, played
+  character). The voice picker lists the plain voices that model advertises (whispering, singing,
+  emotive and character voices are hidden); **auto** spreads the English ones across
+  aircraft by callsign. Audio is decoded with Web Audio, played
   one transmission at a time, cached per phrase, and optionally band-limited like a VHF
   receiver (**Radio effect**). If a request fails, that line falls back to the browser
   voice and the log says so once.
 
 **Test voice** in Settings plays a sample taxi clearance with whatever is selected. The
 speaker button in the command bar mutes everything.
+
+### Phraseology
+
+Everything spoken follows radio phraseology, whichever engine says it:
+
+- The sim's own calls tag their identifiers, so the log reads "runway 30L, taxi via Q C,
+  hold short 12R" while the voice says "runway three zero left, taxi via quebec, charlie,
+  hold short one two right". Flight numbers are combined ("FedEx nineteen ninety-two",
+  never digit by digit). Runways are digits plus left/right/center, taxiways and gates
+  are the ICAO alphabet ("alpha one", "echo one six"), squawks and headings go digit by
+  digit with "niner", frequencies are "one two four point seven", and airline callsigns use
+  telephony with group-form flight numbers ("Delta ten forty-seven", "American eight
+  ninety-four"); N-numbers are spelled out.
+- The model prompt carries a phraseology-to-command table (push back approved → `PUSH`,
+  "runway three zero left, taxi via quebec, charlie" → `RWY 30L TAXI Q C`, "climb and
+  maintain five thousand" → `CM 5000`, and so on), the airport's runways and taxiways with
+  their spoken forms, and the telephony in use on frequency, so spoken transmissions
+  resolve against what actually exists. It returns a written readback for the log and a
+  separate fully spelled-out `spoken` line for the voice; if a model omits the latter, a
+  deterministic fallback converts the written one.
 
 ---
 
