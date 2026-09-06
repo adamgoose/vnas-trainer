@@ -3,7 +3,8 @@
  * index, airport, scenario, pavement); the simulation advances on Ticked; every
  * SimEvent becomes a log line here.
  */
-import { type Update } from 'foldkit'
+import { Option } from 'effect'
+import { Command, Update } from 'foldkit'
 import { evo } from 'foldkit/struct'
 
 import { BlurCommand, FocusCommand, LoadAirport, LoadIndex, LoadPavement, LoadScenario, LoadSettings, ReadDeepLink, ReplaceDeepLink, SaveSettings } from './commands'
@@ -15,9 +16,10 @@ import type { AirportFile, CatalogIndex } from '../domain/catalog'
 import { type AtcCommand, executeCommand, parseCommandLine } from '../domain/commands'
 import { written } from '../domain/phrase'
 import { MAX_STEPS_PER_TICK, stepWorldTimes } from '../domain/physics'
-import { GROUND_RULES, LOCAL_RULES, type PositionRules } from '../domain/rules'
 import { loadScenario } from '../domain/scenario'
 import { SimEvent, type World, makeWorld } from '../domain/world'
+import { type PositionMode, positionFor } from '../positions'
+import { StarsOut, starsInit, starsUpdate } from '../positions/local/stars'
 import { type Settings, defaultSettings } from '../services/settings'
 import { sourceForProxy } from '../services/vnasData'
 import { BUTTON_IN, BUTTON_OUT, WHEEL_IN, WHEEL_OUT, fit, hitTest, pan, resize, zoomAt, zoomCentre } from '../view/viewport'
@@ -26,17 +28,9 @@ export type Return = Update.Return<Model, Message, Services>
 
 export const WORLD_SEED = 20260906
 
-export const rulesFor = (mode: Settings['mode']): PositionRules => (mode === 'tower' ? LOCAL_RULES : GROUND_RULES)
-export const positionLabel = (mode: Settings['mode']): string => (mode === 'tower' ? 'Local' : 'Ground')
-
-export const positionTips = (mode: Settings['mode'], world: World): string => {
-  if (mode === 'tower') {
-    return 'LUAW · CTO · TRACK · CD · CTL · GA · FH 090 · CM 5000 · switch on Arrivals'
-  }
-  const rw = Object.keys(world.graph.runwayEnds)[0] ?? '—'
-  const tw = Object.keys(world.graph.taxiways).slice(0, 2).join(' ')
-  return `PUSH · RWY ${rw} TAXI ${tw} · CROSS · LUAW · CTO`
-}
+export const rulesFor = (mode: PositionMode) => positionFor(mode).rules
+export const positionLabel = (mode: PositionMode): string => positionFor(mode).label
+export const positionTips = (mode: PositionMode, world: World): string => positionFor(mode).tips(world)
 
 export const aiEnabled = (settings: Settings): boolean => settings.key !== '' && settings.model !== ''
 
@@ -46,8 +40,13 @@ export const init = (): Return => ({ model: initialModel, commands: [LoadSetting
 
 // HELPERS
 
+/**
+ * Replace the World. A plain literal, not `AirportLoad.Ready(...)`: the tagged-union
+ * constructors decode through the Schema and rebuild the whole payload, which on
+ * every tick would copy the graph and every aircraft and defeat the view memos.
+ */
 const withWorld = (model: Model, world: World): Model =>
-  model.airport._tag === 'Ready' ? evo(model, { airport: () => AirportLoad.Ready({ info: model.airport._tag === 'Ready' ? model.airport.info : infoOf(model)!, world }) }) : model
+  model.airport._tag === 'Ready' ? { ...model, airport: { _tag: 'Ready', info: model.airport.info, world } } : model
 
 const pushLog = (model: Model, kind: LogLine['kind'], who: string | null, text: string): Model =>
   evo(model, { log: (log) => [{ kind, time: worldOf(model)?.simTime ?? 0, who, text }, ...log].slice(0, 140) })
@@ -84,6 +83,7 @@ const airportInfo = (airport: AirportFile): AirportInfo => ({
   name: airport.name,
   asdex: airport.asdex,
   twrmap: airport.twrmap,
+  stars: airport.stars,
   scenarios: airport.scen.map((s) => ({ id: s.id, name: s.name, count: s.ac.length })),
 })
 
@@ -145,6 +145,20 @@ const selectScenario = (model: Model, scenarioId: string | null): Return => {
 
 const cycleRate = (rate: number): number => (rate >= 8 ? 1 : rate * 2)
 
+/** The STARS Submodel: its messages fold into the parent, its OutMessages select targets or log. */
+const foldStars = (artcc: string) =>
+  Update.foldChild({
+    update: (stars: Model['stars'], input: Parameters<typeof starsUpdate>[2]) => starsUpdate(stars, artcc, input),
+    read: (model: Model) => Option.some(model.stars),
+    write: (model: Model, stars: Model['stars']) => evo(model, { stars: () => stars }),
+    toParentMessage: (message) => Message.GotStars({ message }),
+    foldOutMessage: (out: StarsOut) => (model: Model) =>
+      StarsOut.match<Return>(out, {
+        SelectedTarget: ({ callsign }) => ({ model: evo(model, { selected: () => callsign }), commands: [FocusCommand()] }),
+        Noted: ({ text }) => ({ model: pushLog(model, 'sys', null, text) }),
+      }),
+  })
+
 // UPDATE
 
 export const update = (model: Model, message: Message): Return =>
@@ -192,11 +206,13 @@ export const update = (model: Model, message: Message): Return =>
       const world = makeWorld(airport, rulesFor(model.settings.mode), WORLD_SEED)
       const info = airportInfo(airport)
       const pavementId = airport.asdex ?? airport.twrmap
+      const radar = starsInit(model.stars, airport.artcc, airport.stars)
       const fitted: Model = {
         ...model,
-        airport: AirportLoad.Ready({ info, world }),
+        airport: { _tag: 'Ready', info, world },
         pavement: pavementId === null ? Pavement.None() : Pavement.Loading({ id: pavementId }),
         scope: fit(world.graph, { ...model.scope, fitted: false }),
+        stars: radar.model,
       }
       const wanted = model.deepLink.airport === airport.id ? model.deepLink.scenario : null
       const scenarioId = wanted !== null && info.scenarios.some((s) => s.id === wanted) ? wanted : (info.scenarios[0]?.id ?? null)
@@ -206,6 +222,7 @@ export const update = (model: Model, message: Message): Return =>
         commands: [
           ...(next.commands ?? []),
           ...(pavementId === null ? [] : [LoadPavement({ artcc: airport.artcc, id: pavementId, asdex: airport.asdex !== null })]),
+          ...Command.mapMessages(radar.commands, (message) => Message.GotStars({ message })),
         ],
       }
     },
@@ -415,6 +432,16 @@ export const update = (model: Model, message: Message): Return =>
     ClosedDialog: () => ({ model: evo(model, { dialog: () => 'none' }) }),
 
     UpdatedDraft: ({ draft }) => ({ model: evo(model, { draft: () => draft }) }),
+
+    ClickedPane: ({ view }) => {
+      const settings = { ...model.settings, view }
+      return { model: evo(model, { settings: () => settings, draft: () => settings }), commands: [SaveSettings({ settings })] }
+    },
+
+    GotStars: ({ message }) => {
+      const info = infoOf(model)
+      return foldStars(info?.artcc ?? '')(model, { message, world: worldOf(model) })
+    },
 
     ClickedSaveSettings: () => {
       const d = model.draft

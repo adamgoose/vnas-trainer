@@ -6,9 +6,10 @@
 import { Schema } from 'effect'
 import { defineTaggedUnion } from 'foldkit/schema'
 
-import { CatalogIndex } from '../domain/catalog'
+import { CatalogIndex, Stars } from '../domain/catalog'
 import { AtcCommand } from '../domain/commands'
 import { World } from '../domain/world'
+import { StarsModel, initialStars } from '../positions/local/stars'
 import { Settings, defaultSettings } from '../services/settings'
 
 export const IndexLoad = defineTaggedUnion({
@@ -27,6 +28,7 @@ export const AirportInfo = Schema.Struct({
   name: Schema.String,
   asdex: Schema.NullOr(Schema.String),
   twrmap: Schema.NullOr(Schema.String),
+  stars: Schema.NullOr(Stars),
   scenarios: Schema.Array(ScenarioSummary),
 })
 export type AirportInfo = typeof AirportInfo.Type
@@ -99,6 +101,7 @@ export const Model = Schema.Struct({
   pavement: Pavement,
   scope: ScopeView,
   drag: Schema.NullOr(Drag),
+  stars: StarsModel,
   devicePixelRatio: Schema.Number,
   running: Schema.Boolean,
   rate: Schema.Number,
@@ -126,6 +129,7 @@ export const initialModel: Model = {
   pavement: Pavement.None(),
   scope: { width: 800, height: 600, scale: 0.05, originX: 0, originY: 0, fitted: false },
   drag: null,
+  stars: initialStars,
   devicePixelRatio: 1,
   running: true,
   rate: 1,

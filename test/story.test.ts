@@ -8,6 +8,7 @@ import { init, update } from '../src/app/update'
 import { AtcCommand } from '../src/domain/commands'
 import { defaultSettings } from '../src/services/settings'
 import { DataSource } from '../src/services/vnasData'
+import { LoadStarsMap, StarsMessage, defaultMaps } from '../src/positions/local/stars'
 import { msp } from './helpers'
 
 const index = {
@@ -46,7 +47,7 @@ describe('boot chain', () => {
         expect(m.airport).toEqual({ _tag: 'Loading', id: 'MSP' })
       }),
       Command.resolve(LoadAirport, Message.CompletedLoadAirport({ airport: msp })),
-      Command.expectExact(
+      Command.expectHas(
         LoadScenario({ source: DataSource.Catalog(), airportId: 'MSP', scenarioId: msp.scen[0]!.id }),
         LoadPavement({ artcc: 'ZMP', id: msp.asdex!, asdex: true }),
       ),
@@ -54,7 +55,9 @@ describe('boot chain', () => {
         expect(m.airport._tag).toBe('Ready')
         expect(m.pavement).toEqual({ _tag: 'Loading', id: msp.asdex! })
         expect(m.scenarioLoading).toBe(msp.scen[0]!.id)
+        expect(m.stars.shown).toEqual(defaultMaps(msp.stars))
       }),
+      ...defaultMaps(msp.stars).map((id) => Command.resolve(LoadStarsMap({ artcc: 'ZMP', id }), StarsMessage.CompletedLoadMap({ id }))),
       Command.resolve(LoadScenario, Message.CompletedLoadScenario({ airportId: 'MSP', scenario: msp.scen[0]! })),
       Command.expectExact(LoadPavement({ artcc: 'ZMP', id: msp.asdex!, asdex: true }), ReplaceDeepLink({ airport: 'MSP', scenario: msp.scen[0]!.id })),
       Command.resolve(ReplaceDeepLink, Message.CompletedReplaceDeepLink()),
@@ -93,6 +96,7 @@ describe('boot chain', () => {
       Command.expectHas(LoadScenario({ source: DataSource.Catalog(), airportId: 'MSP', scenarioId: big.id })),
       Command.resolve(LoadScenario, Message.FailedLoadScenario({ error: 'x' })),
       Command.resolve(LoadPavement, Message.FailedLoadPavement({ error: 'x' })),
+      ...defaultMaps(msp.stars).map((id) => Command.resolve(LoadStarsMap({ artcc: 'ZMP', id }), StarsMessage.FailedLoadMap({ id, error: 'x' }))),
     )
   })
 
@@ -281,6 +285,25 @@ describe('commands and selection', () => {
         expect(n.scope.scale).toBeCloseTo(m.scope.scale / 2, 9)
         expect(n.scope.width).toBe(500)
       }),
+    )
+  })
+})
+
+describe('Local position', () => {
+  test('the STARS pane folds: a target click selects and focuses; a failed map logs', () => {
+    const m = ready()
+    story(
+      update,
+      given(m),
+      message(Message.GotStars({ message: StarsMessage.FailedLoadMap({ id: 'abc', error: 'HTTP 404' }) })),
+      Command.expectNone(),
+      model((n) => expect(n.log[0]?.text).toBe('map abc: HTTP 404')),
+      message(Message.GotStars({ message: StarsMessage.ClickedRangeOut() })),
+      model((n) => expect(n.stars.view.w).toBe(46)),
+      message(Message.ClickedPane({ view: 'stars' })),
+      Command.expectExact(SaveSettings({ settings: { ...defaultSettings, view: 'stars' } })),
+      Command.resolve(SaveSettings, Message.CompletedSaveSettings()),
+      model((n) => expect(n.settings.view).toBe('stars')),
     )
   })
 })

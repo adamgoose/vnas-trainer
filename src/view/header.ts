@@ -3,6 +3,7 @@ import type { Html, HtmlBuilder } from 'foldkit/html'
 import { Message } from '../app/message'
 import { type Model, infoOf, worldOf } from '../app/model'
 import { positionLabel } from '../app/update'
+import { positionFor } from '../positions'
 
 export const clock = (seconds: number): string =>
   `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
@@ -58,7 +59,14 @@ export const headerView = (model: Model, h: HtmlBuilder<Message>): Html => {
           h.button([h.Class('tbtn'), h.Type('button'), h.AriaPressed(model.running ? 'true' : 'false'), h.OnClick(Message.ClickedTogglePlay())], [model.running ? 'Running' : 'Paused']),
           h.button([h.Class('tbtn'), h.Type('button'), h.OnClick(Message.ClickedRate())], [`${model.rate}×`]),
           h.button([h.Class('tbtn'), h.Type('button'), h.AriaPressed(world?.arrivalsEnabled ? 'true' : 'false'), h.OnClick(Message.ClickedArrivals())], ['Arrivals']),
-          h.span([h.Class('position-note')], [positionLabel(model.settings.mode)]),
+          positionFor(model.settings.mode).hasRadar
+            ? h.div(
+                [h.Class('viewbar'), h.Role('group'), h.AriaLabel('Panes')],
+                (['ground', 'both', 'stars'] as const).map((view) =>
+                  h.button([h.Type('button'), h.AriaPressed(model.settings.view === view ? 'true' : 'false'), h.OnClick(Message.ClickedPane({ view }))], [view === 'ground' ? 'ASDE-X' : view === 'both' ? 'Both' : 'STARS']),
+                ),
+              )
+            : h.span([h.Class('position-note')], [positionLabel(model.settings.mode)]),
         ],
       ),
     ],

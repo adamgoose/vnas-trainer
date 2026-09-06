@@ -25,7 +25,7 @@ const application = Runtime.makeApplication({
     Message,
     mode: 'TimeTravel',
     maxEntries: 500,
-    excludeFromHistory: ['Ticked'],
+    excludeFromHistory: ['Ticked', 'MovedScope', 'WheeledScope', 'PressedScope', 'ReleasedScope'],
   },
 })
 

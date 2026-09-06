@@ -3,6 +3,7 @@ import { defineMessageUnion } from 'foldkit/message'
 
 import { AirportFile, CatalogIndex, Scenario } from '../domain/catalog'
 import { AtcCommand } from '../domain/commands'
+import { StarsMessage } from '../positions/local/stars'
 import { Settings } from '../services/settings'
 
 export const Message = defineMessageUnion({
@@ -51,5 +52,7 @@ export const Message = defineMessageUnion({
   ClosedDialog: {},
   UpdatedDraft: { draft: Settings },
   ClickedSaveSettings: {},
+  ClickedPane: { view: Schema.Literals(['ground', 'both', 'stars']) },
+  GotStars: { message: StarsMessage },
 })
 export type Message = typeof Message.Type

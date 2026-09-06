@@ -5,7 +5,7 @@
  * repaints the whole shape list on every render.
  */
 import { Canvas } from 'foldkit'
-import type { Html, HtmlBuilder } from 'foldkit/html'
+import { type Html, type HtmlBuilder, createLazy, inertHtml as ih } from 'foldkit/html'
 
 import { videoMapById } from '../app/mapCache'
 import { type Model, type ScopeView, worldOf } from '../app/model'
@@ -13,7 +13,7 @@ import { Message } from '../app/message'
 import { ScopeSurface } from '../app/commands'
 import type { Aircraft, AircraftState } from '../domain/aircraft'
 import type { Graph } from '../domain/graph'
-import type { Ring, VideoMap } from '../domain/videomap'
+import type { Ring, VideoMap, VideoMapFeature } from '../domain/videomap'
 import { toCanvas, toWorld, viewWidthFt, worldSize } from './viewport'
 
 export const COLOURS = {
@@ -54,16 +54,105 @@ const MONO = '"IBM Plex Mono", Menlo, monospace'
 
 type Accent = Readonly<{ accent: string }>
 
-const ringInstructions = (graph: Graph, view: ScopeView, ring: Ring, close: boolean): Array<Canvas.PathInstruction> => {
+export const DECIMATE_PX = 0.75
+
+/**
+ * Path instructions for projected points, dropping points that land within a
+ * pixel of the last kept one and whole rings outside the canvas. Video maps
+ * carry far more vertices than a scope can show.
+ */
+export const decimatedPath = (points: ReadonlyArray<Canvas.Point>, width: number, height: number, close: boolean): Array<Canvas.PathInstruction> => {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const p of points) {
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x)
+    maxY = Math.max(maxY, p.y)
+  }
+  if (points.length === 0 || maxX < 0 || maxY < 0 || minX > width || minY > height) {
+    return []
+  }
   const out: Array<Canvas.PathInstruction> = []
-  ring.forEach((c, i) => {
-    const p = toCanvas(view, toWorld(graph, c))
-    out.push(i === 0 ? Canvas.MoveTo({ x: p.x, y: p.y }) : Canvas.LineTo({ x: p.x, y: p.y }))
+  let last: Canvas.Point | null = null
+  points.forEach((p, i) => {
+    const isLast = i === points.length - 1
+    if (last !== null && !isLast && Math.abs(p.x - last.x) < DECIMATE_PX && Math.abs(p.y - last.y) < DECIMATE_PX) {
+      return
+    }
+    out.push(last === null ? Canvas.MoveTo({ x: p.x, y: p.y }) : Canvas.LineTo({ x: p.x, y: p.y }))
+    last = p
   })
-  if (close && ring.length > 0) {
+  if (close && out.length > 1) {
     out.push(Canvas.Close())
   }
   return out
+}
+
+/** Path instructions from a flat [x0, y0, x1, y1, …] array of world-feet points. */
+export const decimatedFlatPath = (flat: Float64Array, view: Readonly<{ scale: number; originX: number; originY: number; width: number; height: number }>, close: boolean): Array<Canvas.PathInstruction> => {
+  const n = flat.length / 2
+  if (n === 0) {
+    return []
+  }
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (let i = 0; i < n; i++) {
+    const x = (flat[2 * i]! - view.originX) * view.scale
+    const y = (flat[2 * i + 1]! - view.originY) * view.scale
+    minX = Math.min(minX, x)
+    minY = Math.min(minY, y)
+    maxX = Math.max(maxX, x)
+    maxY = Math.max(maxY, y)
+  }
+  if (maxX < 0 || maxY < 0 || minX > view.width || minY > view.height) {
+    return []
+  }
+  const out: Array<Canvas.PathInstruction> = []
+  let lastX = NaN
+  let lastY = NaN
+  for (let i = 0; i < n; i++) {
+    const x = (flat[2 * i]! - view.originX) * view.scale
+    const y = (flat[2 * i + 1]! - view.originY) * view.scale
+    const isLast = i === n - 1
+    if (i > 0 && !isLast && Math.abs(x - lastX) < DECIMATE_PX && Math.abs(y - lastY) < DECIMATE_PX) {
+      continue
+    }
+    out.push(i === 0 ? Canvas.MoveTo({ x, y }) : Canvas.LineTo({ x, y }))
+    lastX = x
+    lastY = y
+  }
+  if (close && out.length > 1) {
+    out.push(Canvas.Close())
+  }
+  return out
+}
+
+/** World-feet coordinates of every ring in a video map, computed once per map and graph. */
+const worldRingCache = new WeakMap<VideoMap, WeakMap<Graph, ReadonlyArray<ReadonlyArray<Float64Array>>>>()
+const worldRings = (map: VideoMap, graph: Graph): ReadonlyArray<ReadonlyArray<Float64Array>> => {
+  const perGraph = worldRingCache.get(map) ?? new WeakMap<Graph, ReadonlyArray<ReadonlyArray<Float64Array>>>()
+  const cached = perGraph.get(graph)
+  if (cached !== undefined) {
+    return cached
+  }
+  const flatten = (ring: Ring): Float64Array => {
+    const flat = new Float64Array(ring.length * 2)
+    ring.forEach((c, i) => {
+      const p = toWorld(graph, c)
+      flat[2 * i] = p.x
+      flat[2 * i + 1] = p.y
+    })
+    return flat
+  }
+  const rings = map.features.map((f) => [...f.polygons.flatMap((polygon) => polygon.map(flatten)), ...f.lines.map(flatten)])
+  perGraph.set(graph, rings)
+  worldRingCache.set(map, perGraph)
+  return rings
 }
 
 const PAVEMENT_ORDER = ['apron', 'structure', 'taxiway', 'runway'] as const
@@ -76,20 +165,23 @@ const PAVEMENT_FILL: Readonly<Record<string, string>> = {
 }
 
 const pavementShapes = (graph: Graph, view: ScopeView, map: VideoMap, asdex: boolean, unit: number): ReadonlyArray<Canvas.Shape> => {
+  const rings = worldRings(map, graph)
+  const polygonCount = (f: VideoMapFeature) => f.polygons.reduce((n, polygon) => n + polygon.length, 0)
   if (asdex) {
     return PAVEMENT_ORDER.map((cat) => {
-      const instructions = map.features
-        .filter((f) => (f.asdex ?? 'other') === cat)
-        .flatMap((f) => f.polygons.flatMap((rings) => rings.flatMap((ring) => ringInstructions(graph, view, ring, true))))
+      const instructions = map.features.flatMap((f, fi) =>
+        (f.asdex ?? 'other') === cat ? rings[fi]!.slice(0, polygonCount(f)).flatMap((flat) => decimatedFlatPath(flat, view, true)) : [],
+      )
       return Canvas.Path({ instructions, fill: PAVEMENT_FILL[cat] ?? COLOURS.paveStructure })
     })
   }
   const shapes: Array<Canvas.Shape> = []
-  for (const f of map.features) {
-    if (f.polygons.length > 0) {
+  map.features.forEach((f, fi) => {
+    const polygons = polygonCount(f)
+    if (polygons > 0) {
       shapes.push(
         Canvas.Path({
-          instructions: f.polygons.flatMap((rings) => rings.flatMap((ring) => ringInstructions(graph, view, ring, true))),
+          instructions: rings[fi]!.slice(0, polygons).flatMap((flat) => decimatedFlatPath(flat, view, true)),
           fill: f.color ?? COLOURS.paveStructure,
         }),
       )
@@ -97,13 +189,13 @@ const pavementShapes = (graph: Graph, view: ScopeView, map: VideoMap, asdex: boo
     if (f.lines.length > 0) {
       shapes.push(
         Canvas.Path({
-          instructions: f.lines.flatMap((line) => ringInstructions(graph, view, line, false)),
+          instructions: rings[fi]!.slice(polygons).flatMap((flat) => decimatedFlatPath(flat, view, false)),
           stroke: f.color ?? COLOURS.net,
           lineWidth: Math.max(1, f.thickness ?? 1) * unit * 1.2 * view.scale,
         }),
       )
     }
-  }
+  })
   return [Canvas.Group({ opacity: 0.35, shapes })]
 }
 
@@ -151,24 +243,24 @@ const networkShapes = (graph: Graph, view: ScopeView, unit: number, colours: Acc
   ]
 }
 
-type StaticKey = Readonly<{ graph: Graph; key: string; shapes: ReadonlyArray<Canvas.Shape> }>
-let staticCache: StaticKey | null = null
-
-const staticLayers = (graph: Graph, view: ScopeView, pavement: Readonly<{ id: string; asdex: boolean }> | null, colours: Accent): ReadonlyArray<Canvas.Shape> => {
-  const key = `${view.width}|${view.height}|${view.scale}|${view.originX}|${view.originY}|${pavement?.id ?? ''}|${colours.accent}`
-  if (staticCache !== null && staticCache.graph === graph && staticCache.key === key) {
-    return staticCache.shapes
-  }
+/** Pavement, network and gates: repainted only when the viewport, pavement or accent changes. */
+const staticCanvas = (graph: Graph, view: ScopeView, pavementId: string | null, asdex: boolean, accent: string, dpr: number): Html => {
   const unit = worldSize(graph).w / 1000
-  const map = pavement === null ? undefined : videoMapById(pavement.id)
-  const shapes = [
-    Canvas.Rect({ x: 0, y: 0, width: view.width, height: view.height, fill: COLOURS.bg }),
-    ...(map === undefined || pavement === null ? [] : pavementShapes(graph, view, map, pavement.asdex, unit)),
-    ...networkShapes(graph, view, unit, colours),
+  const map = pavementId === null ? undefined : videoMapById(pavementId)
+  const shapes: ReadonlyArray<Canvas.Shape> = [
+    Canvas.Group({
+      scale: { x: dpr, y: dpr },
+      shapes: [
+        Canvas.Rect({ x: 0, y: 0, width: view.width, height: view.height, fill: COLOURS.bg }),
+        ...(map === undefined ? [] : pavementShapes(graph, view, map, asdex, unit)),
+        ...networkShapes(graph, view, unit, { accent }),
+      ],
+    }),
   ]
-  staticCache = { graph, key, shapes }
-  return shapes
+  return Canvas.view({ width: Math.max(1, Math.round(view.width * dpr)), height: Math.max(1, Math.round(view.height * dpr)), shapes, className: 'scope-static' }, ih)
 }
+
+const lazyStatic = createLazy()
 
 const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: boolean, showTags: boolean): ReadonlyArray<Canvas.Shape> => {
   const { w } = worldSize(graph)
@@ -234,15 +326,11 @@ const scopeCanvas = (model: Model, h: HtmlBuilder<Message>): Html => {
     return h.empty
   }
   const graph = world.graph
-  const pavement = model.pavement._tag === 'Ready' ? { id: model.pavement.id, asdex: model.pavement.asdex } : null
   const showTags = viewWidthFt(view) < worldSize(graph).w * 0.62
   const shapes: ReadonlyArray<Canvas.Shape> = [
     Canvas.Group({
       scale: { x: dpr, y: dpr },
-      shapes: [
-        ...staticLayers(graph, view, pavement, { accent: accentFor(model.settings.mode) }),
-        ...world.aircraft.filter((a) => a.delay <= 0).flatMap((a) => aircraftShapes(graph, view, a, a.callsign === model.selected, showTags)),
-      ],
+      shapes: world.aircraft.filter((a) => a.delay <= 0).flatMap((a) => aircraftShapes(graph, view, a, a.callsign === model.selected, showTags)),
     }),
   ]
   return Canvas.view(
@@ -252,11 +340,21 @@ const scopeCanvas = (model: Model, h: HtmlBuilder<Message>): Html => {
       shapes,
       className: `scope-canvas${model.drag !== null && model.drag.moved ? ' drag' : ''}`,
       onPointerDown: ({ x, y }) => Message.PressedScope({ x: x / dpr, y: y / dpr }),
-      onPointerMove: ({ x, y }) => Message.MovedScope({ x: x / dpr, y: y / dpr }),
+      ...(model.drag === null ? {} : { onPointerMove: ({ x, y }: Canvas.Point) => Message.MovedScope({ x: x / dpr, y: y / dpr }) }),
       onPointerUp: ({ x, y }) => Message.ReleasedScope({ x: x / dpr, y: y / dpr }),
     },
     h,
   )
+}
+
+const staticScope = (model: Model, h: HtmlBuilder<Message>): Html => {
+  const world = worldOf(model)
+  if (world === null) {
+    return h.empty
+  }
+  const pavementId = model.pavement._tag === 'Ready' ? model.pavement.id : null
+  const asdex = model.pavement._tag === 'Ready' && model.pavement.asdex
+  return lazyStatic(staticCanvas, [world.graph, model.scope, pavementId, asdex, accentFor(model.settings.mode), model.devicePixelRatio])
 }
 
 const overlayText = (model: Model): Readonly<{ text: string; error: boolean }> | null => {
@@ -302,6 +400,7 @@ export const scopeView = (model: Model, h: HtmlBuilder<Message>): Html => {
   return h.div(
     [h.Class('scope'), h.OnMount(ScopeSurface())],
     [
+      staticScope(model, h),
       scopeCanvas(model, h),
       h.div(
         [h.Class('scope-keys')],

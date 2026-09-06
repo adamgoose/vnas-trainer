@@ -5,12 +5,10 @@ import { COMMAND_INPUT } from '../app/commands'
 import { Message } from '../app/message'
 import type { Model } from '../app/model'
 import { aiEnabled } from '../app/update'
+import { positionFor } from '../positions'
 import { clock } from './header'
 
-const placeholder = (model: Model): string =>
-  model.settings.mode === 'tower'
-    ? "DAL1234 CTO · or type it the way you'd say it on frequency"
-    : "DAL1234 PUSH · or type it the way you'd say it on frequency"
+const placeholder = (model: Model): string => positionFor(model.settings.mode).placeholder
 
 const hint = (model: Model): Readonly<{ text: string; ai: boolean }> =>
   aiEnabled(model.settings)
