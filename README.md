@@ -34,6 +34,10 @@ ATCTrainer's CLI does — `1877 PUSH A` matches `DAL1877`.
 
 The **Commands** button in the header has the full reference.
 
+Every strip shows the flight's **SID** first (STAR for arrivals, VFR, or "no SID"), then
+type, gate or runway, and destination. Selecting a strip expands it into the filed flight
+plan: rules, full type, route, cruise altitude and speed, remarks, assigned squawk.
+
 ---
 
 ## Why there is a build step

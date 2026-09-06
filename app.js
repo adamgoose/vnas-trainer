@@ -929,7 +929,11 @@ function loadScenario(sc) {
   S.ac = []; S.t = 0; S.sel = null; S.seq = 0; LOG.innerHTML = '';
   let skipped = 0;
   for (const r of sc ? sc.ac : []) {
-    const a = Aircraft({ cs: r.cs, ty: r.ty, dep: r.dep, dst: r.dst, delay: r.d || 0, sq: String(1000 + Math.floor(Math.random() * 6000)), xpdr: 'S' });
+    const a = Aircraft({
+      cs: r.cs, ty: r.ty, dep: r.dep, dst: r.dst, delay: r.d || 0, sq: String(1000 + Math.floor(Math.random() * 6000)), xpdr: 'S',
+      rules: r.r || 'I', tyf: r.tyf || null, rte: r.rte || null, alt: r.alt || null, cspd: r.spd || null, rmk: r.rmk || null,
+      sid: r.sid || null, star: r.star || null, app: r.app || null,
+    });
     const at = String(r.at || '').toUpperCase();
     if (r.k === 'P') {
       const g = GATES[at]; if (!g) { skipped++; continue; }
@@ -1140,12 +1144,35 @@ function renderStrips() {
   $('#strips').innerHTML = list.map((a) => {
     const pending = a.delay > 0;
     const col = pending ? 'var(--ink-3)' : (STATE_COLOR[a.state] || 'var(--ink)');
-    return `<div class="strip" data-cs="${esc(a.cs)}" aria-selected="${S.sel === a}" role="button" tabindex="0"${pending ? ' style="opacity:.55"' : ''}>
+    /* the departure procedure leads the second line: it is what ground needs at a glance */
+    const proc = a.sid ? `<b class="sid">${esc(a.sid)}</b>`
+      : a.star && !a.dep?.endsWith(A.id) ? `<b class="sid star">${esc(a.star)}</b>`
+      : a.rules === 'V' ? `<b class="sid vfr">VFR</b>`
+      : a.rte ? `<b class="sid none">no SID</b>` : '';
+    const selected = S.sel === a;
+    return `<div class="strip" data-cs="${esc(a.cs)}" aria-selected="${selected}" role="button" tabindex="0"${pending ? ' style="opacity:.55"' : ''}>
       <span class="cs">${esc(a.cs)}</span>
       <span class="st" style="color:${col}">${pending ? 'pending' : (STATE_TEXT[a.state] || a.state)}</span>
-      <span class="sub"><b>${esc(a.ty)}</b>${a.gate ? `<b>${esc(a.gate)}</b>` : ''}${a.rwy ? `<b>rwy ${esc(a.rwy)}</b>` : ''}${a.dst ? `<b>→ ${esc(a.dst)}</b>` : ''}${a.delay > 0 ? `<b>+${Math.ceil(a.delay)}s</b>` : ''}${a.blockedBy ? `<b>behind ${esc(a.blockedBy)}</b>` : ''}</span>
+      <span class="sub">${proc}<b>${esc(a.ty)}</b>${a.gate ? `<b>${esc(a.gate)}</b>` : ''}${a.rwy ? `<b>rwy ${esc(a.rwy)}</b>` : ''}${a.dst ? `<span>→ ${esc(a.dst)}</span>` : ''}${a.delay > 0 ? `<b>+${Math.ceil(a.delay)}s</b>` : ''}${a.blockedBy ? `<b>behind ${esc(a.blockedBy)}</b>` : ''}</span>
+      ${selected ? flightPlanHTML(a) : ''}
     </div>`;
   }).join('');
+}
+function flightPlanHTML(a) {
+  if (!a.rte && !a.alt && !a.rmk && !a.dep) return `<div class="fp"><span class="k">no flight plan</span></div>`;
+  const alt = a.alt ? (a.alt >= 18000 ? `FL${Math.round(a.alt / 100)}` : `${a.alt} ft`) : null;
+  const head = [
+    a.rules === 'V' ? 'VFR' : 'IFR', a.tyf || a.ty,
+    `${a.dep || '—'} → ${a.dst || '—'}`, alt, a.cspd ? `${a.cspd} kt` : null,
+  ].filter(Boolean).map(esc).join(' · ');
+  const tags = [a.sid ? `SID ${a.sid}` : null, a.star ? `STAR ${a.star}` : null, a.app ? `APP ${a.app}` : null].filter(Boolean).map(esc).join(' · ');
+  return `<div class="fp">
+    <div>${head}</div>
+    ${tags ? `<div class="tags">${tags}</div>` : ''}
+    ${a.rte ? `<div class="rte">${esc(a.rte)}</div>` : '<div class="k">no route</div>'}
+    ${a.rmk ? `<div class="k">rmk ${esc(a.rmk)}</div>` : ''}
+    <div class="k">squawk ${esc(a.sq)}</div>
+  </div>`;
 }
 function selectAc(a) { S.sel = a; syncSel(); renderStrips(); }
 function syncSel() { const el = $('#sel'); el.textContent = S.sel ? S.sel.cs : 'no target'; el.classList.toggle('none', !S.sel); }
