@@ -1,0 +1,55 @@
+import { Schema } from 'effect'
+import { defineMessageUnion } from 'foldkit/message'
+
+import { AirportFile, CatalogIndex, Scenario } from '../domain/catalog'
+import { AtcCommand } from '../domain/commands'
+import { Settings } from '../services/settings'
+
+export const Message = defineMessageUnion({
+  CompletedLoadSettings: { settings: Settings },
+  CompletedReadDeepLink: { airport: Schema.NullOr(Schema.String), scenario: Schema.NullOr(Schema.String) },
+  ChangedDeepLink: { airport: Schema.NullOr(Schema.String), scenario: Schema.NullOr(Schema.String) },
+  CompletedLoadIndex: { index: CatalogIndex },
+  FailedLoadIndex: { error: Schema.String },
+  CompletedLoadAirport: { airport: AirportFile },
+  FailedLoadAirport: { id: Schema.String, error: Schema.String },
+  CompletedLoadScenario: { airportId: Schema.String, scenario: Scenario },
+  FailedLoadScenario: { error: Schema.String },
+  CompletedLoadPavement: { id: Schema.String, asdex: Schema.Boolean },
+  FailedLoadPavement: { error: Schema.String },
+  CompletedSaveSettings: {},
+  CompletedFocusCommand: {},
+  CompletedBlurCommand: {},
+  CompletedReplaceDeepLink: {},
+  Ticked: { now: Schema.Number },
+  ChangedPosition: { mode: Schema.Literals(['ground', 'tower']) },
+  ChangedArtcc: { id: Schema.String },
+  ChangedAirport: { id: Schema.String },
+  ChangedScenario: { id: Schema.String },
+  ClickedTogglePlay: {},
+  ClickedRate: {},
+  ClickedArrivals: {},
+  ResizedScope: { width: Schema.Number, height: Schema.Number, devicePixelRatio: Schema.Number },
+  WheeledScope: { x: Schema.Number, y: Schema.Number, deltaY: Schema.Number },
+  PressedScope: { x: Schema.Number, y: Schema.Number },
+  MovedScope: { x: Schema.Number, y: Schema.Number },
+  ReleasedScope: { x: Schema.Number, y: Schema.Number },
+  ClickedZoomIn: {},
+  ClickedZoomOut: {},
+  ClickedFit: {},
+  ClickedStrip: { callsign: Schema.String },
+  UpdatedCommandText: { value: Schema.String },
+  SubmittedCommand: {},
+  PressedHistoryUp: {},
+  PressedHistoryDown: {},
+  PressedSlash: {},
+  PressedEscape: {},
+  IssuedCommand: { callsign: Schema.NullOr(Schema.String), command: AtcCommand },
+  ClickedSpeaker: {},
+  ClickedHelp: {},
+  ClickedSettings: {},
+  ClosedDialog: {},
+  UpdatedDraft: { draft: Settings },
+  ClickedSaveSettings: {},
+})
+export type Message = typeof Message.Type

@@ -12,6 +12,6 @@ export default defineConfig({
     strictPort: true,
   },
   optimizeDeps: {
-    entries: ['src/entry.ts'],
+    entries: ['src/main.ts'],
   },
 })

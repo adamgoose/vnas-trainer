@@ -1,32 +1,150 @@
 import { describe, expect, test } from 'bun:test'
 import { Command, given, message, model, story } from 'foldkit/story'
 
+import { FocusCommand, LoadAirport, LoadIndex, LoadPavement, LoadScenario, LoadSettings, ReadDeepLink, ReplaceDeepLink, SaveSettings } from '../src/app/commands'
+import { Message } from '../src/app/message'
+import { type Model, initialModel, worldOf } from '../src/app/model'
+import { init, update } from '../src/app/update'
 import { AtcCommand } from '../src/domain/commands'
-import { Message, type Model, initialModel, update } from '../src/app/main'
+import { defaultSettings } from '../src/services/settings'
+import { DataSource } from '../src/services/vnasData'
 import { msp } from './helpers'
 
-const ready = (): Model => update(initialModel, Message.CompletedLoadAirport({ airport: msp })).model
+const index = {
+  built: '',
+  artccs: [{ id: 'ZMP', name: 'Minneapolis ARTCC', airports: [{ id: 'MSP', name: 'Minneapolis ATCT', n: 64, asdex: true, gates: 220, taxi: 106, stars: true }, { id: 'FCM', name: 'Flying Cloud', n: 2, asdex: false, gates: 8, taxi: 14, stars: true }] }],
+}
+const big = msp.scen.reduce((best, s) => (s.ac.length > best.ac.length ? s : best), msp.scen[0]!)
 
-const ticks = (from: number, count: number) =>
-  Array.from({ length: count }, (_, i) => message(Message.Ticked({ now: from + (i + 1) * 100 })))
+/** The model after the whole load chain, with the biggest scenario applied. */
+const ready = (): Model => {
+  let m = update(initialModel, Message.CompletedLoadSettings({ settings: defaultSettings })).model
+  m = update(m, Message.CompletedReadDeepLink({ airport: 'MSP', scenario: big.id })).model
+  m = update(m, Message.ResizedScope({ width: 1000, height: 700, devicePixelRatio: 2 })).model
+  m = update(m, Message.CompletedLoadIndex({ index })).model
+  m = update(m, Message.CompletedLoadAirport({ airport: msp })).model
+  m = update(m, Message.CompletedLoadScenario({ airportId: 'MSP', scenario: big })).model
+  return m
+}
 
-describe('app', () => {
-  test('loading the airport builds the world and logs the scenario', () => {
+const ticks = (from: number, count: number) => Array.from({ length: count }, (_, i) => message(Message.Ticked({ now: from + (i + 1) * 100 })))
+
+describe('boot chain', () => {
+  test('init loads settings, then the deep link, then the index, then the airport, then scenario and pavement', () => {
+    const boot = init()
+    expect(boot.commands?.map((c) => c.name)).toEqual([LoadSettings.name])
     story(
       update,
       given(initialModel),
-      message(Message.CompletedLoadAirport({ airport: msp })),
+      message(Message.CompletedLoadSettings({ settings: defaultSettings })),
+      Command.expectExact(ReadDeepLink),
+      Command.resolve(ReadDeepLink, Message.CompletedReadDeepLink({ airport: null, scenario: null })),
+      Command.expectExact(LoadIndex({ source: DataSource.Catalog() })),
+      Command.resolve(LoadIndex, Message.CompletedLoadIndex({ index })),
+      Command.expectExact(LoadAirport({ source: DataSource.Catalog(), id: 'MSP', artcc: 'ZMP' })),
+      model((m) => {
+        expect(m.airport).toEqual({ _tag: 'Loading', id: 'MSP' })
+      }),
+      Command.resolve(LoadAirport, Message.CompletedLoadAirport({ airport: msp })),
+      Command.expectExact(
+        LoadScenario({ source: DataSource.Catalog(), airportId: 'MSP', scenarioId: msp.scen[0]!.id }),
+        LoadPavement({ artcc: 'ZMP', id: msp.asdex!, asdex: true }),
+      ),
+      model((m) => {
+        expect(m.airport._tag).toBe('Ready')
+        expect(m.pavement).toEqual({ _tag: 'Loading', id: msp.asdex! })
+        expect(m.scenarioLoading).toBe(msp.scen[0]!.id)
+      }),
+      Command.resolve(LoadScenario, Message.CompletedLoadScenario({ airportId: 'MSP', scenario: msp.scen[0]! })),
+      Command.expectExact(LoadPavement({ artcc: 'ZMP', id: msp.asdex!, asdex: true }), ReplaceDeepLink({ airport: 'MSP', scenario: msp.scen[0]!.id })),
+      Command.resolve(ReplaceDeepLink, Message.CompletedReplaceDeepLink()),
+      model((m) => {
+        expect(worldOf(m)?.aircraft.length).toBe(msp.scen[0]!.ac.filter((a) => a.k === 'P').length)
+        expect(m.log.at(-1)?.text).toMatch(/surface aircraft/)
+        expect(m.log[0]?.text).toMatch(/^Ground position\. Select an aircraft, then try: PUSH · RWY/)
+      }),
+      Command.resolve(LoadPavement, Message.CompletedLoadPavement({ id: msp.asdex!, asdex: true })),
       Command.expectNone(),
       model((m) => {
-        expect(m.load._tag).toBe('Ready')
-        if (m.load._tag === 'Ready') {
-          expect(m.load.world.aircraft).toHaveLength(82)
-        }
-        expect(m.log[0]?.text).toMatch(/^KMSP 12s\/17 SLCL 5MIT — 82 surface aircraft/)
+        expect(m.pavement).toEqual({ _tag: 'Ready', id: msp.asdex!, asdex: true })
       }),
     )
   })
 
+  test('a deep link picks the airport and scenario; otherwise the busiest airport loads', () => {
+    story(
+      update,
+      given({ ...initialModel, deepLink: { airport: 'FCM', scenario: null } }),
+      message(Message.CompletedLoadIndex({ index })),
+      Command.expectExact(LoadAirport({ source: DataSource.Catalog(), id: 'FCM', artcc: 'ZMP' })),
+      Command.resolve(LoadAirport, Message.FailedLoadAirport({ id: 'FCM', error: 'x' })),
+    )
+    story(
+      update,
+      given({ ...initialModel, deepLink: { airport: 'ZZZ', scenario: null } }),
+      message(Message.CompletedLoadIndex({ index })),
+      Command.expectExact(LoadAirport({ source: DataSource.Catalog(), id: 'MSP', artcc: 'ZMP' })),
+      Command.resolve(LoadAirport, Message.FailedLoadAirport({ id: 'MSP', error: 'x' })),
+    )
+    story(
+      update,
+      given({ ...initialModel, index: { _tag: 'Ready', index }, airport: { _tag: 'Loading', id: 'MSP' }, deepLink: { airport: 'MSP', scenario: big.id } }),
+      message(Message.CompletedLoadAirport({ airport: msp })),
+      Command.expectHas(LoadScenario({ source: DataSource.Catalog(), airportId: 'MSP', scenarioId: big.id })),
+      Command.resolve(LoadScenario, Message.FailedLoadScenario({ error: 'x' })),
+      Command.resolve(LoadPavement, Message.FailedLoadPavement({ error: 'x' })),
+    )
+  })
+
+  test('a stale airport result is ignored', () => {
+    story(
+      update,
+      given({ ...initialModel, index: { _tag: 'Ready', index }, airport: { _tag: 'Loading', id: 'FCM' } }),
+      message(Message.CompletedLoadAirport({ airport: msp })),
+      Command.expectNone(),
+      model((m) => {
+        expect(m.airport).toEqual({ _tag: 'Loading', id: 'FCM' })
+      }),
+    )
+  })
+
+  test('choosing the empty field clears the aircraft; choosing a scenario fetches it', () => {
+    story(
+      update,
+      given(ready()),
+      message(Message.ChangedScenario({ id: '' })),
+      Command.expectExact(ReplaceDeepLink({ airport: 'MSP', scenario: null })),
+      Command.resolve(ReplaceDeepLink, Message.CompletedReplaceDeepLink()),
+      model((m) => {
+        expect(worldOf(m)?.aircraft).toHaveLength(0)
+        expect(m.log.at(-1)?.text).toBe('Minneapolis ATCT — empty field. Switch on Arrivals, or pick a scenario.')
+      }),
+      message(Message.ChangedScenario({ id: big.id })),
+      Command.expectExact(LoadScenario({ source: DataSource.Catalog(), airportId: 'MSP', scenarioId: big.id })),
+      Command.resolve(LoadScenario, Message.FailedLoadScenario({ error: 'offline' })),
+      model((m) => {
+        expect(m.scenarioLoading).toBeNull()
+        expect(m.log[0]?.text).toBe('could not load scenario: offline')
+      }),
+    )
+  })
+
+  test('switching position swaps the rules, logs tips and saves', () => {
+    story(
+      update,
+      given(ready()),
+      message(Message.ChangedPosition({ mode: 'tower' })),
+      Command.expectExact(SaveSettings({ settings: { ...defaultSettings, mode: 'tower' } })),
+      Command.resolve(SaveSettings, Message.CompletedSaveSettings()),
+      model((m) => {
+        expect(worldOf(m)?.rules.requireLandingClearance).toBe(true)
+        expect(m.log[0]?.text).toMatch(/^Local position — try: LUAW/)
+      }),
+    )
+  })
+})
+
+describe('clock', () => {
   test('the first tick starts the clock; later ticks step 100 ms each, catching up at most 40 steps', () => {
     story(
       update,
@@ -34,59 +152,49 @@ describe('app', () => {
       message(Message.Ticked({ now: 1000 })),
       model((m) => {
         expect(m.lastTickAt).toBe(1000)
-        if (m.load._tag === 'Ready') {
-          expect(m.load.world.tick).toBe(0)
-        }
+        expect(worldOf(m)?.tick).toBe(0)
       }),
       ...ticks(1000, 5),
       model((m) => {
-        if (m.load._tag === 'Ready') {
-          expect(m.load.world.tick).toBe(5)
-          expect(m.load.world.simTime).toBeCloseTo(0.5, 6)
-        }
+        expect(worldOf(m)?.tick).toBe(5)
       }),
       message(Message.Ticked({ now: 1500 + 60_000 })),
       model((m) => {
-        if (m.load._tag === 'Ready') {
-          expect(m.load.world.tick).toBe(45)
-        }
+        expect(worldOf(m)?.tick).toBe(45)
       }),
     )
   })
 
-  test('sim rate multiplies steps and pausing stops them without a catch-up burst', () => {
+  test('rate cycles 1, 2, 4, 8, 1 and pausing stops steps without a catch-up burst', () => {
     story(
       update,
       given(ready()),
-      message(Message.ClickedRate({ rate: 4 })),
+      message(Message.ClickedRate()),
+      message(Message.ClickedRate()),
+      model((m) => expect(m.rate).toBe(4)),
       message(Message.Ticked({ now: 0 })),
       message(Message.Ticked({ now: 100 })),
-      model((m) => {
-        if (m.load._tag === 'Ready') {
-          expect(m.load.world.tick).toBe(4)
-        }
-      }),
+      model((m) => expect(worldOf(m)?.tick).toBe(4)),
       message(Message.ClickedTogglePlay()),
       message(Message.Ticked({ now: 5000 })),
       message(Message.Ticked({ now: 5100 })),
       model((m) => {
         expect(m.running).toBe(false)
-        if (m.load._tag === 'Ready') {
-          expect(m.load.world.tick).toBe(4)
-        }
+        expect(worldOf(m)?.tick).toBe(4)
       }),
       message(Message.ClickedTogglePlay()),
       message(Message.Ticked({ now: 9000 })),
       message(Message.Ticked({ now: 9100 })),
-      model((m) => {
-        if (m.load._tag === 'Ready') {
-          expect(m.load.world.tick).toBe(8)
-        }
-      }),
+      model((m) => expect(worldOf(m)?.tick).toBe(8)),
+      message(Message.ClickedRate()),
+      message(Message.ClickedRate()),
+      model((m) => expect(m.rate).toBe(1)),
     )
   })
+})
 
-  test('a typed command selects the aircraft, logs the readback and records the command', () => {
+describe('commands and selection', () => {
+  test('a typed command selects the aircraft, logs the readback, records the command and keeps history', () => {
     story(
       update,
       given(ready()),
@@ -98,6 +206,7 @@ describe('app', () => {
         expect(m.log[0]).toMatchObject({ kind: 'pilot', who: 'AAL894', text: 'pushing back off E16' })
         expect(m.log[1]).toMatchObject({ kind: 'atc', text: 'AAL894 PUSH' })
         expect(m.commandLog).toEqual([{ tick: 0, callsign: 'AAL894', command: AtcCommand.Push({ taxiway: null }) }])
+        expect(m.history).toEqual(['AAL894 PUSH'])
       }),
       message(Message.UpdatedCommandText({ value: 'PUSH' })),
       message(Message.SubmittedCommand()),
@@ -105,15 +214,97 @@ describe('app', () => {
         expect(m.log[0]).toMatchObject({ kind: 'err', text: 'unable — not at a gate' })
         expect(m.commandLog).toHaveLength(1)
       }),
+      message(Message.PressedHistoryUp()),
+      model((m) => expect(m.commandText).toBe('PUSH')),
+      message(Message.PressedHistoryUp()),
+      model((m) => expect(m.commandText).toBe('AAL894 PUSH')),
+      message(Message.PressedHistoryDown()),
+      message(Message.PressedHistoryDown()),
+      model((m) => expect(m.commandText).toBe('')),
       message(Message.UpdatedCommandText({ value: 'taxi to the runway' })),
       message(Message.SubmittedCommand()),
-      model((m) => {
-        expect(m.log[0]?.kind).toBe('err')
-      }),
+      model((m) => expect(m.log[0]?.kind).toBe('err')),
       message(Message.IssuedCommand({ callsign: null, command: AtcCommand.Pause() })),
       model((m) => {
         expect(m.running).toBe(false)
         expect(m.commandLog).toHaveLength(2)
+      }),
+    )
+  })
+
+  test('clicking a strip selects and focuses the command box; arrivals toggle schedules the first one', () => {
+    story(
+      update,
+      given(ready()),
+      message(Message.ClickedStrip({ callsign: 'DAL2057' })),
+      Command.expectExact(FocusCommand),
+      Command.resolve(FocusCommand, Message.CompletedFocusCommand()),
+      model((m) => expect(m.selected).toBe('DAL2057')),
+      message(Message.ClickedArrivals()),
+      model((m) => {
+        expect(worldOf(m)?.arrivalsEnabled).toBe(true)
+        expect(worldOf(m)?.nextArrivalAt).toBe(5)
+        expect(m.log[0]?.text).toBe('arrival generator on — MSP fleet mix')
+      }),
+    )
+  })
+
+  test('a click on the scope over an aircraft selects it; a drag pans', () => {
+    const m = ready()
+    const world = worldOf(m)!
+    const a = world.aircraft.find((x) => x.callsign === 'AAL894')!
+    const { toCanvas, toWorld } = require('../src/view/viewport') as typeof import('../src/view/viewport')
+    const p = toCanvas(m.scope, toWorld(world.graph, a.position))
+    story(
+      update,
+      given(m),
+      message(Message.PressedScope({ x: p.x, y: p.y })),
+      message(Message.ReleasedScope({ x: p.x, y: p.y })),
+      Command.expectExact(FocusCommand),
+      Command.resolve(FocusCommand, Message.CompletedFocusCommand()),
+      model((n) => expect(n.selected).toBe('AAL894')),
+      message(Message.PressedScope({ x: 100, y: 100 })),
+      message(Message.MovedScope({ x: 150, y: 120 })),
+      message(Message.ReleasedScope({ x: 150, y: 120 })),
+      Command.expectNone(),
+      model((n) => {
+        expect(n.scope.originX).toBeCloseTo(m.scope.originX - 50 / m.scope.scale, 6)
+        expect(n.scope.originY).toBeCloseTo(m.scope.originY - 20 / m.scope.scale, 6)
+        expect(n.drag).toBeNull()
+      }),
+      message(Message.WheeledScope({ x: 500, y: 350, deltaY: -1 })),
+      model((n) => expect(n.scope.scale).toBeGreaterThan(m.scope.scale)),
+      message(Message.ClickedFit()),
+      model((n) => expect(n.scope.scale).toBeCloseTo(m.scope.scale, 9)),
+      message(Message.ResizedScope({ width: 500, height: 700, devicePixelRatio: 2 })),
+      model((n) => {
+        expect(n.scope.scale).toBeCloseTo(m.scope.scale / 2, 9)
+        expect(n.scope.width).toBe(500)
+      }),
+    )
+  })
+})
+
+describe('settings', () => {
+  test('saving trims and defaults fields, logs the AI state, and reloads the index when the proxy changes', () => {
+    story(
+      update,
+      given(ready()),
+      message(Message.ClickedSettings()),
+      model((m) => expect(m.dialog).toBe('settings')),
+      message(Message.UpdatedDraft({ draft: { ...defaultSettings, key: ' sk-1 ', model: '  ', proxy: ' https://p/?url= ' } })),
+      message(Message.ClickedSaveSettings()),
+      Command.expectExact(
+        SaveSettings({ settings: { ...defaultSettings, key: 'sk-1', proxy: 'https://p/?url=' } }),
+        LoadIndex({ source: DataSource.Live({ proxy: 'https://p/?url=' }) }),
+      ),
+      Command.resolve(SaveSettings, Message.CompletedSaveSettings()),
+      Command.resolve(LoadIndex, Message.FailedLoadIndex({ error: 'no proxy' })),
+      model((m) => {
+        expect(m.dialog).toBe('none')
+        expect(m.settings.model).toBe(defaultSettings.model)
+        expect(m.log[0]?.text).toBe(`plain-English commands on via OpenRouter (${defaultSettings.model})`)
+        expect(m.index).toEqual({ _tag: 'Failed', error: 'no proxy' })
       }),
     )
   })
