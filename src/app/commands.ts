@@ -6,7 +6,7 @@
 import { Effect, Queue, Schema, Stream } from 'effect'
 import { Command, Dom, Mount } from 'foldkit'
 
-import { storeVideoMap } from './mapCache'
+import { storeVideoMap, videoMapById } from './mapCache'
 import { Message } from './message'
 import { parseTranslation } from '../domain/prompt'
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SessionEvent, normaliseRoomCode } from '../domain/session'
@@ -96,9 +96,10 @@ export const LoadPavement = Command.define('LoadPavement', {
   messages: [Message.CompletedLoadPavement, Message.FailedLoadPavement],
   execute: ({ artcc, id, asdex }) =>
     Effect.gen(function* () {
-      const maps = yield* VideoMaps
-      const map = yield* maps.load(artcc, id)
-      storeVideoMap(map)
+      if (videoMapById(id) === undefined) {
+        const maps = yield* VideoMaps
+        storeVideoMap(yield* maps.load(artcc, id))
+      }
       return Message.CompletedLoadPavement({ id, asdex })
     }).pipe(Effect.catch((e) => Effect.succeed(Message.FailedLoadPavement({ error: e.message })))),
 })
@@ -126,14 +127,15 @@ export const BlurCommand = Command.define('BlurCommand', {
 
 /**
  * The ground scope container: reports its CSS size (and the device pixel ratio)
- * whenever it changes, and wheel events with their deltas, which Foldkit's
- * `OnWheel` attribute does not carry. Wheel events are non-passive so the page
- * never scrolls while zooming.
+ * whenever it changes, wheel events with their deltas, which Foldkit's
+ * `OnWheel` attribute does not carry, and right-clicks over the canvas or the
+ * command ring. Wheel events are non-passive so the page never scrolls while
+ * zooming; the browser's context menu is suppressed everywhere on the scope.
  */
-type ScopeMessage = ReturnType<typeof Message.ResizedScope> | ReturnType<typeof Message.WheeledScope>
+type ScopeMessage = ReturnType<typeof Message.ResizedScope> | ReturnType<typeof Message.WheeledScope> | ReturnType<typeof Message.ContextScope>
 
 export const ScopeSurface = Mount.defineStream('ScopeSurface', {
-  messages: [Message.ResizedScope, Message.WheeledScope],
+  messages: [Message.ResizedScope, Message.WheeledScope, Message.ContextScope],
   execute: ({ element }) => {
     const sizes = Stream.callback<ScopeMessage>((queue) =>
       Effect.gen(function* () {
@@ -159,8 +161,75 @@ export const ScopeSurface = Mount.defineStream('ScopeSurface', {
         return Message.WheeledScope({ x: event.clientX - rect.left, y: event.clientY - rect.top, deltaY: event.deltaY })
       }),
     )
-    return Stream.merge(sizes, wheels)
+    const contexts = Stream.fromEventListener<MouseEvent>(element, 'contextmenu').pipe(
+      Stream.map((event): ScopeMessage | null => {
+        event.preventDefault()
+        if (!(event.target instanceof Element) || event.target.closest('.scope-canvas, .radial') === null) {
+          return null
+        }
+        const rect = element.getBoundingClientRect()
+        return Message.ContextScope({ x: event.clientX - rect.left, y: event.clientY - rect.top })
+      }),
+      Stream.filter((message): message is ScopeMessage => message !== null),
+    )
+    return Stream.merge(Stream.merge(sizes, wheels), contexts)
   },
+})
+
+/**
+ * The divider between the two scopes: a drag moves the split, reported as the
+ * ground scope's share of the container's width. The pointer is captured so the
+ * drag survives leaving the bar, and the release saves the settings.
+ */
+type SplitMessage = ReturnType<typeof Message.DraggedSplit> | ReturnType<typeof Message.ReleasedSplit>
+
+export const SplitHandle = Mount.defineStream('SplitHandle', {
+  messages: [Message.DraggedSplit, Message.ReleasedSplit],
+  execute: ({ element }) =>
+    Stream.callback<SplitMessage>((queue) =>
+      Effect.gen(function* () {
+        const offer = (message: SplitMessage) => Effect.runSync(Queue.offer(queue, message))
+        const bar = element as HTMLElement
+        let dragging = false
+        const down = (event: PointerEvent) => {
+          if (event.button !== 0) {
+            return
+          }
+          event.preventDefault()
+          dragging = true
+          element.setPointerCapture(event.pointerId)
+        }
+        const move = (event: PointerEvent) => {
+          if (!dragging) {
+            return
+          }
+          const rect = (element.parentElement ?? element).getBoundingClientRect()
+          offer(Message.DraggedSplit({ ratio: rect.width === 0 ? 0.5 : (event.clientX - rect.left) / rect.width }))
+        }
+        const up = (event: PointerEvent) => {
+          if (!dragging) {
+            return
+          }
+          dragging = false
+          if (element.hasPointerCapture(event.pointerId)) {
+            element.releasePointerCapture(event.pointerId)
+          }
+          offer(Message.ReleasedSplit())
+        }
+        bar.addEventListener('pointerdown', down)
+        bar.addEventListener('pointermove', move)
+        bar.addEventListener('pointerup', up)
+        bar.addEventListener('pointercancel', up)
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            bar.removeEventListener('pointerdown', down)
+            bar.removeEventListener('pointermove', move)
+            bar.removeEventListener('pointerup', up)
+            bar.removeEventListener('pointercancel', up)
+          }),
+        )
+      }),
+    ),
 })
 
 // AUDIO AND AI

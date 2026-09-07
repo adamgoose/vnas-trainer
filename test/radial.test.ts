@@ -5,18 +5,18 @@
 import { describe, expect, test } from 'bun:test'
 import { Command, given, message, model, story } from 'foldkit/story'
 
-import { FocusCommand, SaveSettings } from '../src/app/commands'
+import { FocusCommand, LoadPavement, SaveSettings } from '../src/app/commands'
 import { Message } from '../src/app/message'
 import { type Model, initialModel, worldOf } from '../src/app/model'
 import { MAX_ITEMS, type RadialNode, radialAt, radialRoot } from '../src/app/radial'
-import { update } from '../src/app/update'
+import { pavementFor, update } from '../src/app/update'
 import type { Aircraft } from '../src/domain/aircraft'
 import { parseCommandLine } from '../src/domain/commands'
 import { TRACON_RULES } from '../src/domain/rules'
 import { loadScenario } from '../src/domain/scenario'
 import { type World, makeWorld } from '../src/domain/world'
 import type { PositionMode } from '../src/positions'
-import { MAX_TAG_SIZE, MIN_TAG_SIZE, defaultSettings, mergeSettings } from '../src/services/settings'
+import { MAX_SPLIT, MAX_TAG_SIZE, MIN_SPLIT, MIN_TAG_SIZE, defaultSettings, mergeSettings } from '../src/services/settings'
 import { toCanvas, toWorld } from '../src/view/viewport'
 import { aircraftNamed, command, groundWorld, msp, runUntil, scenarioNamed, stateOf } from './helpers'
 
@@ -187,15 +187,14 @@ describe('radial menu in the app', () => {
     return m
   }
 
-  test('a click on an aircraft opens the ring; picks descend it; a command pick dispatches, logs and closes', () => {
+  test('a right-click on an aircraft opens the ring; picks descend it; a command pick dispatches, logs and closes', () => {
     const m = ready()
     const world = worldOf(m)!
     const p = toCanvas(m.scope, toWorld(world.graph, aircraftNamed(world, 'AAL894').position))
     story(
       update,
       given(m),
-      message(Message.PressedScope({ x: p.x, y: p.y })),
-      message(Message.ReleasedScope({ x: p.x, y: p.y })),
+      message(Message.ContextScope({ x: p.x, y: p.y })),
       Command.expectExact(FocusCommand),
       Command.resolve(FocusCommand, Message.CompletedFocusCommand()),
       model((n) => {
@@ -225,16 +224,22 @@ describe('radial menu in the app', () => {
     )
   })
 
-  test('the DISP panel: the ring can be turned off, and the data block size is clamped and saved with the settings', () => {
+  test('a plain click only selects; the pane split is clamped, saved on release, and merged from storage', () => {
     const m = ready()
     const world = worldOf(m)!
     const p = toCanvas(m.scope, toWorld(world.graph, aircraftNamed(world, 'AAL894').position))
-    const off = update(m, Message.ToggledRadialMenu())
-    expect(off.model.settings.radialMenu).toBe(false)
-    expect(off.commands?.map((c) => c.name)).toEqual([SaveSettings.name])
-    const clicked = update(update(off.model, Message.PressedScope({ x: p.x, y: p.y })).model, Message.ReleasedScope({ x: p.x, y: p.y })).model
+    const clicked = update(update(m, Message.PressedScope({ x: p.x, y: p.y })).model, Message.ReleasedScope({ x: p.x, y: p.y })).model
     expect(clicked.selected).toBe('AAL894')
     expect(clicked.radial).toBeNull()
+    const dragged = update(m, Message.DraggedSplit({ ratio: 0.9 }))
+    expect(dragged.model.settings.split).toBe(MAX_SPLIT)
+    expect(dragged.commands ?? []).toEqual([])
+    expect(update(m, Message.DraggedSplit({ ratio: -1 })).model.settings.split).toBe(MIN_SPLIT)
+    expect(update(m, Message.DraggedSplit({ ratio: 0.33333 })).model.settings.split).toBe(0.333)
+    const released = update(dragged.model, Message.ReleasedSplit())
+    expect(released.commands?.map((c) => c.name)).toEqual([SaveSettings.name])
+    expect(mergeSettings({ split: 5 })).toEqual(defaultSettings)
+    expect(mergeSettings({ split: 0.3, radialMenu: false })).toEqual({ ...defaultSettings, split: 0.3 })
     expect(update(update(m, Message.ClickedAsdexPanel()).model, Message.PressedOutsideAsdexPanel()).model.asdexPanelOpen).toBe(false)
     expect(update(m, Message.ToggledParkedTags()).model.settings.asdexParkedTags).toBe(true)
     let n = m
@@ -243,7 +248,34 @@ describe('radial menu in the app', () => {
     }
     expect(n.settings.asdexTagSize).toBe(MAX_TAG_SIZE)
     expect(update(n, Message.ChangedTagSize({ delta: -100 })).model.settings.asdexTagSize).toBe(MIN_TAG_SIZE)
-    expect(mergeSettings({ asdexTagSize: 40, radialMenu: false })).toEqual({ ...defaultSettings, radialMenu: false })
+    expect(mergeSettings({ asdexTagSize: 40 })).toEqual(defaultSettings)
+  })
+
+  test('the DISP panel can swap ASDE-X pavement for the tower-cab map where the airport has both', () => {
+    expect(pavementFor('A', 'C', false)).toEqual({ id: 'A', asdex: true })
+    expect(pavementFor('A', 'C', true)).toEqual({ id: 'C', asdex: false })
+    expect(pavementFor('A', null, true)).toEqual({ id: 'A', asdex: true })
+    expect(pavementFor(null, 'C', false)).toEqual({ id: 'C', asdex: false })
+    expect(pavementFor(null, null, true)).toBeNull()
+    const m = ready()
+    expect(m.pavement).toEqual({ _tag: 'Loading', id: msp.asdex! })
+    const on = update(m, Message.ToggledCabMap())
+    expect(on.model.settings.asdexCabMap).toBe(true)
+    expect(on.model.pavement).toEqual({ _tag: 'Loading', id: msp.twrmap! })
+    expect(on.commands?.map((c) => c.name)).toEqual([SaveSettings.name, LoadPavement.name])
+    const off = update(on.model, Message.ToggledCabMap())
+    expect(off.model.pavement).toEqual({ _tag: 'Loading', id: msp.asdex! })
+    // layers toggle only on a ready cab map, and are remembered per map id
+    expect(update(m, Message.ToggledCabLayer({ key: 'line:#fcb737:3' })).model.settings.cabLayersOff).toEqual({})
+    const cab = update(on.model, Message.CompletedLoadPavement({ id: msp.twrmap!, asdex: false })).model
+    const one = update(cab, Message.ToggledCabLayer({ key: 'line:#fcb737:3' }))
+    expect(one.model.settings.cabLayersOff).toEqual({ [msp.twrmap!]: ['line:#fcb737:3'] })
+    expect(one.commands?.map((c) => c.name)).toEqual([SaveSettings.name])
+    const two = update(one.model, Message.ToggledCabLayer({ key: 'fill:#343434:1' })).model
+    expect(two.settings.cabLayersOff[msp.twrmap!]).toEqual(['line:#fcb737:3', 'fill:#343434:1'])
+    expect(update(update(two, Message.ToggledCabLayer({ key: 'line:#fcb737:3' })).model, Message.ToggledCabLayer({ key: 'fill:#343434:1' })).model.settings.cabLayersOff).toEqual({})
+    expect(mergeSettings({ cabLayersOff: { a: ['x'] } }).cabLayersOff).toEqual({ a: ['x'] })
+    expect(mergeSettings({ cabLayersOff: 'nope' }).cabLayersOff).toEqual({})
   })
 
   test('the ring closes at its root, on Escape, on a click over empty pavement, and when another aircraft is selected', () => {
@@ -251,9 +283,12 @@ describe('radial menu in the app', () => {
     const world = worldOf(m)!
     const p = toCanvas(m.scope, toWorld(world.graph, aircraftNamed(world, 'AAL894').position))
     const open = (): Model => {
+      // a right-click on macOS: the press starts a drag, the context menu event lands before the release
       let n = update(m, Message.PressedScope({ x: p.x, y: p.y })).model
+      n = update(n, Message.ContextScope({ x: p.x, y: p.y })).model
+      expect(n.drag).toBeNull()
       n = update(n, Message.ReleasedScope({ x: p.x, y: p.y })).model
-      expect(n.radial).not.toBeNull()
+      expect(n.radial).toEqual({ callsign: 'AAL894', trail: [] })
       return n
     }
     expect(update(open(), Message.ClickedRadialBack()).model.radial).toBeNull()
@@ -261,6 +296,7 @@ describe('radial menu in the app', () => {
     const empty = update(update(open(), Message.PressedScope({ x: 5, y: 5 })).model, Message.ReleasedScope({ x: 5, y: 5 })).model
     expect(empty.radial).toBeNull()
     expect(empty.selected).toBe('AAL894')
+    expect(update(open(), Message.ContextScope({ x: 5, y: 5 })).model.radial).toBeNull()
     const second = world.aircraft.find((a) => a.callsign !== 'AAL894')!.callsign
     const other = update(open(), Message.ClickedStrip({ callsign: second })).model
     expect(other.radial).toBeNull()

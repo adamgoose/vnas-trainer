@@ -12,10 +12,12 @@ export const Ring = Schema.Array(LonLat)
 export type Ring = typeof Ring.Type
 
 export const VideoMapFeature = Schema.Struct({
-  /** ASDE-X category: apron | structure | taxiway | runway | hold | other */
+  /** ASDE-X category, lower-cased: apron | structure | taxiway | runway | hold | other */
   asdex: Schema.NullOr(Schema.String),
   color: Schema.NullOr(Schema.String),
   thickness: Schema.NullOr(Schema.Number),
+  /** tower-cab maps: draw order, low first */
+  zIndex: Schema.NullOr(Schema.Number),
   /** each polygon is its rings, outer first */
   polygons: Schema.Array(Schema.Array(Ring)),
   lines: Schema.Array(Ring),
@@ -78,14 +80,41 @@ export const parseVideoMap = (id: string, json: GeoJson): VideoMap => {
     }
     const thickness = typeof p['thickness'] === 'number' ? p['thickness'] : null
     features.push({
-      asdex: typeof p['asdex'] === 'string' ? p['asdex'] : null,
+      asdex: typeof p['asdex'] === 'string' ? p['asdex'].trim().toLowerCase() : null,
       color: typeof p['color'] === 'string' ? p['color'] : null,
       thickness,
+      zIndex: typeof p['zIndex'] === 'number' ? p['zIndex'] : null,
       polygons,
       lines,
     })
   }
   return { id, features }
+}
+
+/**
+ * A layer of a tower-cab map: the features that share a colour, a draw order and
+ * a kind (filled polygons or stroked lines). Cab maps carry nothing else that
+ * would name a layer, so this is what the DISP panel offers to toggle.
+ */
+export type CabLayer = Readonly<{ key: string; color: string | null; zIndex: number; kind: 'fill' | 'line'; count: number }>
+
+export const cabLayerKey = (f: VideoMapFeature, kind: 'fill' | 'line'): string => `${kind}:${f.color ?? ''}:${f.zIndex ?? 0}`
+
+/** The layers of a map, in draw order: by zIndex, fills before lines, then colour. */
+export const cabLayers = (map: VideoMap): ReadonlyArray<CabLayer> => {
+  const layers = new Map<string, { layer: CabLayer; count: number }>()
+  for (const f of map.features) {
+    const kinds: Array<'fill' | 'line'> = [...(f.polygons.length > 0 ? ['fill' as const] : []), ...(f.lines.length > 0 ? ['line' as const] : [])]
+    for (const kind of kinds) {
+      const key = cabLayerKey(f, kind)
+      const entry = layers.get(key) ?? { layer: { key, color: f.color, zIndex: f.zIndex ?? 0, kind, count: 0 }, count: 0 }
+      entry.count += 1
+      layers.set(key, entry)
+    }
+  }
+  return [...layers.values()]
+    .map(({ layer, count }) => ({ ...layer, count }))
+    .sort((a, b) => a.zIndex - b.zIndex || (a.kind === b.kind ? 0 : a.kind === 'fill' ? -1 : 1) || (a.color ?? '').localeCompare(b.color ?? ''))
 }
 
 /** Every line to stroke on a radar scope: lines plus polygon rings. */

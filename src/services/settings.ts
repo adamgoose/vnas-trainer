@@ -6,6 +6,9 @@ import { Context, Effect, Layer, Schema } from 'effect'
 
 export const MIN_TAG_SIZE = 8
 export const MAX_TAG_SIZE = 18
+/** the ground scope's share of the width in the two-pane view */
+export const MIN_SPLIT = 0.2
+export const MAX_SPLIT = 0.8
 
 export const Settings = Schema.Struct({
   key: Schema.String,
@@ -24,10 +27,14 @@ export const Settings = Schema.Struct({
   turnUrl: Schema.String,
   turnUsername: Schema.String,
   turnCredential: Schema.String,
-  /** ASDE-X display: data blocks on parked aircraft, data block font size in CSS px, the command ring on a click */
+  /** ASDE-X display: data blocks on parked aircraft, data block font size in CSS px, the tower-cab map instead of ASDE-X pavement where the airport has both */
   asdexParkedTags: Schema.Boolean,
   asdexTagSize: Schema.Number.pipe(Schema.check(Schema.isBetween({ minimum: MIN_TAG_SIZE, maximum: MAX_TAG_SIZE }))),
-  radialMenu: Schema.Boolean,
+  asdexCabMap: Schema.Boolean,
+  /** tower-cab layers switched off, by map id (see `cabLayers`) */
+  cabLayersOff: Schema.Record(Schema.String, Schema.Array(Schema.String)),
+  /** where the divider sits between the ground scope and STARS in the two-pane view, as the ground scope's share of the width */
+  split: Schema.Number.pipe(Schema.check(Schema.isBetween({ minimum: MIN_SPLIT, maximum: MAX_SPLIT }))),
 })
 export type Settings = typeof Settings.Type
 
@@ -51,7 +58,9 @@ export const defaultSettings: Settings = {
   turnCredential: '',
   asdexParkedTags: false,
   asdexTagSize: 11,
-  radialMenu: true,
+  asdexCabMap: false,
+  cabLayersOff: {},
+  split: 0.5,
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)

@@ -38,6 +38,8 @@ export const Message = defineMessageUnion({
   PressedScope: { x: Schema.Number, y: Schema.Number },
   MovedScope: { x: Schema.Number, y: Schema.Number },
   ReleasedScope: { x: Schema.Number, y: Schema.Number },
+  /** a right-click (or long press) on the scope, in CSS px of the scope */
+  ContextScope: { x: Schema.Number, y: Schema.Number },
   ClickedZoomIn: {},
   ClickedZoomOut: {},
   ClickedFit: {},
@@ -49,7 +51,8 @@ export const Message = defineMessageUnion({
   PressedOutsideAsdexPanel: {},
   ToggledParkedTags: {},
   ChangedTagSize: { delta: Schema.Number },
-  ToggledRadialMenu: {},
+  ToggledCabMap: {},
+  ToggledCabLayer: { key: Schema.String },
   UpdatedCommandText: { value: Schema.String },
   SubmittedCommand: {},
   PressedHistoryUp: {},
@@ -64,6 +67,9 @@ export const Message = defineMessageUnion({
   UpdatedDraft: { draft: Settings },
   ClickedSaveSettings: {},
   ClickedPane: { view: Schema.Literals(['ground', 'both', 'stars']) },
+  /** the divider between the panes is being dragged: the ground scope's share of the width */
+  DraggedSplit: { ratio: Schema.Number },
+  ReleasedSplit: {},
   GotStars: { message: StarsMessage },
   PressedPtt: {},
   ReleasedPtt: {},

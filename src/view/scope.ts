@@ -8,12 +8,12 @@ import { Canvas } from 'foldkit'
 import { type Html, type HtmlBuilder, createLazy, inertHtml as ih } from 'foldkit/html'
 
 import { videoMapById } from '../app/mapCache'
-import { type Model, type ScopeView, worldOf } from '../app/model'
+import { type Model, type ScopeView, infoOf, worldOf } from '../app/model'
 import { Message } from '../app/message'
 import { ScopeSurface } from '../app/commands'
 import type { Aircraft, AircraftState } from '../domain/aircraft'
 import type { Graph } from '../domain/graph'
-import type { Ring, VideoMap, VideoMapFeature } from '../domain/videomap'
+import { type Ring, type VideoMap, type VideoMapFeature, cabLayerKey, cabLayers } from '../domain/videomap'
 import { departureProcedure } from '../domain/vnas'
 import { radialView } from './radial'
 import { toCanvas, toWorld, viewWidthFt, worldSize } from './viewport'
@@ -166,7 +166,8 @@ const PAVEMENT_FILL: Readonly<Record<string, string>> = {
   hold: COLOURS.paveTaxiway,
 }
 
-const pavementShapes = (graph: Graph, view: ScopeView, map: VideoMap, asdex: boolean, unit: number): ReadonlyArray<Canvas.Shape> => {
+/** ASDE-X pavement by category, or a tower-cab map layer by layer in draw order, skipping the layers in `hidden`. */
+const pavementShapes = (graph: Graph, view: ScopeView, map: VideoMap, asdex: boolean, unit: number, hidden: ReadonlySet<string>): ReadonlyArray<Canvas.Shape> => {
   const rings = worldRings(map, graph)
   const polygonCount = (f: VideoMapFeature) => f.polygons.reduce((n, polygon) => n + polygon.length, 0)
   if (asdex) {
@@ -178,9 +179,10 @@ const pavementShapes = (graph: Graph, view: ScopeView, map: VideoMap, asdex: boo
     })
   }
   const shapes: Array<Canvas.Shape> = []
-  map.features.forEach((f, fi) => {
+  const order = map.features.map((f, fi) => [f, fi] as const).sort((a, b) => (a[0].zIndex ?? 0) - (b[0].zIndex ?? 0))
+  for (const [f, fi] of order) {
     const polygons = polygonCount(f)
-    if (polygons > 0) {
+    if (polygons > 0 && !hidden.has(cabLayerKey(f, 'fill'))) {
       shapes.push(
         Canvas.Path({
           instructions: rings[fi]!.slice(0, polygons).flatMap((flat) => decimatedFlatPath(flat, view, true)),
@@ -188,7 +190,7 @@ const pavementShapes = (graph: Graph, view: ScopeView, map: VideoMap, asdex: boo
         }),
       )
     }
-    if (f.lines.length > 0) {
+    if (f.lines.length > 0 && !hidden.has(cabLayerKey(f, 'line'))) {
       shapes.push(
         Canvas.Path({
           instructions: rings[fi]!.slice(polygons).flatMap((flat) => decimatedFlatPath(flat, view, false)),
@@ -197,7 +199,7 @@ const pavementShapes = (graph: Graph, view: ScopeView, map: VideoMap, asdex: boo
         }),
       )
     }
-  })
+  }
   return [Canvas.Group({ opacity: 0.35, shapes })]
 }
 
@@ -245,8 +247,8 @@ const networkShapes = (graph: Graph, view: ScopeView, unit: number, colours: Acc
   ]
 }
 
-/** Pavement, network and gates: repainted only when the viewport, pavement or accent changes. */
-const staticCanvas = (graph: Graph, view: ScopeView, pavementId: string | null, asdex: boolean, accent: string, dpr: number): Html => {
+/** Pavement, network and gates: repainted only when the viewport, pavement, hidden layers or accent changes. `hidden` is the layer keys joined by `|`, a string so the memo compares it by value. */
+const staticCanvas = (graph: Graph, view: ScopeView, pavementId: string | null, asdex: boolean, hidden: string, accent: string, dpr: number): Html => {
   const unit = worldSize(graph).w / 1000
   const map = pavementId === null ? undefined : videoMapById(pavementId)
   const shapes: ReadonlyArray<Canvas.Shape> = [
@@ -254,7 +256,7 @@ const staticCanvas = (graph: Graph, view: ScopeView, pavementId: string | null, 
       scale: { x: dpr, y: dpr },
       shapes: [
         Canvas.Rect({ x: 0, y: 0, width: view.width, height: view.height, fill: COLOURS.bg }),
-        ...(map === undefined ? [] : pavementShapes(graph, view, map, asdex, unit)),
+        ...(map === undefined ? [] : pavementShapes(graph, view, map, asdex, unit, new Set(hidden === '' ? [] : hidden.split('|')))),
         ...networkShapes(graph, view, unit, { accent }),
       ],
     }),
@@ -362,7 +364,8 @@ const staticScope = (model: Model, h: HtmlBuilder<Message>): Html => {
   }
   const pavementId = model.pavement._tag === 'Ready' ? model.pavement.id : null
   const asdex = model.pavement._tag === 'Ready' && model.pavement.asdex
-  return lazyStatic(staticCanvas, [world.graph, model.scope, pavementId, asdex, accentFor(model.settings.mode), model.devicePixelRatio])
+  const hidden = pavementId === null || asdex ? '' : (model.settings.cabLayersOff[pavementId] ?? []).join('|')
+  return lazyStatic(staticCanvas, [world.graph, model.scope, pavementId, asdex, hidden, accentFor(model.settings.mode), model.devicePixelRatio])
 }
 
 const overlayText = (model: Model): Readonly<{ text: string; error: boolean }> | null => {
@@ -405,10 +408,16 @@ const displayPanel = (model: Model, h: HtmlBuilder<Message>): Html => {
     return h.empty
   }
   const s = model.settings
+  const info = infoOf(model)
+  const bothMaps = info !== null && info.asdex !== null && info.twrmap !== null
   return h.div(
     [h.Class('adisp')],
     [
       h.div([h.Class('grp')], ['ASDE-X display']),
+      h.label(
+        [h.Class(bothMaps ? '' : 'off'), h.Title(bothMaps ? 'draw the tower-cab artwork instead of the ASDE-X pavement' : 'this airport has only one map')],
+        [h.input([h.Type('checkbox'), h.Checked(s.asdexCabMap), h.Disabled(!bothMaps), h.OnChange(() => Message.ToggledCabMap())]), 'tower-cab map instead of ASDE-X pavement'],
+      ),
       h.label([], [h.input([h.Type('checkbox'), h.Checked(s.asdexParkedTags), h.OnChange(() => Message.ToggledParkedTags())]), 'data blocks on parked aircraft']),
       h.div(
         [h.Class('row')],
@@ -419,9 +428,36 @@ const displayPanel = (model: Model, h: HtmlBuilder<Message>): Html => {
           h.button([h.Type('button'), h.AriaLabel('Larger'), h.OnClick(Message.ChangedTagSize({ delta: 1 }))], ['+']),
         ],
       ),
-      h.label([], [h.input([h.Type('checkbox'), h.Checked(s.radialMenu), h.OnChange(() => Message.ToggledRadialMenu())]), 'command ring on click']),
+      ...cabLayerRows(model, h),
     ],
   )
+}
+
+/** One checkbox per layer of the tower-cab map on the scope: a swatch, fills or lines, and the feature count. */
+const cabLayerRows = (model: Model, h: HtmlBuilder<Message>): ReadonlyArray<Html> => {
+  if (model.pavement._tag !== 'Ready' || model.pavement.asdex) {
+    return []
+  }
+  const id = model.pavement.id
+  const map = videoMapById(id)
+  if (map === undefined) {
+    return []
+  }
+  const off = model.settings.cabLayersOff[id] ?? []
+  return [
+    h.div([h.Class('grp layers')], ['tower-cab layers']),
+    ...cabLayers(map).map((layer) =>
+      h.label(
+        [h.Class('layer')],
+        [
+          h.input([h.Type('checkbox'), h.Checked(!off.includes(layer.key)), h.OnChange(() => Message.ToggledCabLayer({ key: layer.key }))]),
+          h.i([h.Class('sw'), h.Style({ background: layer.color ?? COLOURS.net })]),
+          h.span([], [`${layer.kind === 'fill' ? 'fills' : 'lines'} ${layer.color ?? 'default'}`]),
+          h.b([], [`z${layer.zIndex} · ${layer.count}`]),
+        ],
+      ),
+    ),
+  ]
 }
 
 /** `inset` is drawn in the top-left corner: the selected aircraft's strip (see `selectedStripView`). */
@@ -446,7 +482,7 @@ export const scopeView = (model: Model, h: HtmlBuilder<Message>, inset: Html = h
         ? h.empty
         : h.div(
             [h.Class('scope-hud')],
-            [`${world.airport.id} · ${active} aircraft · ${moving} moving${pending > 0 ? ` · ${pending} pending` : ''}`, h.br([]), 'scroll to zoom · drag to pan'],
+            [`${world.airport.id} · ${active} aircraft · ${moving} moving${pending > 0 ? ` · ${pending} pending` : ''}`, h.br([]), 'scroll to zoom · drag to pan · right-click for commands'],
           ),
       h.div(
         [h.Class('zoombar')],

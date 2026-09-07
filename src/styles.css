@@ -40,8 +40,11 @@ select:disabled { opacity: .5; }
 /* ---------- main ---------- */
 main { flex: 1 1 auto; display: grid; grid-template-columns: 1fr 296px; min-height: 0; }
 .scopes { position: relative; display: grid; grid-template-columns: 1fr; min-height: 0; min-width: 0; }
-.scopes.both { grid-template-columns: 1fr 1fr; }
-.stars { position: relative; background: #07090b; border-left: 1px solid var(--rule); overflow: hidden; min-height: 0; touch-action: none; }
+.scopes.both { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+.splitter { width: 7px; margin: 0 -1px; cursor: col-resize; background: var(--rule); border-left: 1px solid var(--bg); border-right: 1px solid var(--bg); touch-action: none; user-select: none; z-index: 1; }
+.splitter:hover { background: var(--rule-2); }
+.splitter:active { background: var(--accent); }
+.stars { position: relative; background: #07090b; border-left: 1px solid var(--rule); overflow: hidden; min-height: 0; min-width: 0; touch-action: none; }
 .scopes.stars .stars { border-left: 0; }
 .stars-canvas { position: relative; display: block; width: 100%; height: 100%; cursor: crosshair; }
 .stars .scope-keys { top: auto; bottom: 10px; right: 12px; }
@@ -60,7 +63,7 @@ main { flex: 1 1 auto; display: grid; grid-template-columns: 1fr 296px; min-heig
 .viewbar button + button { border-left: 1px solid var(--rule-2); }
 .viewbar button:hover { color: var(--ink); }
 .viewbar button[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent); font-weight: 600; }
-.scope { position: relative; background: var(--bg); overflow: hidden; min-height: 0; touch-action: none; }
+.scope { position: relative; background: var(--bg); overflow: hidden; min-height: 0; min-width: 0; touch-action: none; }
 .scope-static, .stars-static { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
 .scope-canvas { position: relative; display: block; width: 100%; height: 100%; cursor: grab; }
 .scope-canvas.drag { cursor: grabbing; }
@@ -98,6 +101,11 @@ main { flex: 1 1 auto; display: grid; grid-template-columns: 1fr 296px; min-heig
 .adisp .grp { margin: 0 0 6px; color: var(--accent); letter-spacing: .12em; font-size: 9.5px; text-transform: uppercase; }
 .adisp label { display: flex; gap: 7px; align-items: center; padding: 3px 0; color: var(--ink-2); cursor: pointer; white-space: nowrap; }
 .adisp input { margin: 0; }
+.adisp label.off { color: var(--ink-3); cursor: default; }
+.adisp .grp.layers { margin-top: 8px; }
+.adisp label.layer span { flex: 1 1 auto; }
+.adisp label.layer b { color: var(--ink-3); font-weight: 400; font-variant-numeric: tabular-nums; }
+.adisp .sw { display: inline-block; width: 10px; height: 10px; border-radius: 1px; border: 1px solid var(--rule-2); }
 .adisp .row { display: flex; gap: 6px; align-items: center; padding: 3px 0; color: var(--ink-2); }
 .adisp .row span { flex: 1 1 auto; }
 .adisp .row b { color: var(--ink); font-weight: 500; min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; }

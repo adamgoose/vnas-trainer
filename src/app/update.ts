@@ -54,7 +54,7 @@ import { type PositionMode, positionFor } from '../positions'
 import { radialAt } from './radial'
 import { StarsOut, rangeView, starsInit, starsUpdate } from '../positions/local/stars'
 import { type TurnServer } from '../services/session'
-import { MAX_TAG_SIZE, MIN_TAG_SIZE, type Settings, defaultSettings } from '../services/settings'
+import { MAX_SPLIT, MAX_TAG_SIZE, MIN_SPLIT, MIN_TAG_SIZE, type Settings, defaultSettings } from '../services/settings'
 import { sourceForProxy } from '../services/vnasData'
 import { BUTTON_IN, BUTTON_OUT, WHEEL_IN, WHEEL_OUT, fit, hitTest, pan, resize, zoomAt, zoomCentre } from '../view/viewport'
 
@@ -200,6 +200,14 @@ const submitLine = (model: Model, text: string): Return => {
 }
 
 /** A setting changed outside the dialog: apply it, keep the dialog's draft in step, persist. */
+/**
+ * Which map the ground scope draws as pavement: the ASDE-X map where there is
+ * one, unless the user prefers the tower-cab artwork and the airport has that
+ * too; airports without ASDE-X always get their cab map.
+ */
+export const pavementFor = (asdex: string | null, twrmap: string | null, cabMap: boolean): Readonly<{ id: string; asdex: boolean }> | null =>
+  asdex !== null && !(cabMap && twrmap !== null) ? { id: asdex, asdex: true } : twrmap !== null ? { id: twrmap, asdex: false } : null
+
 const saveSettings = (model: Model, settings: Settings): Return => ({
   model: evo(model, { settings: () => settings, draft: () => settings }),
   commands: [SaveSettings({ settings })],
@@ -531,12 +539,12 @@ export const update = (model: Model, message: Message): Return =>
       }
       const world = makeWorld(airport, rulesFor(model.settings.mode), WORLD_SEED)
       const info = airportInfo(airport)
-      const pavementId = airport.asdex ?? airport.twrmap
+      const pavement = pavementFor(airport.asdex, airport.twrmap, model.settings.asdexCabMap)
       const radar = starsInit(model.stars, airport.artcc, airport.stars, positionFor(model.settings.mode).scopeRangeNm)
       const fitted: Model = {
         ...model,
         airport: { _tag: 'Ready', info, world },
-        pavement: pavementId === null ? Pavement.None() : Pavement.Loading({ id: pavementId }),
+        pavement: pavement === null ? Pavement.None() : Pavement.Loading({ id: pavement.id }),
         scope: fit(world.graph, { ...model.scope, fitted: false }),
         stars: radar.model,
       }
@@ -551,7 +559,7 @@ export const update = (model: Model, message: Message): Return =>
         model: next.model,
         commands: [
           ...(next.commands ?? []),
-          ...(pavementId === null ? [] : [LoadPavement({ artcc: airport.artcc, id: pavementId, asdex: airport.asdex !== null })]),
+          ...(pavement === null ? [] : [LoadPavement({ artcc: airport.artcc, id: pavement.id, asdex: pavement.asdex })]),
           ...Command.mapMessages(radar.commands, (message) => Message.GotStars({ message })),
         ],
       }
@@ -669,9 +677,22 @@ export const update = (model: Model, message: Message): Return =>
       return hit === null
         ? { model: evo(released, { radial: () => null }) }
         : {
-            model: evo(released, { selected: () => hit.callsign, radial: () => (model.settings.radialMenu ? { callsign: hit.callsign, trail: [] } : null) }),
+            model: evo(released, { selected: () => hit.callsign, radial: () => null }),
             commands: [FocusCommand()],
           }
+    },
+
+    /** A right-click: select the aircraft under it and open its command ring; over empty pavement, close the ring. Any drag the press started is dropped. */
+    ContextScope: ({ x, y }) => {
+      const world = worldOf(model)
+      const released = evo(model, { drag: () => null })
+      if (world === null) {
+        return { model: released }
+      }
+      const hit = hitTest(world.graph, model.scope, x, y, world.aircraft.filter((a) => a.delay <= 0), (a) => a.position)
+      return hit === null
+        ? { model: evo(released, { radial: () => null }) }
+        : { model: evo(released, { selected: () => hit.callsign, radial: () => ({ callsign: hit.callsign, trail: [] }) }), commands: [FocusCommand()] }
     },
 
     PickedRadial: ({ key }) => {
@@ -702,7 +723,6 @@ export const update = (model: Model, message: Message): Return =>
     ToggledParkedTags: () => saveSettings(model, { ...model.settings, asdexParkedTags: !model.settings.asdexParkedTags }),
     ChangedTagSize: ({ delta }) =>
       saveSettings(model, { ...model.settings, asdexTagSize: Math.max(MIN_TAG_SIZE, Math.min(MAX_TAG_SIZE, model.settings.asdexTagSize + delta)) }),
-    ToggledRadialMenu: () => saveSettings(evo(model, { radial: () => null }), { ...model.settings, radialMenu: !model.settings.radialMenu }),
 
     ClickedZoomIn: () => {
       const world = worldOf(model)
@@ -790,7 +810,40 @@ export const update = (model: Model, message: Message): Return =>
       }
     },
 
+    /** Switch between ASDE-X pavement and the tower-cab map; the other map is loaded (or taken from the cache) at once. */
+    ToggledCabMap: () => {
+      const saved = saveSettings(model, { ...model.settings, asdexCabMap: !model.settings.asdexCabMap })
+      const info = infoOf(model)
+      const pavement = info === null ? null : pavementFor(info.asdex, info.twrmap, saved.model.settings.asdexCabMap)
+      if (info === null || pavement === null || (model.pavement._tag !== 'None' && model.pavement._tag !== 'Failed' && model.pavement.id === pavement.id)) {
+        return saved
+      }
+      return {
+        model: evo(saved.model, { pavement: () => Pavement.Loading({ id: pavement.id }) }),
+        commands: [...(saved.commands ?? []), LoadPavement({ artcc: info.artcc, id: pavement.id, asdex: pavement.asdex })],
+      }
+    },
+
+    /** Show or hide one layer of the tower-cab map on the scope; remembered per map id. */
+    ToggledCabLayer: ({ key }) => {
+      if (model.pavement._tag !== 'Ready' || model.pavement.asdex) {
+        return { model }
+      }
+      const id = model.pavement.id
+      const off = model.settings.cabLayersOff[id] ?? []
+      const next = off.includes(key) ? off.filter((k) => k !== key) : [...off, key]
+      const { [id]: _, ...rest } = model.settings.cabLayersOff
+      return saveSettings(model, { ...model.settings, cabLayersOff: next.length === 0 ? rest : { ...rest, [id]: next } })
+    },
+
     ClickedPane: ({ view }) => saveSettings(model, { ...model.settings, view }),
+
+    DraggedSplit: ({ ratio }) => {
+      const split = Math.round(Math.min(MAX_SPLIT, Math.max(MIN_SPLIT, ratio)) * 1000) / 1000
+      return { model: evo(model, { settings: (s) => ({ ...s, split }), draft: (d) => ({ ...d, split }) }) }
+    },
+
+    ReleasedSplit: () => saveSettings(model, model.settings),
 
     GotStars: ({ message }) => {
       const info = infoOf(model)
