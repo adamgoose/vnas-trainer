@@ -327,7 +327,7 @@ describe('radial menu in the app', () => {
     expect(clicked.selected).toBe('AAL894')
     expect(clicked.radial).toBeNull()
     const gutter = (fraction: number, phase: 'move' | 'up' = 'move') =>
-      Message.DraggedHandle({ kind: 'gutter', key: '1', index: 0, dir: 'row', grip: null, phase, x: 0, y: 0, fraction, over: null, edge: null })
+      Message.DraggedHandle({ kind: 'gutter', key: '1', index: 0, dir: 'row', grip: null, phase, x: 0, y: 0, fraction, over: null, edge: null, alt: false })
     const sizesOf = (n: typeof m) => splitAt(n.settings.layouts.ground.root, [1])!.sizes
     const dragged = update(m, gutter(0.99))
     expect(sizesOf(dragged.model)[0]).toBeCloseTo(1 - MIN_SHARE)

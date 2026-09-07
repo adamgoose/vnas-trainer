@@ -50,7 +50,7 @@ export const windowView = (model: Model, h: HtmlBuilder<Message>, panel: Panel, 
       h.div(
         [
           h.Class('win-title'),
-          h.Title(mode.kind === 'floating' ? 'Drag to move · Shift-drag onto a tile to dock there' : 'Drag onto another tile to move this window there'),
+          h.Title(mode.kind === 'floating' ? 'Drag to move (snaps to the other windows; Alt to ignore) · Shift-drag onto a tile to dock there' : 'Drag onto another tile to move this window there'),
           h.OnMount(DragHandle({ kind: 'window', key: panel, index: 0, dir: null, grip: null })),
         ],
         [

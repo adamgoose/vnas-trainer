@@ -254,7 +254,7 @@ export const DragHandle = Mount.defineStream('DragHandle', {
           const parent = (handle.parentElement ?? handle).getBoundingClientRect()
           const fraction =
             kind !== 'gutter' ? 0 : dir === 'col' ? (parent.height === 0 ? 0.5 : (event.clientY - parent.top) / parent.height) : parent.width === 0 ? 0.5 : (event.clientX - parent.left) / parent.width
-          return Message.DraggedHandle({ kind, key, index, dir, grip, phase, x: event.clientX - ws.left, y: event.clientY - ws.top, fraction, ...target(event) })
+          return Message.DraggedHandle({ kind, key, index, dir, grip, phase, x: event.clientX - ws.left, y: event.clientY - ws.top, fraction, alt: event.altKey, ...target(event) })
         }
         const offer = (message: HandleMessage) => Effect.runSync(Queue.offer(queue, message))
         let pointer: number | null = null

@@ -84,7 +84,8 @@ export const Message = defineMessageUnion({
    * A drag on a handle, in workspace px: a gutter between tiles (`key` is the split's
    * path, `fraction` where the pointer is along it), a window's title bar (`over` and
    * `edge` say which tile the pointer is on and which side of it), or a floating
-   * window's resize grip.
+   * window's resize grip. `alt` was held, which drags a floating window freely
+   * instead of snapping it to the other windows.
    */
   DraggedHandle: {
     kind: Schema.Literals(['gutter', 'window', 'resize']),
@@ -98,6 +99,7 @@ export const Message = defineMessageUnion({
     fraction: Schema.Number,
     over: Schema.NullOr(Panel),
     edge: Schema.NullOr(Edge),
+    alt: Schema.Boolean,
   },
   GotStars: { message: StarsMessage },
   GotEram: { message: EramMessage },

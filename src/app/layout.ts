@@ -72,6 +72,8 @@ export const MIN_FLOAT_H = 120
 /** how much of a floating window must stay inside the workspace */
 export const KEEP_VISIBLE_PX = 120
 export const TITLE_PX = 26
+/** how near an edge must come to another window's edge, or the workspace's, to snap onto it */
+export const SNAP_PX = 8
 
 // PANELS
 
@@ -374,16 +376,51 @@ const withFloating = (layout: Layout, panel: Panel, f: (w: Floating) => Floating
   floating: layout.floating.map((w) => (w.panel === panel ? f(w) : w)),
 })
 
-export const moveFloating = (layout: Layout, panel: Panel, x: number, y: number, ws: Size): Layout =>
-  withFloating(layout, panel, (w) => ({ ...w, ...clampRect(panel, { x, y, w: w.w, h: w.h }, ws) }))
+/** The lines a dragged window snaps onto: the workspace's edges and the edges of the other floating windows. */
+const snapLines = (layout: Layout, panel: Panel, ws: Size): Readonly<{ xs: ReadonlyArray<number>; ys: ReadonlyArray<number> }> => {
+  const others = layout.floating.filter((f) => f.panel !== panel)
+  return {
+    xs: [...(ws.width > 0 ? [0, ws.width] : []), ...others.flatMap((f) => [f.x, f.x + f.w])],
+    ys: [...(ws.height > 0 ? [0, ws.height] : []), ...others.flatMap((f) => [f.y, f.y + f.h])],
+  }
+}
 
-/** Pull a grip to the pointer at (x, y) in workspace px. */
-export const resizeFloating = (layout: Layout, panel: Panel, grip: Grip, x: number, y: number): Layout =>
-  withFloating(layout, panel, (w) => ({
-    ...w,
-    w: grip === 'bottom' ? w.w : Math.max(MIN_FLOAT_W, Math.round(x - w.x)),
-    h: grip === 'right' ? w.h : Math.max(minFloatHeight(panel), Math.round(y - w.y)),
-  }))
+/** How far to shift so that one of `edges` lands on the nearest line within SNAP_PX; 0 when none is near. */
+const pull = (edges: ReadonlyArray<number>, lines: ReadonlyArray<number>): number => {
+  let shift = 0
+  let nearest = SNAP_PX
+  for (const edge of edges) {
+    for (const line of lines) {
+      const d = Math.abs(line - edge)
+      if (d <= nearest) {
+        nearest = d
+        shift = line - edge
+      }
+    }
+  }
+  return shift
+}
+
+/** Move a floating window, its edges snapping to the neighbours and the workspace unless `snap` is off. */
+export const moveFloating = (layout: Layout, panel: Panel, x: number, y: number, ws: Size, snap = true): Layout =>
+  withFloating(layout, panel, (w) => {
+    const lines = snapLines(layout, panel, ws)
+    const at = snap ? { x: x + pull([x, x + w.w], lines.xs), y: y + pull([y, y + w.h], lines.ys) } : { x, y }
+    return { ...w, ...clampRect(panel, { ...at, w: w.w, h: w.h }, ws) }
+  })
+
+/** Pull a grip to the pointer at (x, y) in workspace px, the edges it moves snapping as a move's do. */
+export const resizeFloating = (layout: Layout, panel: Panel, grip: Grip, x: number, y: number, ws: Size = { width: 0, height: 0 }, snap = true): Layout =>
+  withFloating(layout, panel, (w) => {
+    const lines = snapLines(layout, panel, ws)
+    const right = snap && grip !== 'bottom' ? x + pull([x], lines.xs) : x
+    const bottom = snap && grip !== 'right' ? y + pull([y], lines.ys) : y
+    return {
+      ...w,
+      w: grip === 'bottom' ? w.w : Math.max(MIN_FLOAT_W, Math.round(right - w.x)),
+      h: grip === 'right' ? w.h : Math.max(minFloatHeight(panel), Math.round(bottom - w.y)),
+    }
+  })
 
 export const resizeGutter = (layout: Layout, path: ReadonlyArray<number>, index: number, fraction: number): Layout => ({
   ...layout,

@@ -331,7 +331,7 @@ const dragHandle = (model: Model, drag: ReturnType<typeof Message.DraggedHandle>
   }
   if (drag.kind === 'resize') {
     const grip = drag.grip
-    const resized = drag.phase === 'move' && grip !== null ? withLayout(model, (l) => resizeFloating(l, panel, grip, drag.x, drag.y)) : model
+    const resized = drag.phase === 'move' && grip !== null ? withLayout(model, (l) => resizeFloating(l, panel, grip, drag.x, drag.y, model.workspace, !drag.alt)) : model
     return drag.phase === 'up' ? persistLayout(resized) : { model: resized }
   }
   const layout = activeLayout(model)
@@ -354,7 +354,7 @@ const dragHandle = (model: Model, drag: ReturnType<typeof Message.DraggedHandle>
   if (drag.phase === 'move') {
     const tracked = evo(model, { windowDrag: () => ({ ...current, moved, over, edge }) })
     return {
-      model: floating === undefined || !moved ? tracked : withLayout(tracked, (l) => moveFloating(l, panel, current.originX + drag.x - current.startX, current.originY + drag.y - current.startY, model.workspace)),
+      model: floating === undefined || !moved ? tracked : withLayout(tracked, (l) => moveFloating(l, panel, current.originX + drag.x - current.startX, current.originY + drag.y - current.startY, model.workspace, !drag.alt)),
     }
   }
   const dropped = evo(model, { windowDrag: () => null })

@@ -181,6 +181,25 @@ describe('windows', () => {
     expect(fitFloating(far, { width: 0, height: 0 })).toBe(far)
   })
 
+  test('a dragged floating window snaps to the other windows and the workspace, and Alt drags it freely', () => {
+    const two = openFloating(openFloating(ground, 'settings', ws), 'commands', ws)
+    // settings 760x620 at (320, 140), commands the same size one cascade step on at (344, 164)
+    expect(two.floating[1]).toMatchObject({ x: 344, y: 164, w: 760, h: 620 })
+    // the left edge abuts the neighbour's right edge
+    expect(moveFloating(two, 'settings', 1104 + 3, 300, ws).floating[0]).toMatchObject({ x: 1104, y: 300 })
+    // lefts and tops line up with the neighbour's
+    expect(moveFloating(two, 'settings', 344 - 4, 164 + 5, ws).floating[0]).toMatchObject({ x: 344, y: 164 })
+    // and with the workspace's own edges
+    expect(moveFloating(two, 'settings', 4, 5, ws).floating[0]).toMatchObject({ x: 0, y: 0 })
+    // nothing within reach, and Alt, leave the window where the pointer put it
+    expect(moveFloating(two, 'settings', 200, 300, ws).floating[0]).toMatchObject({ x: 200, y: 300 })
+    expect(moveFloating(two, 'settings', 4, 5, ws, false).floating[0]).toMatchObject({ x: 4, y: 5 })
+    // a grip snaps the edge it drags: the right one onto the neighbour's right edge
+    expect(resizeFloating(two, 'settings', 'right', 1104 + 3, 0, ws).floating[0]).toMatchObject({ w: 1104 - 320, h: 620 })
+    expect(resizeFloating(two, 'settings', 'right', 1104 + 3, 0, ws, false).floating[0]).toMatchObject({ w: 1107 - 320 })
+    expect(resizeFloating(two, 'settings', 'bottom', 0, 784 - 2, ws).floating[0]).toMatchObject({ w: 760, h: 784 - 140 })
+  })
+
   test('prune drops the panels a position lacks; loading closes transient windows and repairs the tree', () => {
     expect(availablePanels('ground')).not.toContain('stars')
     expect(availablePanels('tracon')).not.toContain('asdex')
