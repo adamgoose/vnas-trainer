@@ -166,7 +166,10 @@ describe('clock', () => {
       message(Message.Ticked({ now: 1500 + 60_000 })),
       model((m) => {
         expect(worldOf(m)?.tick).toBe(45)
+        expect(m.lastTickAt).toBe(61_500)
       }),
+      message(Message.Ticked({ now: 61_600 })),
+      model((m) => expect(worldOf(m)?.tick).toBe(46)),
     )
   })
 
@@ -235,6 +238,21 @@ describe('commands and selection', () => {
       model((m) => {
         expect(m.running).toBe(false)
         expect(m.commandLog).toHaveLength(2)
+      }),
+    )
+  })
+
+  test('deleting the selected aircraft clears the selection', () => {
+    story(
+      update,
+      given({ ...ready(), selected: 'AAL894' }),
+      message(Message.UpdatedCommandText({ value: 'DEL' })),
+      message(Message.SubmittedCommand()),
+      Command.expectNone(),
+      model((m) => {
+        expect(m.selected).toBeNull()
+        expect(worldOf(m)?.aircraft.some((a) => a.callsign === 'AAL894')).toBe(false)
+        expect(m.log[0]?.text).toBe('AAL894 deleted')
       }),
     )
   })

@@ -165,6 +165,21 @@ export const SpeechBrowser = Layer.effect(Speech)(
       }
     })
 
+    /** Providers such as Kokoro need an explicit voice; learn the model's voices on first use. */
+    const voiceFor = (u: Utterance): Effect.Effect<string | undefined> =>
+      Effect.gen(function* () {
+        const known = yield* Ref.get(speechModels)
+        if (u.providerVoice !== '' || u.model in known) {
+          return pickProviderVoice(u.callsign, known[u.model] ?? null, u.providerVoice)
+        }
+        const fetched = yield* openRouter.models(u.key).pipe(Effect.catch(() => Effect.succeed(null)))
+        if (fetched !== null) {
+          yield* Ref.set(speechModels, fetched.speech)
+          return pickProviderVoice(u.callsign, fetched.speech[u.model] ?? null, u.providerVoice)
+        }
+        return undefined
+      })
+
     const fetchSpeech = (u: Utterance, voice: string | undefined): Promise<AudioBuffer> => {
       const key = `${u.model}|${voice ?? ''}|${u.text}`
       const hit = cache.get(key)
@@ -233,8 +248,7 @@ export const SpeechBrowser = Layer.effect(Speech)(
       speak: (u) =>
         Effect.gen(function* () {
           if (u.engine === 'openrouter' && u.key !== '') {
-            const models = yield* Ref.get(speechModels)
-            const voice = pickProviderVoice(u.callsign, models[u.model] ?? null, u.providerVoice)
+            const voice = yield* voiceFor(u)
             queue.push({ utterance: u, audio: fetchSpeech(u, voice) })
             void pump()
           } else {
@@ -247,8 +261,7 @@ export const SpeechBrowser = Layer.effect(Speech)(
             speakBrowser(u.callsign, u.text, u.browserVoice)
             return 0
           }
-          const models = yield* Ref.get(speechModels)
-          const voice = pickProviderVoice(u.callsign, models[u.model] ?? null, u.providerVoice)
+          const voice = yield* voiceFor(u)
           const buffer = yield* Effect.tryPromise({ try: () => fetchSpeech(u, voice), catch: (e) => (e instanceof Error ? e : new Error(String(e))) })
           yield* Effect.tryPromise({ try: () => play(buffer, u.radio), catch: (e) => (e instanceof Error ? e : new Error(String(e))) })
           return buffer.duration

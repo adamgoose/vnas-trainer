@@ -2,11 +2,11 @@
 
 Static, self-hosted ATC ground/tower trainer on vNAS training data (GitHub Pages).
 
-**State of the repo:** the app is being rewritten as a Foldkit application on Effect v4; the
-brief, decisions, verified facts and behavioural spec are in [docs/REWRITE.md](docs/REWRITE.md).
-Read that first. The old working app lives untouched in `legacy/` (served at `/legacy/`) and is
-the behavioural reference. Phase 0 (spike) is done; the new app is `src/` (`domain/`, `app/`,
-`view/`) with tests under `test/` and the MSP catalog fixture in `test/fixtures/`.
+**State of the repo:** the app is a Foldkit application on Effect v4 (`src/`: `domain/`, `services/`,
+`app/`, `positions/`, `view/`; tests under `test/` with the MSP catalog fixture in `test/fixtures/`).
+The brief, decisions, verified facts and behavioural spec are in [docs/REWRITE.md](docs/REWRITE.md);
+read that first. The old app in `legacy/` is read-only reference: it still serves at `/legacy/`
+under the dev server but is no longer deployed.
 
 Quick facts:
 - vNAS `/api/*` has no CORS, so airports and scenarios are baked into `catalog/` (gitignored, built
@@ -16,7 +16,7 @@ Quick facts:
   for one; partial builds merge into the existing `catalog/index.json`), then `bun run dev` (Vite).
   For live data instead of the catalog, `bun run proxy` starts a local CORS proxy and Settings →
   vNAS proxy URL `http://localhost:8787/?url=` switches the app to it.
-  The legacy app is at `/legacy/` on the same server (`legacy/catalog` is a symlink to `catalog/`).
+  The legacy app is at `/legacy/` on the dev server only (`legacy/catalog` is a symlink to `catalog/`).
 - Checks: `bun run typecheck`, `bun test`, `bun run validate-catalog`. `bun run build` writes `dist/`
-  with `catalog/` and `legacy/` copied in.
+  with `catalog/` copied in.
 - Ask before committing or pushing.

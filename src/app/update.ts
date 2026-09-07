@@ -56,6 +56,13 @@ type Commands = NonNullable<Return['commands']>
 
 export const WORLD_SEED = 20260906
 
+/**
+ * A throttled tab catches up at most this much wall-clock per tick; anything
+ * older (a tab left in the background for an hour) is dropped rather than
+ * fast-forwarded, which the legacy loop would have done at 40 steps per tick.
+ */
+export const MAX_BACKLOG_MS = 4000
+
 export const rulesFor = (mode: PositionMode) => positionFor(mode).rules
 export const positionLabel = (mode: PositionMode): string => positionFor(mode).label
 export const positionTips = (mode: PositionMode, world: World): string => positionFor(mode).tips(world)
@@ -134,7 +141,10 @@ const runCommand = (model: Model, callsign: string | null, command: AtcCommand, 
   if ('error' in result) {
     return { model: pushLog(model, 'err', callsign, `unable — ${result.error}`), commands: [], ok: false }
   }
-  const recorded = evo(withWorld(model, result.world), { commandLog: (log) => [...log, { tick: world.tick, callsign, command }] })
+  const recorded = evo(withWorld(model, result.world), {
+    commandLog: (log) => [...log, { tick: world.tick, callsign, command }],
+    selected: (s) => (command._tag === 'Delete' && s === callsign ? null : s),
+  })
   return { ...applyEvents(recorded, result.events, { quiet }), ok: true }
 }
 
@@ -384,11 +394,12 @@ export const update = (model: Model, message: Message): Return =>
       if (model.lastTickAt === null) {
         return { model: evo(model, { lastTickAt: () => now }) }
       }
-      const n = Math.min(MAX_STEPS_PER_TICK, Math.floor((now - model.lastTickAt) / TICK_MS))
+      const since = Math.min(now - model.lastTickAt, MAX_BACKLOG_MS)
+      const n = Math.min(MAX_STEPS_PER_TICK, Math.floor(since / TICK_MS))
       if (n <= 0) {
         return { model }
       }
-      const clocked = evo(model, { lastTickAt: (last) => (last ?? now) + n * TICK_MS })
+      const clocked = evo(model, { lastTickAt: () => now - since + n * TICK_MS })
       if (!model.running) {
         return { model: clocked }
       }

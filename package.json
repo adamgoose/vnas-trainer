@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && bun run copy-static",
-    "copy-static": "cp -R catalog dist/catalog && cp -RL legacy dist/legacy",
+    "copy-static": "cp -R catalog dist/catalog",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
