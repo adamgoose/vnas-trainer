@@ -1,5 +1,6 @@
 /**
  * A taxi clearance to a departure runway proposed on the scope (pure): the runway,
+ * the taxiway it is entered from (an intersection departure, or full length),
  * intersections the route should pass through, and runway crossings cleared up
  * front. A plan is a command line the parser accepts; its preview is that line
  * executed on the world, so what the scope draws is exactly what GO will issue.
@@ -8,12 +9,14 @@
  */
 import type { Aircraft } from '../domain/aircraft'
 import { executeCommand, parseCommandLine } from '../domain/commands'
-import { type Graph, edgeName, holdNodeFor, isRunwayName, nearestNode, runwaysEntered } from '../domain/graph'
+import { type Graph, type RunwayEntry, departureHold, edgeName, holdNodeFor, isRunwayName, nearestNode, runwayEntries, runwaysEntered } from '../domain/graph'
 import { findPath } from '../domain/route'
 import { type World, findAircraft } from '../domain/world'
 
 export type RoutePlan = Readonly<{
   runway: string
+  /** taxiway the runway is entered from; null is full length */
+  at: string | null
   /** graph nodes the route passes through, in the order clicked */
   waypoints: ReadonlyArray<number>
   /** full runway names cleared to cross with the clearance */
@@ -30,7 +33,19 @@ export type PlanPreview = Readonly<{
   error: string | null
 }>
 
-export const newPlan = (runway: string): RoutePlan => ({ runway, waypoints: [], cross: [] })
+export const newPlan = (runway: string): RoutePlan => ({ runway, at: null, waypoints: [], cross: [] })
+
+/** The taxiway a full-length departure enters from: the entry holding at `holdNodeFor`. */
+export const fullLengthEntry = (graph: Graph, designator: string): RunwayEntry | null => {
+  const hold = holdNodeFor(graph, designator)
+  return runwayEntries(graph, designator).find((e) => e.holds.includes(hold ?? -1)) ?? null
+}
+
+/** Enter the runway at `taxiway`; the full-length taxiway, or the one already chosen, means full length. */
+export const setEntry = (graph: Graph, plan: RoutePlan, taxiway: string): RoutePlan => ({
+  ...plan,
+  at: plan.at === taxiway || fullLengthEntry(graph, plan.runway)?.taxiway === taxiway ? null : taxiway,
+})
 
 export const toggleWaypoint = (plan: RoutePlan, node: number): RoutePlan => ({
   ...plan,
@@ -78,12 +93,19 @@ export const routeNames = (graph: Graph, path: ReadonlyArray<number>): ReadonlyA
   return names
 }
 
-/** The command line the plan stands for: `RWY 30L [TAXI twy…] [CROSS rwy…]`. */
+/** The command line the plan stands for: `RWY 30L [AT twy] [TAXI twy…] [CROSS rwy…]`. */
 export const planLine = (graph: Graph, a: Aircraft, plan: RoutePlan): string => {
-  const hold = holdNodeFor(graph, plan.runway)
-  const path = plan.waypoints.length === 0 || hold === null ? null : throughPath(graph, startNode(graph, a), plan.waypoints, hold, plan.cross)
+  const start = startNode(graph, a)
+  const hold = departureHold(graph, plan.runway, plan.at, graph.nodes[start] ?? null)
+  const path = plan.waypoints.length === 0 || 'error' in hold ? null : throughPath(graph, start, plan.waypoints, hold.hold, plan.cross)
   const names = path === null ? [] : routeNames(graph, path)
-  return ['RWY', plan.runway, ...(names.length > 0 ? ['TAXI', ...names] : []), ...(plan.cross.length > 0 ? ['CROSS', ...plan.cross] : [])].join(' ')
+  return [
+    'RWY',
+    plan.runway,
+    ...(plan.at !== null ? ['AT', plan.at] : []),
+    ...(names.length > 0 ? ['TAXI', ...names] : []),
+    ...(plan.cross.length > 0 ? ['CROSS', ...plan.cross] : []),
+  ].join(' ')
 }
 
 /** Every runway a path enters, with whether the aircraft may cross it without stopping. */

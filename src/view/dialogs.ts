@@ -48,7 +48,7 @@ export const helpView = (h: HtmlBuilder<Message>): Html =>
       h.div([h.Class('cmds')], [
         ...cmdRow(h, 'PUSH [taxiway]', ['Push back off the gate onto a taxiway, or straight back.']),
         ...cmdRow(h, 'TAXI {path} [CROSS {rw}] [HS {pt}]', ['Continue a taxi via a list of taxiways, e.g. ', h.b([], ['TAXI B A']), ', to the runway already assigned with RWY (or an arrival to its gate). A gate or spot name may end the path. Aircraft hold short of every runway on the route until cleared across; ', h.b([], ['CROSS 4 12R']), ' in the clearance clears those crossings up front.']),
-        ...cmdRow(h, 'RWY {rw} TAXI {path}', ['Taxi to a departure runway, e.g. ', h.b([], ['RWY 30L TAXI A A1 CROSS 12R']), '. The word TAXI is optional.']),
+        ...cmdRow(h, 'RWY {rw} [AT {twy}] TAXI {path}', ['Taxi to a departure runway, e.g. ', h.b([], ['RWY 30L TAXI A A1 CROSS 12R']), '. The word TAXI is optional. ', h.b([], ['AT D']), ' makes it an intersection departure: the aircraft holds short where taxiway D meets the runway, and LUAW and CTO enter there. On the scope, the proposed route marks every taxiway the runway can be entered from; click one to enter there.']),
         ...cmdRow(h, 'HS {taxiway/runway}', ['Hold short of a point already on the route.']),
         ...cmdRow(h, 'CROSS [runway]', ['Cross the runway being held short of, or clear a named runway further along the route.']),
         ...cmdRow(h, 'RES', ['Resume taxi, or cross if holding short.']),
@@ -59,8 +59,8 @@ export const helpView = (h: HtmlBuilder<Message>): Html =>
       ]),
       h.h3([], ['Tower']),
       h.div([h.Class('cmds')], [
-        ...cmdRow(h, 'LUAW', ['Line up and wait on the departure runway.']),
-        ...cmdRow(h, 'CTO [L|R] [hdg]', ['Cleared for takeoff — rolls, rotates at Vr and climbs runway heading to the airport\'s initial altitude. With a heading (', h.b([], ['CTO L 250']), ') the pilot turns to it through 400 feet.']),
+        ...cmdRow(h, 'LUAW [AT {twy}]', ['Line up and wait on the departure runway, at the intersection the taxi clearance named, or at ', h.b([], ['AT D']), '.']),
+        ...cmdRow(h, 'CTO [L|R] [hdg] [AT {twy}]', ['Cleared for takeoff — rolls, rotates at Vr and climbs runway heading to the airport\'s initial altitude. With a heading (', h.b([], ['CTO L 250']), ') the pilot turns to it through 400 feet. ', h.b([], ['AT D']), ' names the intersection (the one from the taxi clearance is used otherwise).']),
         ...cmdRow(h, 'CTL', ['Cleared to land. As Local, an arrival without it goes around at one mile.']),
         ...cmdRow(h, 'GA', ['Go around (an arrival still on final).']),
         ...cmdRow(h, 'EXIT [taxiway]', ['Vacate the runway after landing, at a named taxiway or the nearest.']),

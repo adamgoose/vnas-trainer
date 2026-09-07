@@ -12,10 +12,10 @@ import { type Model, type ScopeView, infoOf, worldOf } from '../app/model'
 import { Message } from '../app/message'
 import { ScopeSurface } from '../app/commands'
 import type { Aircraft, AircraftState } from '../domain/aircraft'
-import type { Graph } from '../domain/graph'
+import { type Graph, runwayEntries } from '../domain/graph'
 import { type Ring, type VideoMap, type VideoMapFeature, cabLayerKey, cabLayers } from '../domain/videomap'
 import { departureProcedure } from '../domain/vnas'
-import { intersections } from '../app/plan'
+import { fullLengthEntry, intersections } from '../app/plan'
 import { type OpenPlan, openPlan } from '../app/radial'
 import { radialView, runwayButtonsView } from './radial'
 import { toCanvas, toWorld, viewWidthFt, worldSize } from './viewport'
@@ -312,7 +312,7 @@ const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: bo
       a.state === 'PARKED'
         ? `${a.type} ${a.gate ?? ''}`
         : a.runway !== null
-          ? `${a.type} ${a.runway}`
+          ? `${a.type} ${a.runway}${a.intersection !== null ? '/' + a.intersection : ''}`
           : `${a.type}${a.destinationGate !== null ? ' ' + a.destinationGate : ''}`
     const procedure = departureProcedure(a.flightPlan.sid, a.flightPlan.route)
     shapes.push(
@@ -328,11 +328,57 @@ const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: bo
 
 export const accentFor = (mode: 'ground' | 'tower' | 'tracon'): string => (mode === 'tower' ? '#b388ff' : mode === 'tracon' ? '#2dd4bf' : COLOURS.amber)
 
+/** Entry labels closer than this many px to the previous one along the runway are left off. */
+export const ENTRY_LABEL_GAP_PX = 26
+
 /**
- * A proposed taxi clearance: the intersections a click can send the route through
- * (brighter on the route, ringed when chosen), the route itself, and a marker at
- * every runway it enters: amber where the aircraft will hold short, green where the
- * clearance lets it cross. A click on a marker toggles it (see `ReleasedScope`).
+ * The taxiways the planned runway can be entered from, marked on its centreline
+ * with their names: the one the route ends at is ringed, the full-length one is
+ * marked FULL. A click on a marker enters there (see `ReleasedScope`).
+ */
+const entryShapes = (graph: Graph, view: ScopeView, open: OpenPlan): ReadonlyArray<Canvas.Shape> => {
+  const { preview, plan } = open
+  const at = (n: number) => toCanvas(view, toWorld(graph, graph.nodes[n]!))
+  const hold = preview.path === null ? null : preview.path[preview.path.length - 1]!
+  const full = fullLengthEntry(graph, plan.runway)?.taxiway ?? null
+  const shapes: Array<Canvas.Shape> = []
+  let lastLabel: Canvas.Point | null = null
+  for (const e of runwayEntries(graph, plan.runway)) {
+    const p = at(e.node)
+    if (p.x < -12 || p.y < -12 || p.x > view.width + 12 || p.y > view.height + 12) {
+      continue
+    }
+    const chosen = hold !== null && e.holds.includes(hold)
+    const colour = chosen ? COLOURS.cyan : COLOURS.ink3
+    shapes.push(Canvas.Rect({ x: p.x - 3.5, y: p.y - 3.5, width: 7, height: 7, fill: chosen ? COLOURS.cyan : COLOURS.paveRunway, stroke: colour, lineWidth: 1.5 }))
+    if (chosen) {
+      shapes.push(Canvas.Circle({ x: p.x, y: p.y, radius: 8, stroke: COLOURS.cyan, lineWidth: 2 }))
+    }
+    const crowded = lastLabel !== null && Math.hypot(p.x - lastLabel.x, p.y - lastLabel.y) < ENTRY_LABEL_GAP_PX
+    if (chosen || !crowded) {
+      shapes.push(
+        Canvas.Text({
+          x: p.x + 10,
+          y: p.y - 6,
+          content: e.taxiway === full ? `${e.taxiway} FULL` : e.taxiway,
+          font: `${chosen ? '600 ' : ''}10px ${MONO}`,
+          fill: colour,
+          align: 'Left',
+          baseline: 'Alphabetic',
+        }),
+      )
+      lastLabel = p
+    }
+  }
+  return [Canvas.Group({ opacity: 0.9, shapes })]
+}
+
+/**
+ * A proposed taxi clearance: the taxiways the runway can be entered from, the
+ * intersections a click can send the route through (brighter on the route, ringed
+ * when chosen), the route itself, and a marker at every runway it enters: amber
+ * where the aircraft will hold short, green where the clearance lets it cross. A
+ * click on a marker toggles it (see `ReleasedScope`).
  */
 const planShapes = (graph: Graph, view: ScopeView, open: OpenPlan): ReadonlyArray<Canvas.Shape> => {
   const { preview, plan } = open
@@ -345,7 +391,7 @@ const planShapes = (graph: Graph, view: ScopeView, open: OpenPlan): ReadonlyArra
     }
     return [Canvas.Circle({ x: p.x, y: p.y, radius: onRoute.has(n) ? 4 : 3, fill: onRoute.has(n) ? COLOURS.ink : COLOURS.ink3, stroke: COLOURS.bg, lineWidth: 1 })]
   })
-  const shapes: Array<Canvas.Shape> = [Canvas.Group({ opacity: 0.8, shapes: dots })]
+  const shapes: Array<Canvas.Shape> = [Canvas.Group({ opacity: 0.8, shapes: dots }), ...entryShapes(graph, view, open)]
   if (preview.path !== null) {
     const points = preview.path.map(at)
     shapes.push(

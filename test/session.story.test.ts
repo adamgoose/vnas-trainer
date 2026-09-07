@@ -57,7 +57,7 @@ describe('session protocol', () => {
     const wire = JSON.parse(JSON.stringify(encodeSessionEvent(event)))
     const back = decodeSessionEvent(wire)
     expect(back).toEqual(event)
-    const cmd = SessionEvent.Commanded({ callsign: 'AAL894', command: AtcCommand.Runway({ runway: '30L', via: ['D'], cross: [], holdShort: null }), said: 'AAL894 RWY 30L D' })
+    const cmd = SessionEvent.Commanded({ callsign: 'AAL894', command: AtcCommand.Runway({ runway: '30L', at: null, via: ['D'], cross: [], holdShort: null }), said: 'AAL894 RWY 30L D' })
     expect(decodeSessionEvent(JSON.parse(JSON.stringify(encodeSessionEvent(cmd))))).toEqual(cmd)
   })
 })

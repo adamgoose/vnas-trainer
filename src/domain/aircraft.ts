@@ -63,6 +63,8 @@ export const Aircraft = Schema.Struct({
   delay: Schema.Number,
   gate: Schema.NullOr(Schema.String),
   runway: Schema.NullOr(Schema.String),
+  /** taxiway of an intersection departure on `runway`; null is full length */
+  intersection: Schema.NullOr(Schema.String),
   destinationGate: Schema.NullOr(Schema.String),
   lineUpAfterTaxi: Schema.Boolean,
   /** heading assigned with the takeoff clearance, flown once through 400 ft */
@@ -134,6 +136,7 @@ export const makeAircraft = (fields: Partial<Aircraft> & Pick<Aircraft, 'callsig
   delay: 0,
   gate: null,
   runway: null,
+  intersection: null,
   destinationGate: null,
   lineUpAfterTaxi: false,
   departureHeading: null,

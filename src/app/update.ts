@@ -44,6 +44,7 @@ import type { Services } from './subscriptions'
 import { TICK_MS } from './subscriptions'
 import type { AirportFile, CatalogIndex } from '../domain/catalog'
 import { type AtcCommand, executeCommand, parseCommandLine } from '../domain/commands'
+import { runwayEntries } from '../domain/graph'
 import { type Phrase, spoken, spokenCallsign, spokenFreeText, written } from '../domain/phrase'
 import { MAX_STEPS_PER_TICK, stepWorldTimes } from '../domain/physics'
 import { type Translation, buildPrompt } from '../domain/prompt'
@@ -688,7 +689,7 @@ export const update = (model: Model, message: Message): Return =>
       }
     },
 
-    /** A click: on a proposed route, a runway crossing toggles hold short / cross and an intersection reroutes; else an aircraft selects, and empty pavement closes the ring. */
+    /** A click: on a proposed route, a runway crossing toggles hold short / cross, an entry marker picks where to enter the runway and an intersection reroutes; else an aircraft selects, and empty pavement closes the ring. */
     ReleasedScope: ({ x, y }) => {
       const drag = model.drag
       const world = worldOf(model)
@@ -702,6 +703,10 @@ export const update = (model: Model, message: Message): Return =>
         const crossing = hitTest(graph, model.scope, x, y, open.preview.crossings, (c) => graph.nodes[c.node]!)
         if (crossing !== null) {
           return pickRadial(released, `x:${crossing.runway}`)
+        }
+        const entry = hitTest(graph, model.scope, x, y, runwayEntries(graph, open.plan.runway), (e) => graph.nodes[e.node]!, INTERSECTION_HIT_FRACTION)
+        if (entry !== null) {
+          return pickRadial(released, `e:${entry.taxiway}`)
         }
         const node = hitTest(graph, model.scope, x, y, intersections(graph), (n) => graph.nodes[n]!, INTERSECTION_HIT_FRACTION)
         if (node !== null) {

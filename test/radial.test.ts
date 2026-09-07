@@ -8,11 +8,12 @@ import { Command, given, message, model, story } from 'foldkit/story'
 import { FocusCommand, LoadPavement, SaveSettings } from '../src/app/commands'
 import { Message } from '../src/app/message'
 import { type Model, initialModel, worldOf } from '../src/app/model'
-import { intersections, newPlan, planPreview } from '../src/app/plan'
+import { fullLengthEntry, intersections, newPlan, planPreview } from '../src/app/plan'
 import { MAX_ITEMS, type RadialNode, openPlan, radialAt, radialRoot } from '../src/app/radial'
 import { pavementFor, update } from '../src/app/update'
 import type { Aircraft } from '../src/domain/aircraft'
 import { parseCommandLine } from '../src/domain/commands'
+import { runwayEntries } from '../src/domain/graph'
 import { TRACON_RULES } from '../src/domain/rules'
 import { loadScenario } from '../src/domain/scenario'
 import { type World, makeWorld } from '../src/domain/world'
@@ -78,7 +79,7 @@ describe('radial menu rings', () => {
     const plan = radialAt(world, 'ground', parked, ['rwy', 'r:17'])!
     expect(plan._tag).toBe('Plan')
     expect(plan._tag === 'Plan' && plan.title).toBe('RWY 17')
-    expect(keys(plan)).toEqual(['go', 'cancel'])
+    expect(keys(plan)).toEqual(['go', 'at', 'cancel'])
     expect(lineAt(world, 'ground', parked, ['rwy', 'r:17', 'go'])).toBe('RWY 17')
     expect(radialAt(world, 'ground', parked, ['rwy', 'r:17', 'cancel'])?._tag).toBe('Close')
     // the preview is the line executed: E16 to 17 crosses 4-22 then 12R-30L and holds at both
@@ -107,6 +108,23 @@ describe('radial menu rings', () => {
     expect(rerouted.path).not.toEqual(preview.path)
     expect(radialAt(world, 'ground', parked, ['rwy', 'r:17', `n:${offRoute}`, `n:${offRoute}`])).toMatchObject({ _tag: 'Plan', title: 'RWY 17' })
     expect(radialAt(world, 'ground', parked, ['rwy', 'r:17', 'n:x'])).toBeNull()
+    // an entry marker (or the AT ring) makes it an intersection departure; the full-length taxiway, or the same one again, is full length
+    const atN = radialAt(world, 'ground', parked, ['rwy', 'r:17', 'e:N'])!
+    expect(atN).toMatchObject({ _tag: 'Plan', title: 'RWY 17 AT N', plan: { runway: '17', at: 'N' } })
+    const nPreview = planPreview(world, parked, planOf(atN))
+    expect(nPreview.error).toBeNull()
+    expect(runwayEntries(world.graph, '17').find((e) => e.taxiway === 'N')!.holds).toContain(nPreview.path!.at(-1)!)
+    expect(lineAt(world, 'ground', parked, ['rwy', 'r:17', 'e:N', 'x:4-22', 'go'])).toBe('RWY 17 AT N CROSS 4-22')
+    expect(lineAt(world, 'ground', parked, ['rwy', 'r:17', 'e:N', `n:${offRoute}`, 'go']).startsWith('RWY 17 AT N TAXI ')).toBe(true)
+    expect(radialAt(world, 'ground', parked, ['rwy', 'r:17', 'e:N', 'e:N'])).toMatchObject({ _tag: 'Plan', title: 'RWY 17' })
+    expect(radialAt(world, 'ground', parked, ['rwy', 'r:17', 'e:N', 'e:K10'])).toMatchObject({ _tag: 'Plan', title: 'RWY 17' })
+    expect(fullLengthEntry(world.graph, '17')?.taxiway).toBe('K10')
+    expect(radialAt(world, 'ground', parked, ['rwy', 'r:17', 'e:ZZ'])).toMatchObject({ _tag: 'Plan', title: 'RWY 17 AT ZZ' })
+    expect(planPreview(world, parked, planOf(radialAt(world, 'ground', parked, ['rwy', 'r:17', 'e:ZZ'])!)).error).toBe('ZZ does not meet runway 17')
+    const atRing = radialAt(world, 'ground', parked, ['rwy', 'r:17', 'at'])!
+    expect(atRing._tag === 'Menu' && atRing.title).toBe('RWY 17 AT')
+    expect(keys(atRing).slice(0, 3)).toEqual(['e:K10', 'e:L10', 'e:L9'])
+    expect(radialAt(world, 'ground', parked, ['rwy', 'r:17', 'at', 'e:N'])).toMatchObject({ _tag: 'Plan', title: 'RWY 17 AT N' })
     expect(intersections(world.graph).every((n) => world.graph.nodeTaxiways[n]!.length >= 2 && world.graph.nodeRunways[n]!.length === 0)).toBe(true)
   })
 
@@ -258,6 +276,23 @@ describe('radial menu in the app', () => {
     const opened = update(m, Message.ContextScope({ x: p.x, y: p.y })).model
     expect(update(opened, Message.PickedRunwayButton({ designator: '30L' })).model.radial?.trail).toEqual(['rwy', 'r:30L'])
     expect(update(opened, Message.PickedRunwayButton({ designator: '99' })).model.radial?.trail).toEqual([])
+    // with a plan open, a click on an entry marker on the runway centreline enters there; on the full-length one, full length again
+    const on30L = update(opened, Message.PickedRunwayButton({ designator: '30L' })).model
+    const d = runwayEntries(graph, '30L').find((e) => e.taxiway === 'D')!
+    const clickNode = (from: Model, node: number): Model => {
+      const q = at(node)
+      return update(update(from, Message.PressedScope({ x: q.x, y: q.y })).model, Message.ReleasedScope({ x: q.x, y: q.y })).model
+    }
+    const atD = clickNode(on30L, d.node)
+    expect(atD.radial?.trail).toEqual(['rwy', 'r:30L', 'e:D'])
+    expect(openPlan(worldOf(atD)!, 'ground', atD.radial)?.preview.line).toBe('RWY 30L AT D')
+    const full = clickNode(atD, graph.runwayEnds['30L']!.chain[0]!)
+    expect(full.radial?.trail).toEqual(['rwy', 'r:30L', 'e:D', 'e:A1'])
+    expect(openPlan(worldOf(full)!, 'ground', full.radial)?.preview.line).toBe('RWY 30L')
+    const went = update(atD, Message.PickedRadial({ key: 'go' })).model
+    expect(went.history[0]).toBe('AAL894 RWY 30L AT D')
+    expect(went.log[0]?.text).toBe('runway 30L at D, taxi via D')
+    expect(aircraftNamed(worldOf(went)!, 'AAL894').intersection).toBe('D')
     const ring = update(opened, Message.PickedRadial({ key: 'rwy' })).model
     const planned = update(ring, Message.PickedRunwayButton({ designator: '17' })).model
     expect(planned.radial?.trail).toEqual(['rwy', 'r:17'])

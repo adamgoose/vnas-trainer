@@ -414,7 +414,7 @@ export const autoExit = (world: World, a: Aircraft): StepOut => {
   }
   const slowed: Aircraft = { ...a, speed: 6 }
   if (exitNode === null || end === undefined) {
-    const held: Aircraft = { ...slowed, state: 'HOLD', runway: null }
+    const held: Aircraft = { ...slowed, state: 'HOLD', runway: null, intersection: null }
     return keep(held, [said(held, phrase('clear of the runway'))])
   }
   const cleared = slowed.cleared.includes(end.runway) ? slowed.cleared : [...slowed.cleared, end.runway]
@@ -424,8 +424,8 @@ export const autoExit = (world: World, a: Aircraft): StepOut => {
   const nodes = toExit === null ? null : onward !== null ? [...toExit, ...onward.slice(1)] : toExit
   const routed: Aircraft =
     nodes === null
-      ? { ...slowed, cleared, state: 'HOLD', runway: null }
-      : { ...withPath(graph, { ...slowed, cleared }, nodes), state: 'TAXI', runway: null }
+      ? { ...slowed, cleared, state: 'HOLD', runway: null, intersection: null }
+      : { ...withPath(graph, { ...slowed, cleared }, nodes), state: 'TAXI', runway: null, intersection: null }
   const exitName = graph.nodeTaxiways[exitNode]?.[0]
   return keep(
     routed,

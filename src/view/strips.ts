@@ -78,7 +78,7 @@ export const stripView = (model: Model, airportId: string, a: Aircraft, h: HtmlB
           procedure,
           h.b([], [a.type]),
           a.gate !== null ? h.b([], [a.gate]) : h.empty,
-          a.runway !== null ? h.b([], [`rwy ${a.runway}`]) : h.empty,
+          a.runway !== null ? h.b([], [`rwy ${a.runway}${a.intersection !== null ? ` at ${a.intersection}` : ''}`]) : h.empty,
           altitude,
           navigation,
           speed,

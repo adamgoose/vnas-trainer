@@ -291,6 +291,83 @@ export const holdNodeFor = (graph: Graph, designator: string): number | null => 
   return end.chain[0] ?? null
 }
 
+/** A taxiway meeting a runway: where an intersection departure enters it. */
+export type RunwayEntry = Readonly<{
+  taxiway: string
+  /** the runway chain node the taxiway meets */
+  node: number
+  /** index of that node in the chain from the threshold */
+  index: number
+  /** the taxiway's nodes next to the runway: one, or one on each side where it crosses */
+  holds: ReadonlyArray<number>
+}>
+
+/**
+ * Every taxiway that meets a runway short of its far end, from the threshold on:
+ * the entries an intersection departure can use. The full-length entry is the
+ * one holding at `holdNodeFor`.
+ */
+export const runwayEntries = (graph: Graph, designator: string): ReadonlyArray<RunwayEntry> => {
+  const end = graph.runwayEnds[designator]
+  if (end === undefined) {
+    return []
+  }
+  const out: Array<RunwayEntry> = []
+  end.chain.slice(0, -1).forEach((node, index) => {
+    const byName = new Map<string, Array<number>>()
+    for (const e of graph.adjacency[node] ?? []) {
+      if (!isRunwayName(graph, e.name)) {
+        byName.set(e.name, [...(byName.get(e.name) ?? []), e.to])
+      }
+    }
+    for (const [taxiway, holds] of byName) {
+      if (!out.some((x) => x.taxiway === taxiway)) {
+        out.push({ taxiway, node, index, holds })
+      }
+    }
+  })
+  return out
+}
+
+export type IntersectionHold = Readonly<{ entry: number; hold: number }> | Readonly<{ error: string }>
+
+/**
+ * Where an aircraft holds for runway `designator` at taxiway `taxiway`, and the
+ * runway node it will enter from there. Where the taxiway crosses the runway the
+ * hold nearest `from` is used.
+ */
+export const holdNodeAt = (graph: Graph, designator: string, taxiway: string, from: LonLat | null): IntersectionHold => {
+  const end = graph.runwayEnds[designator]
+  if (end === undefined) {
+    return { error: `no runway ${designator}` }
+  }
+  const entry = runwayEntries(graph, designator).find((e) => e.taxiway === taxiway)
+  if (entry === undefined) {
+    const last = end.chain[end.chain.length - 1]!
+    const atFarEnd = (graph.adjacency[last] ?? []).some((e) => e.name === taxiway && !isRunwayName(graph, e.name))
+    return { error: atFarEnd ? `no runway left at ${taxiway}` : `${taxiway} does not meet runway ${designator}` }
+  }
+  const hold =
+    from === null
+      ? entry.holds[0]!
+      : entry.holds.reduce((best, n) => (distanceFt(graph.projection, graph.nodes[n]!, from) < distanceFt(graph.projection, graph.nodes[best]!, from) ? n : best), entry.holds[0]!)
+  return { entry: entry.node, hold }
+}
+
+/** The hold point of a departure: full length, or the intersection named. */
+export const departureHold = (graph: Graph, designator: string, intersection: string | null, from: LonLat | null): IntersectionHold => {
+  if (intersection !== null) {
+    return holdNodeAt(graph, designator, intersection, from)
+  }
+  const end = graph.runwayEnds[designator]
+  const hold = holdNodeFor(graph, designator)
+  if (end === undefined || hold === null) {
+    return { error: `no runway ${designator}` }
+  }
+  const entry = end.chain.find((n) => (graph.adjacency[n] ?? []).some((e) => e.to === hold)) ?? end.chain[0]!
+  return { entry, hold }
+}
+
 /** True course of a runway from its threshold, or null when unknown. */
 export const runwayCourse = (graph: Graph, designator: string): number | null => {
   const end = graph.runwayEnds[designator]

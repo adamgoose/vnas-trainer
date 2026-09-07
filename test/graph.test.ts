@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 
 import { bearingDeg, distanceFt, headingDiff } from '../src/domain/geo'
-import { buildGraph, edgeName, farthestOn, gateNames, holdNodeFor, isRunwayName, nearestNode, nearestOn, nodesNamed, runwayCourse } from '../src/domain/graph'
+import { buildGraph, departureHold, edgeName, farthestOn, gateNames, holdNodeAt, holdNodeFor, isRunwayName, nearestNode, nearestOn, nodesNamed, runwayCourse, runwayEntries } from '../src/domain/graph'
 import { msp } from './helpers'
 
 describe('MSP graph', () => {
@@ -52,6 +52,39 @@ describe('MSP graph', () => {
     }
     expect(graph.nodeTaxiways[holdNodeFor(graph, '30L')!]).toContain('A')
     expect(holdNodeFor(graph, '99')).toBeNull()
+  })
+
+  test('runway entries are the taxiways meeting the chain short of its far end; an intersection hold is the taxiway node nearest the aircraft', () => {
+    const entries = runwayEntries(graph, '30L')
+    const chain = graph.runwayEnds['30L']!.chain
+    expect(entries[0]).toEqual({ taxiway: 'A1', node: chain[0]!, index: 0, holds: [holdNodeFor(graph, '30L')!] })
+    expect(entries.map((e) => e.taxiway)).toEqual(['A1', 'W1', 'A2', 'W2', 'A3', 'W3', 'A4', 'A5', 'W5', 'A7', 'W7', 'D', 'C', 'M', 'A8', 'W8', 'A9', 'W9'])
+    expect(entries.map((e) => e.taxiway)).not.toContain('A10')
+    const d = entries.find((e) => e.taxiway === 'D')!
+    expect(d.holds).toHaveLength(2)
+    expect(d.index).toBe(6)
+    expect(graph.nodeRunways[d.node]).toEqual(['12R-30L'])
+    for (const e of entries) {
+      expect(e.holds.every((n) => graph.nodeTaxiways[n]!.includes(e.taxiway) && graph.nodeRunways[n]!.length === 0)).toBe(true)
+    }
+    // 12R reads the same chain the other way: A10 first, A1 not at all
+    expect(runwayEntries(graph, '12R')[0]!.taxiway).toBe('A10')
+    expect(runwayEntries(graph, '12R').map((e) => e.taxiway)).not.toContain('A1')
+    expect(runwayEntries(graph, '99')).toEqual([])
+    const gate = graph.parking['E16']!.c
+    const atD = holdNodeAt(graph, '30L', 'D', gate)
+    const nearer = d.holds.reduce((best, n) => (distanceFt(graph.projection, graph.nodes[n]!, gate) < distanceFt(graph.projection, graph.nodes[best]!, gate) ? n : best), d.holds[0]!)
+    expect(atD).toEqual({ entry: d.node, hold: nearer })
+    // the far side of the crossing when the aircraft is over there
+    const far = d.holds.find((n) => 'hold' in atD && n !== atD.hold)!
+    expect(holdNodeAt(graph, '30L', 'D', graph.nodes[far]!)).toEqual({ entry: d.node, hold: far })
+    expect(holdNodeAt(graph, '30L', 'D', null)).toEqual({ entry: d.node, hold: d.holds[0]! })
+    expect(holdNodeAt(graph, '30L', 'ZZ', null)).toEqual({ error: 'ZZ does not meet runway 30L' })
+    expect(holdNodeAt(graph, '30L', 'A10', null)).toEqual({ error: 'no runway left at A10' })
+    expect(holdNodeAt(graph, '99', 'A', null)).toEqual({ error: 'no runway 99' })
+    expect(departureHold(graph, '30L', null, null)).toEqual({ entry: chain[0]!, hold: holdNodeFor(graph, '30L')! })
+    expect(departureHold(graph, '30L', 'A2', null)).toEqual({ entry: chain[1]!, hold: entries[2]!.holds[0]! })
+    expect(departureHold(graph, '99', null, null)).toEqual({ error: 'no runway 99' })
   })
 
   test('runway course follows the chain from the threshold', () => {

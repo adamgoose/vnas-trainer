@@ -7,11 +7,11 @@
 import type { Aircraft } from '../domain/aircraft'
 import type { LonLat } from '../domain/catalog'
 import { distanceFt } from '../domain/geo'
-import { type Graph, edgeName, isRunwayName, runwaysEntered } from '../domain/graph'
+import { type Graph, edgeName, isRunwayName, runwayEntries, runwaysEntered } from '../domain/graph'
 import { holdTarget } from '../domain/physics'
 import type { World } from '../domain/world'
 import type { PositionMode } from '../positions'
-import { type PlanPreview, type RoutePlan, newPlan, planLine, planPreview, toggleCross, toggleWaypoint } from './plan'
+import { type PlanPreview, type RoutePlan, newPlan, planLine, planPreview, setEntry, toggleCross, toggleWaypoint } from './plan'
 
 export type RadialItem = Readonly<{
   key: string
@@ -178,14 +178,19 @@ const routeBuilder = (graph: Graph, a: Aircraft, r: Route, page = 0): RadialNode
 
 const closeItem: RadialItem = { key: 'cancel', label: '✕', opens: false, next: () => ({ _tag: 'Close' }) }
 
-/** The ring over a proposed clearance: accept it, or reject it. Its title is the line GO issues. */
+/** The ring over a proposed clearance: accept it, pick the taxiway to enter the runway from, or reject it. Its title is the line GO issues. */
 const planNode = (world: World, a: Aircraft, plan: RoutePlan): RadialNode => {
   const line = planLine(world.graph, a, plan)
-  return { _tag: 'Plan', title: line, plan, items: [leaf('go', 'GO', line), closeItem] }
+  const entries = runwayEntries(world.graph, plan.runway)
+  const at = entries.length === 0 ? [] : [menu('at', 'AT', () => paged(`${line} AT`, entries.map((e) => menu(`e:${e.taxiway}`, e.taxiway, () => planNode(world, a, setEntry(world.graph, plan, e.taxiway))))))]
+  return { _tag: 'Plan', title: line, plan, items: [leaf('go', 'GO', line), ...at, closeItem] }
 }
 
-/** A scope click on the plan: `n:<node>` sends the route through an intersection, `x:<runway>` toggles a crossing. */
-const editPlan = (plan: RoutePlan, key: string): RoutePlan | null => {
+/** A scope click on the plan: `e:<taxiway>` enters the runway there, `n:<node>` sends the route through an intersection, `x:<runway>` toggles a crossing. */
+const editPlan = (graph: Graph, plan: RoutePlan, key: string): RoutePlan | null => {
+  if (key.startsWith('e:')) {
+    return setEntry(graph, plan, key.slice(2))
+  }
   if (key.startsWith('n:')) {
     const node = Number(key.slice(2))
     return Number.isInteger(node) ? toggleWaypoint(plan, node) : null
@@ -460,7 +465,7 @@ export const radialAt = (world: World, mode: PositionMode, a: Aircraft, trail: R
   let node = radialRoot(world, mode, a)
   for (const key of trail) {
     if (node._tag === 'Plan') {
-      const edited = editPlan(node.plan, key)
+      const edited = editPlan(world.graph, node.plan, key)
       if (edited !== null) {
         node = planNode(world, a, edited)
         continue
