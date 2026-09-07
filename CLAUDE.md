@@ -10,8 +10,9 @@ under the dev server but is no longer deployed.
 
 Quick facts:
 - vNAS `/api/*` has no CORS, so airports and scenarios are baked into `catalog/` (gitignored, built
-  in CI by `scripts/build-catalog.ts`, validated against `src/domain/catalog.ts`). `/Files/*` video
-  maps are fetched live. A user-supplied CORS proxy enables live mode (`src/services/vnasData.ts`).
+  in CI by `scripts/build-catalog.ts`, validated against `src/domain/catalog.ts`); `catalog/artccs/`
+  holds one file per ARTCC (ERAM GeoMaps, sectors, en-route nav) for the Center position. `/Files/*`
+  video maps are fetched live. A user-supplied CORS proxy enables live mode (`src/services/vnasData.ts`).
 - Run locally: `bun install`, build a catalog (`bun run catalog` for every ARTCC, `bun run catalog ZMP`
   for one; partial builds merge into the existing `catalog/index.json`), then `bun run dev` (Vite).
   For live data instead of the catalog, `bun run proxy` starts a local CORS proxy and Settings →

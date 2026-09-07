@@ -336,6 +336,9 @@ const airborneItems = (world: World, mode: PositionMode, a: Aircraft): ReadonlyA
     ...direct,
     menu('hdg', 'FH', () => ({ _tag: 'Menu', title: 'FH', items: turnMenu({ fly: 'FH', left: 'TL', right: 'TR' }) })),
   ]
+  if (mode === 'center') {
+    return [...shared, ...(a.handoff ? [] : [leaf('ca', 'CA', 'CA'), contactNext(world)]), ...trackOrDrop(a)]
+  }
   if (mode === 'tracon') {
     return [
       ...shared,

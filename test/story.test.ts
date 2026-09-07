@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { Command, given, message, model, story } from 'foldkit/story'
 
-import { FocusCommand, LoadAirport, LoadBrowserVoices, LoadIndex, LoadPavement, LoadScenario, LoadSettings, ProbeRecognition, ReadDeepLink, ReplaceDeepLink, SaveSettings, Speak } from '../src/app/commands'
+import { FocusCommand, LoadAirport, LoadArtcc, LoadBrowserVoices, LoadIndex, LoadPavement, LoadScenario, LoadSettings, ProbeRecognition, ReadDeepLink, ReplaceDeepLink, SaveSettings, Speak } from '../src/app/commands'
 import { close, placement } from '../src/app/layout'
 import { Message } from '../src/app/message'
 import { type Model, initialModel, worldOf } from '../src/app/model'
@@ -10,7 +10,7 @@ import { AtcCommand } from '../src/domain/commands'
 import { defaultSettings } from '../src/services/settings'
 import { DataSource } from '../src/services/vnasData'
 import { LoadStarsMap, StarsMessage, defaultMaps } from '../src/positions/local/stars'
-import { msp } from './helpers'
+import { msp, zmp } from './helpers'
 
 const index = {
   built: '',
@@ -47,10 +47,14 @@ describe('boot chain', () => {
       Command.resolve(ReadDeepLink, Message.CompletedReadDeepLink({ airport: null, scenario: null, room: null })),
       Command.expectExact(LoadIndex({ source: DataSource.Catalog() })),
       Command.resolve(LoadIndex, Message.CompletedLoadIndex({ index })),
-      Command.expectExact(LoadAirport({ source: DataSource.Catalog(), id: 'MSP', artcc: 'ZMP' })),
+      // the ARTCC file (ERAM GeoMaps, sectors, en-route nav) comes first; a catalog without one still loads the airport
+      Command.expectExact(LoadArtcc({ source: DataSource.Catalog(), id: 'ZMP' })),
       model((m) => {
         expect(m.airport).toEqual({ _tag: 'Loading', id: 'MSP' })
+        expect(m.artcc).toEqual({ _tag: 'Loading', id: 'ZMP' })
       }),
+      Command.resolve(LoadArtcc, Message.FailedLoadArtcc({ id: 'ZMP', error: 'HTTP 404' })),
+      Command.expectExact(LoadAirport({ source: DataSource.Catalog(), id: 'MSP', artcc: 'ZMP' })),
       Command.resolve(LoadAirport, Message.CompletedLoadAirport({ airport: msp })),
       Command.expectHas(
         LoadScenario({ source: DataSource.Catalog(), airportId: 'MSP', scenarioId: first.id }),
@@ -84,13 +88,16 @@ describe('boot chain', () => {
       update,
       given({ ...initialModel, deepLink: { airport: 'FCM', scenario: null, room: null } }),
       message(Message.CompletedLoadIndex({ index })),
+      Command.expectExact(LoadArtcc({ source: DataSource.Catalog(), id: 'ZMP' })),
+      Command.resolve(LoadArtcc, Message.CompletedLoadArtcc({ artcc: zmp })),
       Command.expectExact(LoadAirport({ source: DataSource.Catalog(), id: 'FCM', artcc: 'ZMP' })),
       Command.resolve(LoadAirport, Message.FailedLoadAirport({ id: 'FCM', error: 'x' })),
     )
     story(
       update,
-      given({ ...initialModel, deepLink: { airport: 'ZZZ', scenario: null, room: null } }),
+      given({ ...initialModel, deepLink: { airport: 'ZZZ', scenario: null, room: null }, artcc: { _tag: 'Ready', artcc: zmp } }),
       message(Message.CompletedLoadIndex({ index })),
+      // the ARTCC already loaded is not fetched again
       Command.expectExact(LoadAirport({ source: DataSource.Catalog(), id: 'MSP', artcc: 'ZMP' })),
       Command.resolve(LoadAirport, Message.FailedLoadAirport({ id: 'MSP', error: 'x' })),
     )

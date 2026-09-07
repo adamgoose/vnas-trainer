@@ -21,12 +21,36 @@ export const VideoMapFeature = Schema.Struct({
   /** each polygon is its rings, outer first */
   polygons: Schema.Array(Schema.Array(Ring)),
   lines: Schema.Array(Ring),
+  /** ERAM GeoMaps (Phase 9): symbol and text features are points; text lines; per-feature filter, BCG and style overrides */
+  points: Schema.Array(LonLat),
+  text: Schema.NullOr(Schema.Array(Schema.String)),
+  filters: Schema.NullOr(Schema.Array(Schema.Number)),
+  bcg: Schema.NullOr(Schema.Number),
+  style: Schema.NullOr(Schema.String),
 })
 export type VideoMapFeature = typeof VideoMapFeature.Type
+
+/**
+ * An ERAM map's defaults, from the leading `is*Defaults` feature vNAS writes:
+ * what kind of elements the file holds, the filter buttons it belongs to (0 is
+ * "always"), its brightness control group, style and size.
+ */
+export const EramDefaults = Schema.Struct({
+  kind: Schema.Literals(['line', 'symbol', 'text']),
+  filters: Schema.Array(Schema.Number),
+  bcg: Schema.Number,
+  style: Schema.NullOr(Schema.String),
+  /** line thickness or symbol/text size */
+  size: Schema.Number,
+  xOffset: Schema.Number,
+  yOffset: Schema.Number,
+})
+export type EramDefaults = typeof EramDefaults.Type
 
 export const VideoMap = Schema.Struct({
   id: Schema.String,
   features: Schema.Array(VideoMapFeature),
+  eram: Schema.NullOr(EramDefaults),
 })
 export type VideoMap = typeof VideoMap.Type
 
@@ -42,17 +66,47 @@ const toRings = (v: unknown): Array<Ring> | null => {
   return rings.every((r): r is Ring => r !== null) ? rings : null
 }
 
+const numbers = (v: unknown): Array<number> | null => (Array.isArray(v) && v.every((x) => typeof x === 'number') ? (v as Array<number>) : null)
+const stringsOf = (v: unknown): Array<string> | null => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as Array<string>) : null)
+
+/** The `is*Defaults` feature of an ERAM map, or null for STARS, ASDE-X and tower-cab maps. */
+const eramDefaults = (p: Readonly<Record<string, unknown>>): EramDefaults | null => {
+  const kind = p['isLineDefaults'] === true ? 'line' : p['isSymbolDefaults'] === true ? 'symbol' : p['isTextDefaults'] === true ? 'text' : null
+  if (kind === null) {
+    return null
+  }
+  const size = typeof p['thickness'] === 'number' ? p['thickness'] : typeof p['size'] === 'number' ? p['size'] : 1
+  return {
+    kind,
+    filters: numbers(p['filters']) ?? [0],
+    bcg: typeof p['bcg'] === 'number' ? p['bcg'] : 0,
+    style: typeof p['style'] === 'string' ? p['style'] : null,
+    size,
+    xOffset: typeof p['xOffset'] === 'number' ? p['xOffset'] : 0,
+    yOffset: typeof p['yOffset'] === 'number' ? p['yOffset'] : 0,
+  }
+}
+
 export const parseVideoMap = (id: string, json: GeoJson): VideoMap => {
   const features: Array<VideoMapFeature> = []
+  let eram: EramDefaults | null = null
   for (const f of json.features ?? []) {
     const g = f.geometry
     const p = f.properties ?? {}
     if (!g) {
       continue
     }
+    const defaults = eramDefaults(p)
+    if (defaults !== null) {
+      eram ??= defaults
+      continue
+    }
     const polygons: Array<Array<Ring>> = []
     const lines: Array<Ring> = []
-    if (g.type === 'Polygon') {
+    const points: Array<LonLat> = []
+    if (g.type === 'Point' && isLonLat(g.coordinates)) {
+      points.push([g.coordinates[0], g.coordinates[1]])
+    } else if (g.type === 'Polygon') {
       const rings = toRings(g.coordinates)
       if (rings !== null) {
         polygons.push(rings)
@@ -75,7 +129,8 @@ export const parseVideoMap = (id: string, json: GeoJson): VideoMap => {
         lines.push(...many)
       }
     }
-    if (polygons.length === 0 && lines.length === 0) {
+    const text = stringsOf(p['text'])
+    if (polygons.length === 0 && lines.length === 0 && (points.length === 0 || eram === null)) {
       continue
     }
     const thickness = typeof p['thickness'] === 'number' ? p['thickness'] : null
@@ -86,9 +141,20 @@ export const parseVideoMap = (id: string, json: GeoJson): VideoMap => {
       zIndex: typeof p['zIndex'] === 'number' ? p['zIndex'] : null,
       polygons,
       lines,
+      points,
+      text: text === null || text.length === 0 ? null : text,
+      filters: numbers(p['filters']),
+      bcg: typeof p['bcg'] === 'number' ? p['bcg'] : null,
+      style: typeof p['style'] === 'string' ? p['style'] : null,
     })
   }
-  return { id, features }
+  return { id, features, eram }
+}
+
+/** Whether an ERAM feature shows under the filters switched on (filter 0 is always on). */
+export const eramFeatureVisible = (map: VideoMap, f: VideoMapFeature, on: ReadonlySet<number>): boolean => {
+  const filters = f.filters ?? map.eram?.filters ?? [0]
+  return filters.some((i) => i === 0 || on.has(i))
 }
 
 /**

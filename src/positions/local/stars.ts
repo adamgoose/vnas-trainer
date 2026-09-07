@@ -162,28 +162,31 @@ export const StarsSurface = Mount.defineStream('StarsSurface', {
 
 export type RadarPoint = Readonly<{ x: number; y: number }>
 
-/** Pixels per nautical mile with the view letterboxed like preserveAspectRatio meet. */
-export const pxPerNm = (model: StarsModel): number => Math.min(model.width / model.view.w, model.height / model.view.h) || 20
+/** What the geometry needs of a radar pane: the STARS and ERAM panes both have these. */
+export type RadarPane = Readonly<{ width: number; height: number; view: RadarView }>
 
-export const toCanvas = (model: StarsModel, nmX: number, nmY: number): RadarPoint => {
+/** Pixels per nautical mile with the view letterboxed like preserveAspectRatio meet. */
+export const pxPerNm = (model: RadarPane): number => Math.min(model.width / model.view.w, model.height / model.view.h) || 20
+
+export const toCanvas = (model: RadarPane, nmX: number, nmY: number): RadarPoint => {
   const s = pxPerNm(model)
   const offsetX = (model.width - model.view.w * s) / 2
   const offsetY = (model.height - model.view.h * s) / 2
   return { x: offsetX + (nmX - model.view.x) * s, y: offsetY + (nmY - model.view.y) * s }
 }
 
-export const canvasToNm = (model: StarsModel, x: number, y: number): RadarPoint => {
+export const canvasToNm = (model: RadarPane, x: number, y: number): RadarPoint => {
   const s = pxPerNm(model)
   const offsetX = (model.width - model.view.w * s) / 2
   const offsetY = (model.height - model.view.h * s) / 2
   return { x: model.view.x + (x - offsetX) / s, y: model.view.y + (y - offsetY) / s }
 }
 
-export const zoomAt = (model: StarsModel, x: number, y: number, k: number): RadarView => {
+export const zoomAt = (model: RadarPane, x: number, y: number, k: number, maxViewNm: number = MAX_VIEW_NM): RadarView => {
   const under = canvasToNm(model, x, y)
   const fx = (under.x - model.view.x) / model.view.w
   const fy = (under.y - model.view.y) / model.view.h
-  const nw = Math.max(MIN_VIEW_NM, Math.min(MAX_VIEW_NM, model.view.w * k))
+  const nw = Math.max(MIN_VIEW_NM, Math.min(maxViewNm, model.view.w * k))
   const nh = nw * (model.view.h / model.view.w)
   return { x: under.x - nw * fx, y: under.y - nh * fy, w: nw, h: nh }
 }

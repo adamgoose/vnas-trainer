@@ -26,8 +26,10 @@ import {
   type World,
   type WorldResult,
   approachRadioName,
+  checkInRadioName,
   departureRadioName,
   findAircraft,
+  nextFacility,
   removeAircraft,
   replaceAircraft,
   towerRadioName,
@@ -196,6 +198,8 @@ const atPathEnd = (a: Aircraft): boolean => a.path === null || a.leg >= a.path.l
 export const liftoff = (world: World, a: Aircraft): StepOut => {
   const pf = performance(a.type, world.airport.init)
   const course = (a.runway !== null ? runwayCourse(world.graph, a.runway) : null) ?? a.heading
+  /** as Center the tower and approach are simulated too: a departure climbs on to its filed altitude before it calls */
+  const target = world.rules.checkInWith === 'center' ? Math.max(pf.initialAltitude, a.assignedAltitude ?? pf.initialAltitude) : pf.initialAltitude
   return keep(
     {
       ...a,
@@ -204,7 +208,7 @@ export const liftoff = (world: World, a: Aircraft): StepOut => {
       targetHeading: course,
       turn: null,
       altitude: 0,
-      targetAltitude: pf.initialAltitude,
+      targetAltitude: target,
       targetSpeed: pf.climbSpeed,
       verticalSpeed: pf.verticalSpeed,
       path: null,
@@ -212,7 +216,7 @@ export const liftoff = (world: World, a: Aircraft): StepOut => {
       transponder: a.transponder === 'S' ? 'N' : a.transponder,
       airborneAt: world.simTime,
     },
-    [note(`${a.callsign} airborne runway ${a.runway}, climbing ${pf.initialAltitude}`)],
+    [note(`${a.callsign} airborne runway ${a.runway}, climbing ${target}`)],
   )
 }
 
@@ -329,7 +333,13 @@ const speedWanted = (a: Aircraft): number => {
 }
 
 const handoffName = (world: World, a: Aircraft): string =>
-  a.handoffTo === 'center' ? (world.airport.center?.radio ?? 'center') : a.handoffTo === 'tower' ? towerRadioName(world) : departureRadioName(world)
+  a.handoffTo === 'center'
+    ? (nextFacility(world, a.handoffSector)?.radio ?? 'center')
+    : a.handoffTo === 'tower'
+      ? towerRadioName(world)
+      : a.handoffTo === 'approach'
+        ? approachRadioName(world)
+        : departureRadioName(world)
 
 /** Through 400 ft, a heading assigned with the takeoff clearance becomes the heading flown. */
 const turnOut = (world: World, a: Aircraft): Aircraft =>
@@ -367,8 +377,8 @@ const stepAir = (world: World, input: Aircraft, dt: number): StepOut => {
   const position = movePoint(world.graph.projection, a.position, heading, speed * KT_TO_FT_PER_S * dt)
   const history = world.tick % 10 === 0 ? [...a.history, position].slice(-6) : a.history
   const moved: Aircraft = { ...a, heading, turn, speed, altitude, position, history }
-  /** a departure calls once it is through 1,000 ft above the field */
-  const calling = world.rules.checkInAirborne && !moved.checkedIn && moved.altitude >= world.airport.elevation + DEPARTURE_CHECK_IN_AGL_FT
+  /** a departure calls once it is through the position's check-in height above the field (1,000 ft for the approach) */
+  const calling = world.rules.checkInAirborne && !moved.checkedIn && moved.altitude >= world.airport.elevation + world.rules.checkInAgl
   const next: Aircraft = calling ? { ...moved, checkedIn: true } : moved
   if (next.handoff && next.handoffTo !== 'tower' && world.simTime - next.handoffAt > HANDOFF_REMOVE_S) {
     return {
@@ -564,10 +574,10 @@ const onFrequencyNote = (a: Aircraft): string =>
           : 'ready'
   }`
 
-/** "Minneapolis Approach, Delta ten forty-seven, one one thousand" (departures call the departure position). */
+/** "Minneapolis Approach, Delta ten forty-seven, one one thousand" (departures call the departure position; as Center everyone calls the centre). */
 export const checkInAirborne = (world: World, a: Aircraft): SimEvent => {
   const departing = a.departure !== null && a.departure.endsWith(world.airport.id)
-  const facility = departing ? departureRadioName(world) : approachRadioName(world)
+  const facility = checkInRadioName(world, departing)
   const level = Math.round(a.altitude / 100) * 100
   const trend =
     a.targetAltitude > a.altitude + 200
@@ -707,10 +717,11 @@ export const placeOnStar = (world: World, a: Aircraft, entry: StarEntry): Aircra
     heading,
     targetHeading: heading,
     turn: null,
-    speed: STAR_ARRIVAL_KT,
-    targetSpeed: STAR_ARRIVAL_KT,
-    altitude: STAR_ARRIVAL_ALT,
-    targetAltitude: STAR_ARRIVAL_ALT,
+    speed: world.rules.arrivalSpeed,
+    targetSpeed: world.rules.arrivalSpeed,
+    altitude: world.rules.arrivalAltitude,
+    targetAltitude: world.rules.arrivalAltitude,
+    assignedAltitude: world.rules.arrivalAltitude,
     verticalSpeed: performance(a.type, world.airport.init).verticalSpeed,
     fixes: entry.fixes.slice(1),
     flightPlan: { ...a.flightPlan, star: entry.star },
@@ -737,8 +748,10 @@ export const maybeArrival = (world: World): WorldResult => {
   const [squawk, p6] = nextInt(p5, 6000)
   const [destinationGate, p7] = pick(p6, gateNames(world.graph))
   const [starEntry, p8] = world.rules.arrivalsFrom === 'star' ? pickStarEntry(world, p7) : [null, p7]
+  const [cidNumber, p9] = nextInt(p8, 900)
+  const cid = String(100 + cidNumber)
   const callsign = `${entry?.a ?? 'N'}${100 + number}`
-  const next: World = { ...scheduled, prng: p8 }
+  const next: World = { ...scheduled, prng: p9 }
   if (runway === undefined || findAircraft(world, callsign) !== undefined) {
     return { world: next, events: [] }
   }
@@ -746,7 +759,7 @@ export const maybeArrival = (world: World): WorldResult => {
     const arrival: Aircraft = {
       ...placeOnStar(
         world,
-        makeAircraft({ callsign, type: type ?? 'C172', destination: world.airport.id, transponder: 'N', squawk: String(1000 + squawk) }),
+        makeAircraft({ callsign, type: type ?? 'C172', destination: world.airport.id, transponder: 'N', squawk: String(1000 + squawk), cid }),
         starEntry,
       ),
       tracked: true,
@@ -770,6 +783,7 @@ export const maybeArrival = (world: World): WorldResult => {
         destination: world.airport.id,
         transponder: 'N',
         squawk: String(1000 + squawk),
+        cid,
       }),
       runway,
       nm,

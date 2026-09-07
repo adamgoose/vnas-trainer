@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 
 import type { Aircraft } from '../src/domain/aircraft'
-import { type AirportFile, decodeAirportFile } from '../src/domain/catalog'
+import { type AirportFile, type ArtccFile, decodeAirportFile, decodeArtccFile } from '../src/domain/catalog'
 import { AtcCommand, executeCommand, parseCommandLine } from '../src/domain/commands'
 import { written } from '../src/domain/phrase'
 import { stepWorld } from '../src/domain/physics'
@@ -13,6 +13,11 @@ export const loadMsp = (): AirportFile =>
   decodeAirportFile(JSON.parse(readFileSync(new URL('./fixtures/MSP.json', import.meta.url), 'utf8')))
 
 export const msp = loadMsp()
+
+/** The ZMP ARTCC file: ERAM GeoMaps, sectors and the en-route nav (Phase 9). */
+export const loadZmp = (): ArtccFile => decodeArtccFile(JSON.parse(readFileSync(new URL('./fixtures/ZMP.json', import.meta.url), 'utf8')))
+
+export const zmp = loadZmp()
 
 export const scenarioNamed = (name: string) => {
   const s = msp.scen.find((x) => x.name === name)

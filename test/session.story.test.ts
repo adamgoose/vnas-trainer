@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { Command, given, message, model, story } from 'foldkit/story'
 
-import { FocusCommand, HostRoom, JoinRoom, LeaveRoom, LoadAirport, LoadIndex, LoadPavement, ProbeRecognition, ReadDeepLink, ReplaceDeepLink, SaveSettings, SendSession, Speak } from '../src/app/commands'
+import { FocusCommand, HostRoom, JoinRoom, LeaveRoom, LoadAirport, LoadArtcc, LoadIndex, LoadPavement, ProbeRecognition, ReadDeepLink, ReplaceDeepLink, SaveSettings, SendSession, Speak } from '../src/app/commands'
 import { LoadStarsMap, StarsMessage, defaultMaps } from '../src/positions/local/stars'
 import { Message } from '../src/app/message'
 import { type Model, initialModel, worldOf } from '../src/app/model'
@@ -144,8 +144,11 @@ describe('joining', () => {
       Command.resolve(JoinRoom, Message.CompletedJoinRoom({ room: 'ABC234' })),
       model((m) => expect(m.session).toMatchObject({ role: 'guest', room: 'ABC234', status: 'connecting' })),
       Command.resolve(LoadIndex, Message.CompletedLoadIndex({ index })),
+      Command.resolve(LoadArtcc, Message.FailedLoadArtcc({ id: 'ZMP', error: 'skipped' })),
       Command.resolve(LoadAirport, Message.FailedLoadAirport({ id: 'MSP', error: 'skipped' })),
       message(Message.ReceivedSession({ peerId: 'host-1', event: SessionEvent.Snapshot({ snapshot }) })),
+      Command.expectExact(LoadArtcc({ source: DataSource.Catalog(), id: 'ZMP' })),
+      Command.resolve(LoadArtcc, Message.FailedLoadArtcc({ id: 'ZMP', error: 'skipped' })),
       Command.expectExact(LoadAirport({ source: DataSource.Catalog(), id: 'MSP', artcc: 'ZMP' })),
       model((m) => expect(m.session.pendingSnapshot).not.toBeNull()),
       Command.resolve(LoadAirport, Message.CompletedLoadAirport({ airport: msp })),

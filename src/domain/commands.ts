@@ -6,7 +6,7 @@
 import { Schema } from 'effect'
 import { defineTaggedUnion } from 'foldkit/schema'
 
-import type { Aircraft } from './aircraft'
+import { type Aircraft, handoffAccepted } from './aircraft'
 import type { LonLat } from './catalog'
 import { distanceFt } from './geo'
 import { type Graph, departureHold, edgeName, isRunwayName, nearestNode, nearestOn, runwaysEntered } from './graph'
@@ -26,10 +26,12 @@ import {
 } from './phrase'
 import { armHold, autoExit, goAround, holdTarget, withPath } from './physics'
 import { PUSHBACK_RUNWAY_PENALTY_FT, findPath, routeVia } from './route'
+import { nextInt } from './prng'
 import {
   SimEvent,
   type World,
   type WorldResult,
+  approachRadioName,
   findAircraft,
   matchCallsign,
   nextFacility,
@@ -68,6 +70,17 @@ export const AtcCommand = defineTaggedUnion({
   ExpectRunway: { runway: Schema.String },
   ClearedApproach: { runway: Schema.NullOr(Schema.String) },
   ContactTower: {},
+  /** Center (Phase 9): the arrival is switched to the approach */
+  ContactApproach: {},
+  /** ERAM entries (Phase 9): data the controller keys into the flight plan; the pilot is told separately */
+  AssignAltitude: { altitude: Schema.Number },
+  InterimAltitude: { altitude: Schema.NullOr(Schema.Number) },
+  SetHsf: { heading: Schema.NullOr(Schema.Number), speed: Schema.NullOr(Schema.Number), text: Schema.NullOr(Schema.String), clear: Schema.Literals(['none', 'heading', 'speed', 'all']) },
+  AmendDirect: { fix: Schema.String },
+  FlightPlanReadout: {},
+  RequestBeacon: {},
+  HandoffSector: { sector: Schema.String },
+  RecallHandoff: {},
   Squawk: { code: Schema.String },
   SquawkNormal: {},
   SquawkStandby: {},
@@ -85,17 +98,44 @@ export const isGlobalCommand = (c: AtcCommand): boolean =>
 
 // PARSER
 
+/** ERAM display entries (Phase 9): they change the picture, not the World, so the app routes them to the ERAM pane. */
+export const DisplayCommand = defineTaggedUnion({
+  /** `<FLID>`: an LDB becomes an FDB and back */
+  ToggleBlock: {},
+  /** `<1-9> <FLID>`, `/<0-3> <FLID>`, `<1-9>/<0-3> <FLID>` */
+  PositionBlock: { position: Schema.NullOr(Schema.Number), leader: Schema.NullOr(Schema.Number) },
+  /** `//<FLID>` */
+  ToggleVci: {},
+  /** `QP J <FLID>` */
+  ToggleHalo: {},
+  /** `QS <FLID>` */
+  ToggleHsf: {},
+  /** `QU [minutes] <FLID>` draws the route; `QU <FLID>` with a route shown clears it */
+  RouteDisplay: { minutes: Schema.NullOr(Schema.Number) },
+  /** `QU` */
+  ClearRoutes: {},
+  /** `MR [name]` */
+  GeoMap: { name: Schema.NullOr(Schema.String) },
+})
+export type DisplayCommand = typeof DisplayCommand.Type
+
 export type ParseResult =
   | Readonly<{ _tag: 'Parsed'; callsign: string | null; command: AtcCommand }>
+  | Readonly<{ _tag: 'Display'; callsign: string | null; display: DisplayCommand }>
   | Readonly<{ _tag: 'Invalid'; callsign: string | null; error: string }>
   | Readonly<{ _tag: 'Unknown' }>
   | Readonly<{ _tag: 'Empty' }>
 
 const VERBS = new Set([
   'PUSH', 'TAXI', 'RWY', 'HS', 'CROSS', 'RES', 'HOLD', 'BREAK', 'GIVEWAY', 'GW', 'TAXIALL', 'LUAW', 'CTO', 'EXIT', 'GA',
-  'CTL', 'TRACK', 'IC', 'DROP', 'DT', 'CD', 'FH', 'TL', 'TR', 'CM', 'DM', 'DCT', 'PD', 'SPD', 'EXP', 'CAPP', 'ILS', 'CT', 'HO',
+  'CTL', 'TRACK', 'IC', 'DROP', 'DT', 'CD', 'FH', 'TL', 'TR', 'CM', 'DM', 'DCT', 'PD', 'SPD', 'EXP', 'CAPP', 'ILS', 'CT', 'HO', 'CA',
   'SQ', 'SN', 'SS', 'ID', 'SAY', 'DEL', 'PAUSE', 'UNPAUSE', 'SIMRATE',
 ])
+
+/** ERAM message-composition verbs (Phase 9): the flight id comes last, as ERAM has it. */
+const ERAM_VERBS = new Set(['QZ', 'QQ', 'QS', 'QU', 'QT', 'QX', 'QF', 'QB', 'QP', 'AM', 'MR'])
+
+export const isEramVerb = (token: string): boolean => ERAM_VERBS.has(token.toUpperCase())
 
 export const isVerb = (token: string): boolean => VERBS.has(token.toUpperCase())
 
@@ -258,6 +298,8 @@ const parseVerb = (verb: string, args: ReadonlyArray<string>): Parsed => {
     case 'CT':
     case 'HO':
       return AtcCommand.ContactTower()
+    case 'CA':
+      return AtcCommand.ContactApproach()
     case 'SQ':
       return upper[0] === undefined ? { error: 'squawk what?' } : AtcCommand.Squawk({ code: upper[0] })
     case 'SN':
@@ -281,15 +323,176 @@ const parseVerb = (verb: string, args: ReadonlyArray<string>): Parsed => {
   }
 }
 
+/** ERAM altitudes are hundreds of feet ("350" = FL350, "080" = 8,000); a plain foot value above 450 is taken as feet. */
+const parseEramAltitude = (s: string | undefined): number | null => parseAltitude(s)
+
+type EramParsed = Readonly<{ _tag: 'Parsed'; command: AtcCommand }> | Readonly<{ _tag: 'Display'; display: DisplayCommand }> | Readonly<{ error: string }>
+
+/** `<1-9>`, `/<0-3>` or `<1-9>/<0-3>`: a data block position and/or leader length. */
+const parseBlockPosition = (token: string): DisplayCommand | null => {
+  const m = /^([1-9])?(?:\/([0-3]))?$/.exec(token)
+  if (m === null || (m[1] === undefined && m[2] === undefined) || token === '') {
+    return null
+  }
+  return DisplayCommand.PositionBlock({ position: m[1] === undefined ? null : parseInt(m[1], 10), leader: m[2] === undefined ? null : parseInt(m[2], 10) })
+}
+
+/** An ERAM verb with its arguments (the flight id already taken off the end). */
+const parseEramVerb = (world: World, verb: string, args: ReadonlyArray<string>, hasFlid: boolean): EramParsed => {
+  switch (verb) {
+    case 'QZ': {
+      const altitude = parseEramAltitude(args[0])
+      return altitude === null ? { error: 'QZ <altitude> <FLID>' } : { _tag: 'Parsed', command: AtcCommand.AssignAltitude({ altitude }) }
+    }
+    case 'QQ': {
+      if (args.length === 0 || args[0] === 'L') {
+        return { _tag: 'Parsed', command: AtcCommand.InterimAltitude({ altitude: null }) }
+      }
+      const altitude = parseEramAltitude(args[0]!.replace(/^[RLP]/, ''))
+      return altitude === null ? { error: 'QQ <altitude> <FLID>' } : { _tag: 'Parsed', command: AtcCommand.InterimAltitude({ altitude }) }
+    }
+    case 'QS': {
+      const arg = args.join(' ')
+      if (arg === '') {
+        return { _tag: 'Display', display: DisplayCommand.ToggleHsf() }
+      }
+      if (arg === '*') {
+        return { _tag: 'Parsed', command: AtcCommand.SetHsf({ heading: null, speed: null, text: null, clear: 'all' }) }
+      }
+      if (arg === '*/') {
+        return { _tag: 'Parsed', command: AtcCommand.SetHsf({ heading: null, speed: null, text: null, clear: 'heading' }) }
+      }
+      if (arg === '/*') {
+        return { _tag: 'Parsed', command: AtcCommand.SetHsf({ heading: null, speed: null, text: null, clear: 'speed' }) }
+      }
+      const speed = /^\/(\d{2,3})$/.exec(arg)
+      if (speed !== null) {
+        return { _tag: 'Parsed', command: AtcCommand.SetHsf({ heading: null, speed: parseInt(speed[1]!, 10), text: null, clear: 'none' }) }
+      }
+      const heading = /^(\d{3})$/.exec(arg)
+      if (heading !== null) {
+        return { _tag: 'Parsed', command: AtcCommand.SetHsf({ heading: parseInt(heading[1]!, 10) % 360, speed: null, text: null, clear: 'none' }) }
+      }
+      return { _tag: 'Parsed', command: AtcCommand.SetHsf({ heading: null, speed: null, text: arg.replace(/^[`ⵔ]\s*/, ''), clear: 'none' }) }
+    }
+    case 'QU': {
+      if (args.length === 0) {
+        return hasFlid ? { _tag: 'Display', display: DisplayCommand.RouteDisplay({ minutes: null }) } : { _tag: 'Display', display: DisplayCommand.ClearRoutes() }
+      }
+      const first = args[0]!
+      if (first === '/M') {
+        return { _tag: 'Display', display: DisplayCommand.RouteDisplay({ minutes: 999 }) }
+      }
+      if (/^\d{1,3}$/.test(first)) {
+        return { _tag: 'Display', display: DisplayCommand.RouteDisplay({ minutes: parseInt(first, 10) }) }
+      }
+      const fix = first.replace(/^\/OK$/, '') === '' ? args[1] : first
+      return fix === undefined ? { error: 'QU <fix> <FLID>' } : { _tag: 'Parsed', command: AtcCommand.AmendDirect({ fix }) }
+    }
+    case 'QT':
+      return { _tag: 'Parsed', command: AtcCommand.Track() }
+    case 'QX':
+      return { _tag: 'Parsed', command: AtcCommand.Drop() }
+    case 'QF':
+      return { _tag: 'Parsed', command: AtcCommand.FlightPlanReadout() }
+    case 'QB': {
+      const code = args[0]
+      if (code === undefined) {
+        return { _tag: 'Parsed', command: AtcCommand.RequestBeacon() }
+      }
+      return /^[0-7]{4}$/.test(code) ? { _tag: 'Parsed', command: AtcCommand.Squawk({ code }) } : { error: 'QB <code> <FLID>' }
+    }
+    case 'QP':
+      return args[0] === 'J' || args[0] === 'T' ? { _tag: 'Display', display: DisplayCommand.ToggleHalo() } : { error: 'QP J <FLID> toggles the halo' }
+    case 'AM': {
+      // AM <FLID> <field> <value>: the FLID was taken from the front by the caller
+      const field = args[0]
+      const value = args[1]
+      if (field === 'ALT' || field === '8') {
+        const altitude = parseEramAltitude(value)
+        return altitude === null ? { error: 'AM <FLID> ALT <altitude>' } : { _tag: 'Parsed', command: AtcCommand.AssignAltitude({ altitude }) }
+      }
+      if (field === 'BCN' || field === '4') {
+        return value !== undefined && /^[0-7]{4}$/.test(value) ? { _tag: 'Parsed', command: AtcCommand.Squawk({ code: value }) } : { error: 'AM <FLID> BCN <code>' }
+      }
+      return field === undefined ? { _tag: 'Parsed', command: AtcCommand.FlightPlanReadout() } : { error: `AM ${field} is not supported (ALT, BCN)` }
+    }
+    case 'MR':
+      return { _tag: 'Display', display: DisplayCommand.GeoMap({ name: args[0] ?? null }) }
+    default:
+      return world.airport.sectors.some((p) => p.sector === verb) ? { _tag: 'Parsed', command: AtcCommand.HandoffSector({ sector: verb }) } : { error: `unknown ERAM command ${verb}` }
+  }
+}
+
+/**
+ * An ERAM message (Phase 9): `QZ 350 DAL123`, `QU MUSCL DAL123`, `06 DAL123`
+ * (a sector handoff), `//DAL123`, `3/2 DAL123`, `QU` alone. The flight id is the
+ * last token; without one, the selected aircraft is used. Null when the line is
+ * not an ERAM message.
+ */
+export const parseEramLine = (world: World, selected: string | null, tokens: ReadonlyArray<string>): ParseResult | null => {
+  const upper = tokens.map((t) => t.toUpperCase())
+  const first = upper[0] ?? ''
+  const vci = /^\/\/(.*)$/.exec(first)
+  const inlineFlid = vci?.[1] ?? ''
+  const isSector = world.airport.sectors.some((p) => p.sector === first)
+  const isEram = isEramVerb(first) || vci !== null || parseBlockPosition(first) !== null || isSector
+  if (!isEram) {
+    return null
+  }
+  // AM <FLID> ...: the flight id comes second, as ERAM has it
+  if (first === 'AM') {
+    const flid = upper[1] === undefined ? null : matchCallsign(world, upper[1])
+    const callsign = flid?.callsign ?? selected
+    const out = parseEramVerb(world, 'AM', upper.slice(flid === null ? 1 : 2), true)
+    return 'error' in out ? { _tag: 'Invalid', callsign, error: out.error } : out._tag === 'Parsed' ? { _tag: 'Parsed', callsign, command: out.command } : { _tag: 'Display', callsign, display: out.display }
+  }
+  if (first === 'MR') {
+    return { _tag: 'Display', callsign: null, display: DisplayCommand.GeoMap({ name: upper[1] ?? null }) }
+  }
+  const last = upper[upper.length - 1]
+  const flid = last !== undefined && upper.length > (inlineFlid !== '' ? 0 : 1) ? matchCallsign(world, last) : null
+  const inline = inlineFlid !== '' ? matchCallsign(world, inlineFlid) : null
+  const callsign = inline?.callsign ?? flid?.callsign ?? selected
+  const hasFlid = inline !== null || flid !== null
+  const args = upper.slice(1, flid !== null ? -1 : undefined)
+  if (vci !== null) {
+    return callsign === null ? { _tag: 'Invalid', callsign: null, error: '//<FLID>' } : { _tag: 'Display', callsign, display: DisplayCommand.ToggleVci() }
+  }
+  const position = parseBlockPosition(first)
+  if (position !== null) {
+    return callsign === null ? { _tag: 'Invalid', callsign: null, error: `${first} <FLID>` } : { _tag: 'Display', callsign, display: position }
+  }
+  const out = parseEramVerb(world, first, args, hasFlid)
+  if ('error' in out) {
+    return { _tag: 'Invalid', callsign, error: out.error }
+  }
+  if (out._tag === 'Display') {
+    return out.display._tag === 'ClearRoutes' || out.display._tag === 'GeoMap' ? { _tag: 'Display', callsign: null, display: out.display } : callsign === null ? { _tag: 'Invalid', callsign: null, error: `${first} needs a flight id` } : { _tag: 'Display', callsign, display: out.display }
+  }
+  return callsign === null ? { _tag: 'Invalid', callsign: null, error: `${first} needs a flight id` } : { _tag: 'Parsed', callsign, command: out.command }
+}
+
 /**
  * A leading callsign (exact, or unique prefix/suffix) selects the aircraft; the
  * selected aircraft is used otherwise. Text that is not a command is `Unknown` so
- * the app can hand it to the AI translator.
+ * the app can hand it to the AI translator. ERAM messages (verb first, flight id
+ * last) are recognised too, and a bare flight id toggles its data block.
  */
 export const parseCommandLine = (world: World, selected: string | null, text: string): ParseResult => {
   const tokens = text.trim().split(/\s+/).filter((t) => t.length > 0)
   if (tokens.length === 0) {
     return { _tag: 'Empty' }
+  }
+  const eram = parseEramLine(world, selected, tokens)
+  if (eram !== null) {
+    return eram
+  }
+  if (tokens.length === 1 && !isVerb(tokens[0]!)) {
+    const only = matchCallsign(world, tokens[0]!)
+    if (only !== null) {
+      return { _tag: 'Display', callsign: only.callsign, display: DisplayCommand.ToggleBlock() }
+    }
   }
   let callsign = selected
   let i = 0
@@ -766,7 +969,7 @@ const executeFor = (world: World, a: Aircraft, command: AtcCommand): Outcome => 
       if (a.handoff) {
         return fail('already switched')
       }
-      const d = nextFacility(world)
+      const d = nextFacility(world, a.handoffSector)
       const fallback = world.rules.handoffTo === 'center' ? 'contact center' : 'contact departure'
       const readback =
         d === null ? phrase(fallback) : d.freq !== null ? phrase(`over to ${d.radio}`, frequency(d.freq)) : phrase(`over to ${d.radio}`)
@@ -783,6 +986,73 @@ const executeFor = (world: World, a: Aircraft, command: AtcCommand): Outcome => 
       const freq = world.airport.towerFreq
       const readback = freq !== null ? phrase(`over to ${towerRadioName(world)}`, frequency(freq)) : phrase(`over to ${towerRadioName(world)}`)
       return reply({ ...a, handoff: true, handoffAt: world.simTime, handoffTo: 'tower' }, readback)
+    },
+
+    ContactApproach: () => {
+      if (a.state !== 'AIRB') {
+        return fail('not airborne')
+      }
+      if (a.handoff) {
+        return fail('already switched')
+      }
+      const app = world.airport.approach
+      const name = app?.radio ?? approachRadioName(world)
+      const readback = app?.freq ? phrase(`over to ${name}`, frequency(app.freq)) : phrase(`over to ${name}`)
+      return reply({ ...a, handoff: true, handoffAt: world.simTime, handoffTo: 'approach' }, readback)
+    },
+
+    AssignAltitude: ({ altitude }) => ({ aircraft: { ...a, assignedAltitude: altitude, interimAltitude: null }, events: [] }),
+
+    InterimAltitude: ({ altitude }) => ({ aircraft: { ...a, interimAltitude: altitude }, events: [] }),
+
+    SetHsf: ({ heading, speed, text, clear }) => {
+      const hsf =
+        clear === 'all'
+          ? { heading: null, speed: null, text: null }
+          : clear === 'heading'
+            ? { ...a.hsf, heading: null }
+            : clear === 'speed'
+              ? { ...a.hsf, speed: null }
+              : { heading: heading ?? a.hsf.heading, speed: speed ?? a.hsf.speed, text: text ?? a.hsf.text }
+      return { aircraft: { ...a, hsf }, events: [] }
+    },
+
+    AmendDirect: ({ fix }) => {
+      if (world.nav.fixes[fix] === undefined) {
+        return fail(`unfamiliar with ${fix}`)
+      }
+      const tokens = (a.flightPlan.route ?? '').split(/\s+/).filter((t) => t !== '')
+      const at = tokens.indexOf(fix)
+      const route = [fix, ...(at >= 0 ? tokens.slice(at + 1) : tokens.filter((t) => t !== fix))].join(' ')
+      return { aircraft: { ...a, flightPlan: { ...a.flightPlan, route } }, events: [SimEvent.SystemNote({ text: `${a.callsign} route amended: ${route}` })] }
+    },
+
+    FlightPlanReadout: () => ({ aircraft: a, events: [SimEvent.SystemNote({ text: flightPlanReadout(world, a) })] }),
+
+    RequestBeacon: () => {
+      const [n] = nextInt(world.prng, 6000)
+      const code = String(1000 + n)
+      return reply({ ...a, squawk: code, transponder: 'N' }, phrase('squawking', digits(code)))
+    },
+
+    HandoffSector: ({ sector }) => {
+      if (!a.tracked) {
+        return fail('not tracked')
+      }
+      if (a.handoffSector !== null) {
+        return fail(`handoff to ${a.handoffSector} already started`)
+      }
+      return { aircraft: { ...a, handoffSector: sector, handoffSectorAt: world.simTime }, events: [SimEvent.SystemNote({ text: `${a.callsign} handoff to sector ${sector}` })] }
+    },
+
+    RecallHandoff: () => {
+      if (a.handoffSector === null) {
+        return fail('no handoff pending')
+      }
+      if (handoffAccepted(a, world.simTime)) {
+        return fail(`sector ${a.handoffSector} has the handoff`)
+      }
+      return { aircraft: { ...a, handoffSector: null }, events: [SimEvent.SystemNote({ text: `${a.callsign} handoff recalled` })] }
     },
 
     FlyHeading: ({ heading, turn }) => {
@@ -885,6 +1155,20 @@ const executeFor = (world: World, a: Aircraft, command: AtcCommand): Outcome => 
   })
 }
 
+/** The QF readout: time, CID, ACID(sector), type, beacon, filed speed, assigned altitude, route, destination. */
+export const flightPlanReadout = (world: World, a: Aircraft): string => {
+  const t = Math.floor(world.simTime)
+  const time = `${String(Math.floor(t / 3600) % 24).padStart(2, '0')}${String(Math.floor(t / 60) % 60).padStart(2, '0')}`
+  const altitude = a.assignedAltitude === null ? '' : String(Math.round(a.assignedAltitude / 100)).padStart(3, '0')
+  const type = a.flightPlan.fullType ?? a.type
+  const route = (a.flightPlan.route ?? '').split(/\s+/).filter((x) => x !== '').join('.')
+  return `${time} ${a.cid} ${a.callsign}(${a.handoffSector ?? '--'}) ${type} ${a.squawk} ${a.flightPlan.cruiseSpeed ?? 0} ${altitude} ${a.departure ?? ''}.${route}.${a.destination ?? ''}`.replace(/\s+/g, ' ')
+}
+
+/** ERAM flight-plan entries: the pilot says nothing back, ERAM answers ACCEPT (or an error) in the MCA. */
+export const isEramEntry = (c: AtcCommand): boolean =>
+  c._tag === 'AssignAltitude' || c._tag === 'InterimAltitude' || c._tag === 'SetHsf' || c._tag === 'AmendDirect' || c._tag === 'FlightPlanReadout' || c._tag === 'HandoffSector' || c._tag === 'RecallHandoff' || c._tag === 'Track' || c._tag === 'Drop'
+
 const executeGlobal = (world: World, command: AtcCommand): ExecResult =>
   AtcCommand.match<ExecResult>(command, {
     Pause: () => ({ world, events: [SimEvent.SetRunning({ running: false })] }),
@@ -925,6 +1209,15 @@ const executeGlobal = (world: World, command: AtcCommand): ExecResult =>
     ExpectRunway: () => ({ error: 'select an aircraft first' }),
     ClearedApproach: () => ({ error: 'select an aircraft first' }),
     ContactTower: () => ({ error: 'select an aircraft first' }),
+    ContactApproach: () => ({ error: 'select an aircraft first' }),
+    AssignAltitude: () => ({ error: 'select an aircraft first' }),
+    InterimAltitude: () => ({ error: 'select an aircraft first' }),
+    SetHsf: () => ({ error: 'select an aircraft first' }),
+    AmendDirect: () => ({ error: 'select an aircraft first' }),
+    FlightPlanReadout: () => ({ error: 'select an aircraft first' }),
+    RequestBeacon: () => ({ error: 'select an aircraft first' }),
+    HandoffSector: () => ({ error: 'select an aircraft first' }),
+    RecallHandoff: () => ({ error: 'select an aircraft first' }),
     Squawk: () => ({ error: 'select an aircraft first' }),
     SquawkNormal: () => ({ error: 'select an aircraft first' }),
     SquawkStandby: () => ({ error: 'select an aircraft first' }),
@@ -949,6 +1242,7 @@ export const executeCommand = (world: World, callsign: string | null, command: A
   if ('error' in out) {
     return out
   }
-  const next = command._tag === 'Delete' ? removeAircraft(world, callsign) : replaceAircraft(world, out.aircraft)
+  const drawn = command._tag === 'RequestBeacon' ? { ...world, prng: nextInt(world.prng, 6000)[1] } : world
+  const next = command._tag === 'Delete' ? removeAircraft(drawn, callsign) : replaceAircraft(drawn, out.aircraft)
   return { world: next, events: out.events }
 }

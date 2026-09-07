@@ -25,11 +25,12 @@ export const controlsView = (model: Model, h: HtmlBuilder<Message>): Html => {
     [h.Class('controls')],
     [
       h.select(
-        [h.Class('mode'), h.AriaLabel('Position'), h.Title('Switch position'), h.OnChange((v) => Message.ChangedPosition({ mode: v === 'tower' ? 'tower' : v === 'tracon' ? 'tracon' : 'ground' }))],
+        [h.Class('mode'), h.AriaLabel('Position'), h.Title('Switch position'), h.OnChange((v) => Message.ChangedPosition({ mode: v === 'tower' ? 'tower' : v === 'tracon' ? 'tracon' : v === 'center' ? 'center' : 'ground' }))],
         [
           option(h, 'ground', 'Ground', model.settings.mode === 'ground'),
           option(h, 'tower', 'Local', model.settings.mode === 'tower'),
           option(h, 'tracon', 'Approach', model.settings.mode === 'tracon'),
+          option(h, 'center', 'Center', model.settings.mode === 'center'),
         ],
       ),
       h.button(

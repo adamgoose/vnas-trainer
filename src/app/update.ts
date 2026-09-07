@@ -15,6 +15,7 @@ import {
   JoinRoom,
   LeaveRoom,
   LoadAirport,
+  LoadArtcc,
   LoadBrowserVoices,
   LoadIndex,
   LoadModels,
@@ -40,23 +41,25 @@ import {
 } from './commands'
 import { type Edge, type Layout, type Panel, availablePanels, close, defaultLayouts, dock, fitFloating, isOpen, loadedLayouts, moveFloating, open, placement, raise, resizeFloating, resizeGutter, toggleFloat } from './layout'
 import { Message } from './message'
-import { AirportLoad, type AirportInfo, IndexLoad, type LogLine, type Model, Pavement, infoOf, initialModel, initialSession, isGuest, isHost, isReviewing, worldOf } from './model'
+import { AirportLoad, type AirportInfo, ArtccLoad, IndexLoad, type LogLine, type Model, Pavement, artccOf, infoOf, initialModel, initialSession, isGuest, isHost, isReviewing, worldOf } from './model'
 import { type Point, branchOf, currentBranch, commandLogAt, liveEnd, logAt, parkBranch, pointAt, recordChange, recordSteps, resolvePoint, resumeAt, startTimeline, worldAt } from './timeline'
 import type { Services } from './subscriptions'
 import { TICK_MS } from './subscriptions'
 import type { AirportFile, CatalogIndex } from '../domain/catalog'
-import { type AtcCommand, executeCommand, parseCommandLine } from '../domain/commands'
+import { type AtcCommand, type DisplayCommand, executeCommand, isEramEntry, parseCommandLine } from '../domain/commands'
 import { runwayEntries } from '../domain/graph'
 import { type Phrase, spoken, spokenCallsign, spokenFreeText, written } from '../domain/phrase'
 import { MAX_STEPS_PER_TICK, stepWorldTimes } from '../domain/physics'
 import { type Translation, buildPrompt } from '../domain/prompt'
 import { loadScenario } from '../domain/scenario'
 import { SessionControl, SessionEvent, type Snapshot, isRoomCode, normaliseRoomCode } from '../domain/session'
-import { SimEvent, type World, findAircraft, makeWorld, matchCallsign } from '../domain/world'
+import { SimEvent, type World, findAircraft, makeWorld, matchCallsign, withArtcc } from '../domain/world'
 import { type PositionMode, positionFor } from '../positions'
 import { INTERSECTION_HIT_FRACTION, openPlan, radialAt, runwayPickTrail } from './radial'
 import { intersections } from './plan'
 import { StarsOut, isDefaultMaps, rangeView, starsInit, starsUpdate } from '../positions/local/stars'
+import { EramMessage, EramOut, eramInit, eramUpdate } from '../positions/center/eram'
+import { handoffAccepted } from '../domain/aircraft'
 import { type TurnServer } from '../services/session'
 import { MAX_TAG_SIZE, MIN_TAG_SIZE, type Settings, defaultSettings } from '../services/settings'
 import { sourceForProxy } from '../services/vnasData'
@@ -207,11 +210,37 @@ const submitLine = (model: Model, text: string): Return => {
   }
   const selected = evo(entered, { selected: (s) => parsed.callsign ?? s })
   if (parsed._tag === 'Invalid') {
-    return { model: pushLog(pushLog(selected, 'atc', null, text), 'err', parsed.callsign, `unable — ${parsed.error}`) }
+    const failed = pushLog(pushLog(selected, 'atc', null, text), 'err', parsed.callsign, `unable — ${parsed.error}`)
+    return model.settings.mode === 'center' ? answerEram(failed, false, parsed.error.toUpperCase()) : { model: failed }
+  }
+  if (parsed._tag === 'Display') {
+    return displayLine(selected, text, parsed.callsign, parsed.display)
   }
   const ran = dispatchCommand(isGuest(selected) ? selected : pushLog(selected, 'atc', null, text), parsed.callsign, parsed.command, text)
-  return { model: ran.model, commands: ran.commands }
+  if (!isEramEntry(parsed.command) && model.settings.mode !== 'center') {
+    return { model: ran.model, commands: ran.commands }
+  }
+  const answered = ran.ok ? answerEram(ran.model, true, 'ACCEPT') : answerEram(ran.model, false, (ran.model.log[0]?.text ?? 'REJECT').replace(/^unable — /, '').toUpperCase())
+  const readout = parsed.command._tag === 'FlightPlanReadout' && ran.ok ? respondEram(answered.model, [ran.model.log.find((l) => l.kind === 'sys')?.text ?? '']) : answered
+  return { model: readout.model, commands: [...ran.commands, ...(answered.commands ?? []), ...(readout.commands ?? [])] }
 }
+
+/** An ERAM display entry: a bare flight id recalls a pending handoff, everything else goes to the ERAM pane. */
+const displayLine = (model: Model, text: string, callsign: string | null, display: DisplayCommand): Return => {
+  const world = worldOf(model)
+  const aircraft = callsign === null || world === null ? undefined : findAircraft(world, callsign)
+  const logged = pushLog(model, 'atc', null, text)
+  if (display._tag === 'ToggleBlock' && aircraft !== undefined && aircraft.handoffSector !== null && world !== null && !handoffAccepted(aircraft, world.simTime)) {
+    const ran = dispatchCommand(logged, callsign, { _tag: 'RecallHandoff' }, text)
+    const answered = ran.ok ? answerEram(ran.model, true, 'ACCEPT') : answerEram(ran.model, false, 'REJECT')
+    return { model: answered.model, commands: [...ran.commands, ...(answered.commands ?? [])] }
+  }
+  const focused = display._tag === 'ToggleBlock' && callsign !== null ? evo(logged, { selected: () => callsign }) : logged
+  return foldEram(focused, EramMessage.Displayed({ callsign, display, simTime: world?.simTime ?? 0 }))
+}
+
+const answerEram = (model: Model, ok: boolean, text: string): Return => foldEram(model, EramMessage.Answered({ ok, text }))
+const respondEram = (model: Model, lines: ReadonlyArray<string>): Return => foldEram(model, EramMessage.Responded({ lines }))
 
 /** A pick on the open ring: descend, edit the plan, close, or issue the command line reached. */
 const pickRadial = (model: Model, key: string): Return => {
@@ -485,7 +514,10 @@ const applyControl = (model: Model, control: SessionControl): Return =>
       const world = worldOf(model)
       const switched = evo(model, { settings: () => settings, draft: () => settings })
       const withRules = world === null ? switched : withWorldChange(switched, { ...world, rules: rulesFor(mode) }, `${positionLabel(mode)} position`)
-      const ranged = evo(withRules, { stars: (stars) => ({ ...stars, view: rangeView(positionFor(mode).scopeRangeNm) }) })
+      const ranged = evo(withRules, {
+        stars: (stars) => ({ ...stars, view: rangeView(positionFor(mode).scopeRangeNm) }),
+        eram: (eram) => (mode === 'center' ? { ...eram, view: rangeView(positionFor(mode).scopeRangeNm) } : eram),
+      })
       const logged = world === null ? ranged : pushLog(ranged, 'sys', null, `${positionLabel(mode)} position — try: ${positionTips(mode, world)}`)
       return { model: logged, commands: [SaveSettings({ settings })] }
     },
@@ -507,10 +539,7 @@ const control = (model: Model, c: SessionControl): Return => {
 const applySnapshot = (model: Model, snapshot: Snapshot, hostId: string): Return => {
   const info = infoOf(model)
   if (info === null || info.id !== snapshot.airportId) {
-    return {
-      model: withSession(evo(model, { airport: () => AirportLoad.Loading({ id: snapshot.airportId }), pavement: () => Pavement.None(), selected: () => null }), { pendingSnapshot: snapshot, hostId }),
-      commands: [LoadAirport({ source: sourceForProxy(model.settings.proxy), id: snapshot.airportId, artcc: snapshot.artcc })],
-    }
+    return loadAirport(withSession(evo(model, { pavement: () => Pavement.None(), selected: () => null }), { pendingSnapshot: snapshot, hostId }), snapshot.airportId, snapshot.artcc)
   }
   const settings = { ...model.settings, mode: snapshot.mode }
   const taken = evo(restartTimeline(withWorld(model, snapshot.world)), {
@@ -583,6 +612,22 @@ export const defaultScenario = (info: AirportInfo, mode: PositionMode): string |
 
 const findArtcc = (index: CatalogIndex, airportId: string) => index.artccs.find((a) => a.airports.some((p) => p.id === airportId))
 
+/**
+ * Load an airport. Its ARTCC file (ERAM GeoMaps, sectors, en-route nav) comes
+ * first when it is not the one already loaded, so the World is made with it;
+ * the airport follows from CompletedLoadArtcc (or FailedLoadArtcc: an old
+ * catalog has no ARTCC files, and the airport still works without one).
+ */
+const loadAirport = (model: Model, id: string, artcc: string): Return => {
+  const loading = evo(model, { airport: () => AirportLoad.Loading({ id }) })
+  const source = sourceForProxy(model.settings.proxy)
+  const have = artccOf(model)
+  if (have !== null && have.id === artcc) {
+    return { model: loading, commands: [LoadAirport({ source, id, artcc })] }
+  }
+  return { model: evo(loading, { artcc: () => ArtccLoad.Loading({ id: artcc }) }), commands: [LoadArtcc({ source, id: artcc })] }
+}
+
 const startLoadingAirport = (model: Model, id: string): Return => {
   if (model.index._tag !== 'Ready') {
     return { model }
@@ -591,10 +636,17 @@ const startLoadingAirport = (model: Model, id: string): Return => {
   if (artcc === undefined) {
     return { model: evo(model, { airport: () => AirportLoad.Failed({ id, error: `unknown airport ${id}` }) }) }
   }
-  return {
-    model: evo(model, { airport: () => AirportLoad.Loading({ id }), pavement: () => Pavement.None(), selected: () => null }),
-    commands: [LoadAirport({ source: sourceForProxy(model.settings.proxy), id, artcc: artcc.id })],
+  return loadAirport(evo(model, { pavement: () => Pavement.None(), selected: () => null }), id, artcc.id)
+}
+
+/** The ARTCC file arrived (or did not): load the airport that was waiting for it. */
+const afterArtcc = (model: Model): Return => {
+  if (model.airport._tag !== 'Loading' || model.index._tag !== 'Ready') {
+    return { model }
   }
+  const id = model.airport.id
+  const artcc = findArtcc(model.index.index, id)
+  return artcc === undefined ? { model } : { model, commands: [LoadAirport({ source: sourceForProxy(model.settings.proxy), id, artcc: artcc.id })] }
 }
 
 /** Apply a loaded (or empty) scenario: fresh log, selection and command log, hash updated. */
@@ -658,6 +710,24 @@ const foldStars = (artcc: string) =>
         Noted: ({ text }) => ({ model: pushLog(model, 'sys', null, text) }),
       }),
   })
+
+/** The ERAM Submodel: like STARS; a GeoMap or filter change is remembered per ARTCC in Settings. */
+const foldEram = (model: Model, message: EramMessage): Return =>
+  Update.foldChild({
+    update: (eram: Model['eram'], input: Parameters<typeof eramUpdate>[1]) => eramUpdate(eram, input),
+    read: (m: Model) => Option.some(m.eram),
+    write: (m: Model, eram: Model['eram']) => evo(m, { eram: () => eram }),
+    toParentMessage: (m) => Message.GotEram({ message: m }),
+    foldOutMessage: (out: EramOut) => (m: Model) =>
+      EramOut.match<Return>(out, {
+        SelectedTarget: ({ callsign }) => ({ model: evo(m, { selected: () => callsign, radial: () => null }), commands: [FocusCommand()] }),
+        Noted: ({ text }) => ({ model: pushLog(m, 'sys', null, text) }),
+        ChangedGeoMap: ({ geoMap, filters }) => {
+          const artcc = artccOf(m)
+          return artcc === null ? { model: m } : saveSettings(m, { ...m.settings, eramView: { ...m.settings.eramView, [artcc.id]: { geoMap, filters } } })
+        },
+      }),
+  })(model, { message, world: worldOf(model), artcc: artccOf(model) })
 
 // AI
 
@@ -777,16 +847,19 @@ export const update = (model: Model, message: Message): Return =>
       if (model.airport._tag !== 'Loading' || model.airport.id !== airport.id) {
         return { model }
       }
-      const world = makeWorld(airport, rulesFor(model.settings.mode), WORLD_SEED)
+      const artcc = artccOf(model)
+      const world = makeWorld(airport, rulesFor(model.settings.mode), WORLD_SEED, artcc !== null && artcc.id === airport.artcc ? artcc : null)
       const info = airportInfo(airport)
       const pavement = pavementFor(airport.asdex, airport.twrmap, model.settings.asdexCabMap)
       const radar = starsInit(model.stars, airport.artcc, airport.stars, positionFor(model.settings.mode).scopeRangeNm, model.settings.starsMaps[airport.id] ?? null)
+      const eram = eramInit(model.eram, artcc !== null && artcc.id === airport.artcc ? artcc : null, positionFor('center').scopeRangeNm, model.settings.eramView[airport.artcc] ?? null)
       const fitted: Model = restartTimeline({
         ...model,
         airport: { _tag: 'Ready', info, world },
         pavement: pavement === null ? Pavement.None() : Pavement.Loading({ id: pavement.id }),
         scope: fit(world.graph, { ...model.scope, fitted: false }),
         stars: radar.model,
+        eram: eram.model,
       })
       const pending = model.session.pendingSnapshot
       const wanted = model.deepLink.airport === airport.id ? model.deepLink.scenario : null
@@ -801,11 +874,30 @@ export const update = (model: Model, message: Message): Return =>
           ...(next.commands ?? []),
           ...(pavement === null ? [] : [LoadPavement({ artcc: airport.artcc, id: pavement.id, asdex: pavement.asdex })]),
           ...Command.mapMessages(radar.commands, (message) => Message.GotStars({ message })),
+          ...Command.mapMessages(eram.commands, (message) => Message.GotEram({ message })),
         ],
       }
     },
 
     FailedLoadAirport: ({ id, error }) => ({ model: evo(model, { airport: () => AirportLoad.Failed({ id, error }) }) }),
+
+    /** The ARTCC file: kept for the airport about to load; a World already made without it takes its nav and sectors. */
+    CompletedLoadArtcc: ({ artcc }) => {
+      if (model.artcc._tag === 'Loading' && model.artcc.id !== artcc.id) {
+        return { model }
+      }
+      const ready = evo(model, { artcc: () => ArtccLoad.Ready({ artcc }) })
+      const world = worldOf(ready)
+      const info = infoOf(ready)
+      if (world !== null && info !== null && info.artcc === artcc.id) {
+        const merged = withWorldChange(ready, withArtcc(world, artcc, null), `${artcc.id} ERAM data`)
+        const eram = eramInit(merged.eram, artcc, positionFor('center').scopeRangeNm, merged.settings.eramView[artcc.id] ?? null)
+        return { model: evo(merged, { eram: () => eram.model }), commands: Command.mapMessages(eram.commands, (message) => Message.GotEram({ message })) }
+      }
+      return afterArtcc(ready)
+    },
+
+    FailedLoadArtcc: ({ id, error }) => afterArtcc(pushLog(evo(model, { artcc: () => ArtccLoad.Failed({ id, error }) }), 'sys', null, `no ERAM data for ${id} (${error}) — the Center position has no GeoMaps here`)),
 
     CompletedLoadScenario: ({ airportId, scenario }) => {
       const info = infoOf(model)
@@ -1106,6 +1198,8 @@ export const update = (model: Model, message: Message): Return =>
     },
 
     /** STARS messages fold into the pane; a map toggle is remembered per airport (dropped again once the selection is the default one). */
+    GotEram: ({ message }) => foldEram(model, message),
+
     GotStars: ({ message }) => {
       const info = infoOf(model)
       const folded = foldStars(info?.artcc ?? '')(model, { message, world: worldOf(model) })

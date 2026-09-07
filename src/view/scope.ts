@@ -326,7 +326,7 @@ const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: bo
   return shapes
 }
 
-export const accentFor = (mode: 'ground' | 'tower' | 'tracon'): string => (mode === 'tower' ? '#b388ff' : mode === 'tracon' ? '#2dd4bf' : COLOURS.amber)
+export const accentFor = (mode: 'ground' | 'tower' | 'tracon' | 'center'): string => (mode === 'tower' ? '#b388ff' : mode === 'tracon' ? '#2dd4bf' : mode === 'center' ? '#e6dc5a' : COLOURS.amber)
 
 /** Entry labels closer than this many px to the previous one along the runway are left off. */
 export const ENTRY_LABEL_GAP_PX = 26

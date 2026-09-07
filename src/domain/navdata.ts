@@ -5,7 +5,7 @@
  * the catalog builder under Bun and by live mode in the browser.
  */
 import type { LonLat } from './catalog'
-import { FT_PER_NM, movePoint, nmFromCenter, projectionAt, radarProjectionAt } from './geo'
+import { FT_PER_NM, movePoint, nmFromCenter, nmOffset, projectionAt, radarProjectionAt } from './geo'
 
 export type NavAirport = Readonly<{ id: string; icao: string; artcc: string; name: string; elevation: number; c: LonLat }>
 
@@ -25,9 +25,21 @@ export type AirportNav = Readonly<{
   fixes: Readonly<Record<string, LonLat>>
   stars: Readonly<Record<string, Procedure>>
   sids: Readonly<Record<string, Procedure>>
+  airways?: Readonly<Record<string, ReadonlyArray<string>>>
 }>
 
 export const emptyNav: AirportNav = { fixes: {}, stars: {}, sids: {} }
+
+/** The airport's nav over the ARTCC's: an airport's fix position wins a name clash, procedures are the airport's. */
+export const mergeNav = (airport: AirportNav, artcc: AirportNav | null): AirportNav =>
+  artcc === null
+    ? airport
+    : {
+        fixes: { ...artcc.fixes, ...airport.fixes },
+        stars: airport.stars,
+        sids: airport.sids,
+        airways: { ...(artcc.airways ?? {}), ...(airport.airways ?? {}) },
+      }
 
 // WIRE FORMAT
 
@@ -179,6 +191,54 @@ export const navForAirport = (nav: NavData, center: LonLat, rangeNm: number): Ai
   return { fixes, stars, sids }
 }
 
+// PER-ARTCC SUBSET (Phase 9)
+
+export const ARTCC_MARGIN_NM = 60
+
+export type ArtccNav = Readonly<{ center: LonLat; rangeNm: number; nav: AirportNav }>
+
+/**
+ * The en-route nav of an ARTCC: a box around every NavData airport the ARTCC
+ * owns, grown by a margin, with the fixes and airports inside and every airway
+ * that touches one. No procedures; those stay with the airports. Null when
+ * NavData names no airport in the ARTCC.
+ */
+export const navForArtcc = (nav: NavData, artccId: string): ArtccNav | null => {
+  const own = [...nav.airports.values()].filter((a) => a.artcc === artccId)
+  if (own.length === 0) {
+    return null
+  }
+  const lons = own.map((a) => a.c[0])
+  const lats = own.map((a) => a.c[1])
+  const center: LonLat = [r6((Math.min(...lons) + Math.max(...lons)) / 2), r6((Math.min(...lats) + Math.max(...lats)) / 2)]
+  const rp = radarProjectionAt(center[1])
+  const halfX = ((Math.max(...lons) - Math.min(...lons)) / 2) * rp.nmLon + ARTCC_MARGIN_NM
+  const halfY = ((Math.max(...lats) - Math.min(...lats)) / 2) * rp.nmLat + ARTCC_MARGIN_NM
+  const inside = (c: LonLat): boolean => {
+    const [x, y] = nmOffset(rp, center, c)
+    return Math.abs(x) <= halfX && Math.abs(y) <= halfY
+  }
+  const fixes: Record<string, LonLat> = {}
+  for (const [name, c] of nav.fixes) {
+    if (inside(c)) {
+      fixes[name] = c
+    }
+  }
+  for (const a of nav.airports.values()) {
+    if (inside(a.c)) {
+      fixes[a.id] ??= a.c
+      fixes[a.icao] ??= a.c
+    }
+  }
+  const airways: Record<string, ReadonlyArray<string>> = {}
+  for (const [id, list] of nav.airways) {
+    if (list.some((f) => fixes[f] !== undefined)) {
+      airways[id] = list
+    }
+  }
+  return { center, rangeNm: Math.round(Math.max(halfX, halfY)), nav: { fixes, stars: {}, sids: {}, airways } }
+}
+
 // LOOKUPS
 
 /** A fix name, or a fix-radial-distance like BITLR120015 (radial 120, 15 nm), to a position. */
@@ -216,7 +276,8 @@ export type ExpandedPath = Readonly<{
  * A scenario `navigationPath` ("MUSCL3.30R", "BITLR GEP KANE", "ZMBRO7") to the
  * fixes to fly. A STAR takes the transition whose first fix is nearest `from`
  * then the common route; a SID takes the common route then the transition
- * nearest its end. Unknown tokens (airways, fixes outside the area) are skipped.
+ * nearest its end. An airway between two of its fixes is expanded when the nav
+ * carries airways (the ARTCC file does); other unknown tokens are skipped.
  */
 export const expandNavigationPath = (nav: AirportNav, path: string, from: LonLat): ExpandedPath => {
   const rp = radarProjectionAt(from[1])
@@ -238,13 +299,25 @@ export const expandNavigationPath = (nav: AirportNav, path: string, from: LonLat
   const fixes: Array<string> = []
   let runway: string | null = null
   let procedure: string | null = null
-  for (const raw of path.trim().toUpperCase().split(/\s+/)) {
-    const [token, suffix] = raw.split('.') as [string, string | undefined]
+  const tokens = path.trim().toUpperCase().split(/\s+/)
+  for (let i = 0; i < tokens.length; i++) {
+    const [token, suffix] = tokens[i]!.split('.') as [string, string | undefined]
     if (token === '') {
       continue
     }
     if (known(token)) {
       fixes.push(token)
+      continue
+    }
+    const airway = nav.airways?.[token]
+    if (airway !== undefined) {
+      // the airway's fixes between the fix before it and the fix after it, in either direction
+      const entry = airway.indexOf(fixes[fixes.length - 1] ?? '')
+      const exit = airway.indexOf((tokens[i + 1] ?? '').split('.')[0] ?? '')
+      if (entry >= 0 && exit >= 0 && entry !== exit) {
+        const between = entry < exit ? airway.slice(entry + 1, exit) : airway.slice(exit + 1, entry).reverse()
+        fixes.push(...between)
+      }
       continue
     }
     const base = procedureBase(token)

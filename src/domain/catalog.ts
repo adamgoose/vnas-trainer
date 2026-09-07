@@ -86,8 +86,61 @@ export const AirportNav = Schema.Struct({
   fixes: Schema.Record(Schema.String, LonLat),
   stars: Schema.Record(Schema.String, Procedure),
   sids: Schema.Record(Schema.String, Procedure),
+  /** airways by id, their fixes in order (Phase 9; the en-route nav of an ARTCC file carries them) */
+  airways: Schema.optionalKey(Schema.Record(Schema.String, Schema.Array(Schema.String))),
 })
 export type AirportNav = typeof AirportNav.Type
+
+// ARTCC FILES (Phase 9, the En Route position)
+
+/** One of a GeoMap's video maps: ERAM properties (filters, BCG, style) travel inside the GeoJSON itself. */
+export const GeoMapEntry = Schema.Struct({
+  id: Schema.String,
+  /** only shown in Top-Down mode (airport diagrams; these files are huge) */
+  tdm: Schema.Boolean,
+})
+export type GeoMapEntry = typeof GeoMapEntry.Type
+
+/** An ERAM GeoMap: its two-line label, the filter and BCG menus (index 1 = first button), and its maps. */
+export const GeoMap = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  label: Schema.Tuple([Schema.String, Schema.String]),
+  filters: Schema.Array(Schema.Tuple([Schema.String, Schema.String])),
+  bcg: Schema.Array(Schema.String),
+  maps: Schema.Array(GeoMapEntry),
+})
+export type GeoMap = typeof GeoMap.Type
+
+/** An ARTCC (centre) position: sector id, callsign, name, radio name, frequency. */
+export const SectorPosition = Schema.Struct({
+  sector: Schema.String,
+  cs: Schema.String,
+  name: Schema.String,
+  radio: Schema.String,
+  freq: Schema.String,
+})
+export type SectorPosition = typeof SectorPosition.Type
+
+/** `catalog/artccs/{ID}.json`: what the En Route position needs of an ARTCC beyond its airports. */
+export const ArtccFile = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  nasId: Schema.String,
+  updated: Schema.String,
+  geoMaps: Schema.Array(GeoMap),
+  /** ERAM sector ids the facility defines (handoff targets) */
+  sectors: Schema.Array(Schema.String),
+  positions: Schema.Array(SectorPosition),
+  /** the centre of the ARTCC's airports and the half-size of the box around them, nm */
+  center: LonLat,
+  rangeNm: Schema.Number,
+  /** fixes and airways across the ARTCC (procedures stay with the airports) */
+  nav: AirportNav,
+})
+export type ArtccFile = typeof ArtccFile.Type
+
+export const decodeArtccFile = Schema.decodeUnknownSync(ArtccFile)
 
 export const InitialAltitudes = Schema.Struct({
   jet: Schema.Number,
@@ -178,6 +231,8 @@ export const CatalogIndex = Schema.Struct({
       id: Schema.String,
       name: Schema.String,
       airports: Schema.Array(CatalogAirportSummary),
+      /** an ARTCC file with ERAM GeoMaps was written (Phase 9); older indexes omit it */
+      eram: Schema.optionalKey(Schema.Boolean),
     }),
   ),
 })

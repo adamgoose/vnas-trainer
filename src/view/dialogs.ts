@@ -69,6 +69,33 @@ export const helpView = (h: HtmlBuilder<Message>): Html =>
         'Switch the brand dropdown to ', h.b([], ['Approach']), ' for the TRACON: scenario aircraft that start airborne fly their STAR or navigation path (fixes and procedures come from vNAS NavData, baked into the catalog), check in on frequency with their altitude, and are yours to descend, slow, vector and clear for the approach; aircraft that start on the field depart one after another and call departure through 1,000 feet. ',
         'The arrival generator spawns aircraft at the entry of a random STAR at 11,000. Select an aircraft to see its remaining route on the scope. Not simulated: published STAR altitudes, holding, visual approaches, separation alerts.',
       ]),
+      h.h3([], ['Center (En Route)']),
+      h.div([h.Class('cmds')], [
+        ...cmdRow(h, 'CM / DM {alt}', ['Climb or descend and maintain; ', h.b([], ['DM FL240']), ' or ', h.b([], ['DM 240']), '.']),
+        ...cmdRow(h, 'DCT · SPD · FH', ['Direct, speed and headings as for Approach. Airways on a route are expanded from the ARTCC\'s NavData.']),
+        ...cmdRow(h, 'CA', ['Contact approach — the arrival switches to the approach frequency and drops off 20 seconds later.']),
+        ...cmdRow(h, 'CD', ['Contact the next centre sector — the one a handoff was started to, if any.']),
+      ]),
+      h.p([], [
+        'ERAM entries are typed the way CRC\'s ERAM takes them, the flight id last (', h.code([h.Class('inl')], ['QZ 240 DAL1234']), '); without a flight id the selected aircraft is used. They change the flight plan and the data block, not what the pilot does — say the clearance (or type the command above) and then key it, as the real position does. The MCA answers ACCEPT or the reason.',
+      ]),
+      h.div([h.Class('cmds')], [
+        ...cmdRow(h, 'QZ {alt} {FLID}', ['Assigned (flight plan) altitude, hundreds of feet: line 2 of the FDB shows it with C (level), ↑ ↓ (climbing or descending to it), + − (through it).']),
+        ...cmdRow(h, 'QQ {alt} {FLID}', ['Interim altitude (T in line 2). ', h.b([], ['QQ {FLID}']), ' clears it.']),
+        ...cmdRow(h, 'QS {hdg} / QS /{spd} / QS {text} {FLID}', ['Line-4 heading, speed or free text. ', h.b([], ['QS * {FLID}']), ' clears all, ', h.b([], ['QS {FLID}']), ' toggles line 4 between them and the destination.']),
+        ...cmdRow(h, 'QU {fix} {FLID}', ['Amend the flight plan route direct to a fix. ', h.b([], ['QU {min} {FLID}']), ' draws the route the aircraft will fly for 30 seconds (', h.b([], ['QU /M']), ' all of it); ', h.b([], ['QU']), ' alone clears every route display.']),
+        ...cmdRow(h, 'QT / QX {FLID}', ['Start or drop a track (a full data block).']),
+        ...cmdRow(h, 'QF {FLID}', ['Flight plan readout in the Response Area.']),
+        ...cmdRow(h, 'QB [code] {FLID}', ['Assign a beacon code, or have one assigned.']),
+        ...cmdRow(h, '{sector} {FLID}', ['Start a handoff to a sector of the ARTCC (', h.b([], ['06 DAL1234']), '): field E shows H06, then O06 once the other sector takes it. A bare ', h.b([], ['{FLID}']), ' recalls a handoff not yet taken.']),
+        ...cmdRow(h, 'AM {FLID} ALT {alt} / BCN {code}', ['Flight plan amendments (field 8 and 4).']),
+        ...cmdRow(h, '{FLID} · {1-9} {FLID} · /{0-3} {FLID} · //{FLID}', ['Display entries: toggle LDB/FDB, position the data block (1 SW … 9 NE), set its leader length, toggle the VCI.']),
+        ...cmdRow(h, 'QP J {FLID}', ['Toggle the 5 nm halo.']),
+        ...cmdRow(h, 'MR [geomap]', ['List the ARTCC\'s GeoMaps in the Response Area, or switch to one. The toolbar switches GeoMaps and toggles their filters too.']),
+      ]),
+      h.p([], [
+        'Switch the brand dropdown to ', h.b([], ['Center']), ' for the ARTCC on ERAM: the facility\'s GeoMaps and filters as configured in vNAS, targets with history, position symbols and leaders, full data blocks (ACID; assigned and reported altitude; CID and ground speed or the handoff state; destination) for owned tracks and limited ones for the rest, velocity vectors, halos and route displays. Everyone on frequency calls the centre; arrivals are handed to the approach with CA and departures to the next sector with CD. The arrival generator starts aircraft at a STAR entry at FL330.',
+      ]),
       h.h3([], ['STARS (Local and Approach positions)']),
       h.div([h.Class('cmds')], [
         ...cmdRow(h, 'TRACK', ['Start a radar track: the limited data block (beacon + altitude) becomes a full one with callsign, altitude/speed and scratchpad. Alias ', h.b([], ['IC']), '.']),
@@ -103,7 +130,7 @@ export const helpView = (h: HtmlBuilder<Message>): Html =>
         ' — the taxiway centrelines, runways and named parking spots the facility published to vNAS — with intersections merged at the 100-foot tolerance the vNAS spec defines. Routing is a shortest path with a heavy penalty on runway edges, so aircraft prefer to go around rather than across. They hold short of every runway automatically until told to cross, follow each other in trail, and give way at merges. Pavement, where shown, is the facility\'s ASDE-X video map.',
       ]),
       h.p([], [
-        'Not simulated: wake turbulence, weather, LAHSO, arrival sequencing on final beyond a simple approach, and the ERAM/STARS side entirely. Scenario aircraft that start airborne are not loaded. Arrivals, when switched on, are generated from the airport\'s own weighted fleet sets as configured in Data Admin, on the runways the scenario\'s generators use.',
+        'Not simulated: wake turbulence, weather, LAHSO, arrival sequencing on final beyond a simple approach, conflict alerts, point outs and quick look on ERAM. Arrivals, when switched on, are generated from the airport\'s own weighted fleet sets as configured in Data Admin, on the runways the scenario\'s generators use.',
       ]),
     ],
     [],

@@ -3,7 +3,7 @@
  * (docs/REWRITE.md section 6). Used by the catalog builder (Bun) and by the
  * app's live mode (browser via a CORS proxy). Port of legacy/lib/vnas.mjs.
  */
-import type { AirportFile, AirportMap, AirportNav, FleetEntry, LonLat, ParkingSpot, Scenario, ScenarioAircraft, Stars } from './catalog'
+import type { AirportFile, AirportMap, AirportNav, ArtccFile, FleetEntry, LonLat, ParkingSpot, Scenario, ScenarioAircraft, Stars } from './catalog'
 import { resolveFixOrFrd } from './navdata'
 
 export const API = 'https://data-api.vnas.vatsim.net/api'
@@ -93,11 +93,28 @@ export type VnasPosition = Readonly<{
   radioName?: string | null
   frequency?: number | null
   starsConfiguration?: Readonly<{ tcpId?: string | null }> | null
+  eramConfiguration?: Readonly<{ sectorId?: string | number | null }> | null
+}>
+export type VnasGeoMap = Readonly<{
+  id: string
+  name?: string | null
+  labelLine1?: string | null
+  labelLine2?: string | null
+  filterMenu?: ReadonlyArray<Readonly<{ id?: string | null; labelLine1?: string | null; labelLine2?: string | null }>> | null
+  bcgMenu?: ReadonlyArray<string | null> | null
+  videoMapIds?: ReadonlyArray<string> | null
+}>
+export type VnasEramConfiguration = Readonly<{
+  nasId?: string | null
+  eramDataLastUpdatedAt?: string | null
+  sectors?: ReadonlyArray<Readonly<{ sectorId?: string | number | null; name?: string | null }>> | null
+  geoMaps?: ReadonlyArray<VnasGeoMap> | null
 }>
 export type VnasFacility = Readonly<{
   id: string
   name?: string | null
   type?: string | null
+  eramConfiguration?: VnasEramConfiguration | null
   towerCabConfiguration?: Readonly<{ towerLocation?: Readonly<{ lon: number; lat: number }> | null; videoMapId?: string | null }> | null
   asdexConfiguration?: Readonly<{ videoMapId?: string | null }> | null
   starsConfiguration?: Readonly<{
@@ -119,7 +136,7 @@ export type VnasVideoMap = Readonly<{
   tdmOnly?: boolean | null
   tags?: ReadonlyArray<string> | null
 }>
-export type ArtccDocument = Readonly<{ facility?: VnasFacility | null; videoMaps?: ReadonlyArray<VnasVideoMap> | null }>
+export type ArtccDocument = Readonly<{ id?: string | null; lastUpdatedAt?: string | null; facility?: VnasFacility | null; videoMaps?: ReadonlyArray<VnasVideoMap> | null }>
 
 export type IndexedPosition = Readonly<{
   id: string
@@ -292,6 +309,54 @@ export const starsForAirport = (fi: FacilityIndex, airportId: string): Stars | n
     dep: dep !== undefined ? positionRecord(dep) : null,
     app: app !== undefined ? positionRecord(app) : null,
     ctr: ctr !== undefined ? positionRecord(ctr) : null,
+  }
+}
+
+/** Sector ids as ERAM shows them: two characters, zero-padded ("5" -> "05"). */
+export const sectorId = (v: string | number | null | undefined): string | null => {
+  const s = v === null || v === undefined ? '' : String(v).trim()
+  return s === '' ? null : s.length < 2 ? s.padStart(2, '0') : s
+}
+
+/**
+ * The ARTCC's en-route picture (Phase 9): the ERAM GeoMaps with their filter
+ * and BCG menus and the video maps of each (TDM-only ones flagged), the sector
+ * ids, the centre positions, and the ARTCC-wide nav the caller decoded.
+ */
+export const assembleArtcc = (
+  input: Readonly<{ id: string; name: string; document: ArtccDocument | null; nav: Readonly<{ center: LonLat; rangeNm: number; nav: AirportNav }> | null }>,
+): ArtccFile => {
+  const doc = input.document
+  const eram = doc?.facility?.eramConfiguration ?? null
+  const videoMaps = new Map((doc?.videoMaps ?? []).map((v) => [v.id, v] as const))
+  const trim = (s: string | null | undefined): string => (s ?? '').trim()
+  const geoMaps = (eram?.geoMaps ?? []).map((g) => ({
+    id: g.id,
+    name: trim(g.name) || `${trim(g.labelLine1)} ${trim(g.labelLine2)}`.trim(),
+    label: [trim(g.labelLine1), trim(g.labelLine2)] as const,
+    filters: (g.filterMenu ?? []).map((f) => [trim(f.labelLine1), trim(f.labelLine2)] as const),
+    bcg: (g.bcgMenu ?? []).map((b) => trim(b)),
+    maps: (g.videoMapIds ?? []).flatMap((id) => {
+      const v = videoMaps.get(id)
+      return v === undefined ? [] : [{ id, tdm: v.tdmOnly === true }]
+    }),
+  }))
+  const sectors = [...new Set((eram?.sectors ?? []).map((s) => sectorId(s.sectorId)).filter((s): s is string => s !== null))]
+  const positions = (doc?.facility?.positions ?? []).flatMap((p) => {
+    const sector = sectorId(p.eramConfiguration?.sectorId)
+    return sector === null ? [] : [{ sector, cs: p.callsign ?? '', name: p.name ?? '', radio: p.radioName ?? '', freq: formatFrequency(p.frequency) ?? '' }]
+  })
+  return {
+    id: input.id,
+    name: input.name,
+    nasId: trim(eram?.nasId) || input.id,
+    updated: eram?.eramDataLastUpdatedAt ?? doc?.lastUpdatedAt ?? '',
+    geoMaps,
+    sectors,
+    positions,
+    center: input.nav?.center ?? [0, 0],
+    rangeNm: input.nav?.rangeNm ?? 0,
+    nav: input.nav?.nav ?? { fixes: {}, stars: {}, sids: {} },
   }
 }
 

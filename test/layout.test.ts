@@ -184,7 +184,9 @@ describe('windows', () => {
   test('prune drops the panels a position lacks; loading closes transient windows and repairs the tree', () => {
     expect(availablePanels('ground')).not.toContain('stars')
     expect(availablePanels('tracon')).not.toContain('asdex')
-    expect(availablePanels('tower')).toEqual(PANELS)
+    expect(availablePanels('tower')).toEqual(PANELS.filter((p) => p !== 'eram'))
+    expect(availablePanels('center')).toEqual(PANELS.filter((p) => p !== 'asdex' && p !== 'stars'))
+    expect(panelsOf(defaultLayouts.center.root)).toEqual(['controls', 'eram', 'strips', 'console'])
     expect(PANELS).toContain('scenarios')
     expect(panelsOf(prune(defaultLayouts.tower, availablePanels('ground')).root)).toEqual(['controls', 'asdex', 'strips', 'console'])
     const loaded = loadedLayout(open(open(ground, 'settings', ws), 'rewind', ws))

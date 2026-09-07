@@ -8,13 +8,14 @@ import type { Document, Html, HtmlBuilder } from 'foldkit/html'
 import { DragHandle, WorkspaceSurface } from '../app/commands'
 import { type Dir, type Layout, type Node, type Panel, availablePanels, isOpen, prune } from '../app/layout'
 import { Message } from '../app/message'
-import { type Model, infoOf, worldOf } from '../app/model'
+import { type Model, artccOf, infoOf, worldOf } from '../app/model'
 import { activeLayout, positionLabel } from '../app/update'
 import { barView } from './bar'
 import { controlsView } from './controls'
 import { deckView } from './deck'
 import { helpView, sessionView, settingsView } from './dialogs'
 import { accentFor, scopeView } from './scope'
+import { eramView } from './eram'
 import { starsView } from './stars'
 import { scenariosView } from './scenarios'
 import { selectedStripView, stripsView } from './strips'
@@ -29,6 +30,8 @@ const titleOf = (model: Model, panel: Panel): string => {
       return `ASDE-X${info === null ? '' : ` · ${info.id}`}`
     case 'stars':
       return `STARS${info?.stars === null || info === null ? '' : ` · ${info.stars.host}`}`
+    case 'eram':
+      return `ERAM${info === null ? '' : ` · ${info.artcc}`}`
     case 'strips':
       return `Strips${world === null ? '' : ` · ${world.aircraft.filter((a) => a.delay <= 0).length}`}`
     case 'console':
@@ -63,6 +66,14 @@ const contentOf = (model: Model, h: HtmlBuilder<Message>, panel: Panel): Html =>
         view: starsView,
         viewInputs: { world: worldOf(model), stars: infoOf(model)?.stars ?? null, selected: model.selected, devicePixelRatio: model.devicePixelRatio, accent: accentFor(model.settings.mode) },
         toParentMessage: (message) => Message.GotStars({ message }),
+      })
+    case 'eram':
+      return h.submodel({
+        slotId: 'eram',
+        model: model.eram,
+        view: eramView,
+        viewInputs: { world: worldOf(model), artcc: artccOf(model), selected: model.selected, devicePixelRatio: model.devicePixelRatio },
+        toParentMessage: (message) => Message.GotEram({ message }),
       })
     case 'strips':
       return stripsView(model, h)

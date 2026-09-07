@@ -6,6 +6,7 @@ import type { SessionEvent } from '../domain/session'
 import { Message } from './message'
 import { type Model } from './model'
 import { SIM_STEP_S } from '../domain/physics'
+import { EramMessage } from '../positions/center/eram'
 import { StarsMessage } from '../positions/local/stars'
 import type { Microphone } from '../services/microphone'
 import type { OpenRouter } from '../services/openRouter'
@@ -60,6 +61,22 @@ export const subscriptions = Subscription.make<Model, Message, Services>()((entr
                 event.target instanceof Element && event.target.closest('.smaps, .smaps-btn') !== null
                   ? Option.none()
                   : Option.some(Message.GotStars({ message: StarsMessage.PressedOutsideMaps() })),
+            })
+          : Stream.empty,
+    },
+  ),
+  /** likewise for the ERAM GeoMap menu */
+  eramMenuOutside: entry(
+    { open: Schema.Boolean },
+    {
+      modelToDependencies: (model) => ({ open: model.eram.menuOpen }),
+      dependenciesToStream: ({ open }) =>
+        open
+          ? Subscription.fromEventFilterMap<PointerEvent, Message>({
+              target: () => globalThis.document,
+              type: 'pointerdown',
+              toMessage: (event) =>
+                event.target instanceof Element && event.target.closest('.egm, .etb-map') !== null ? Option.none() : Option.some(Message.GotEram({ message: EramMessage.PressedOutsideMenu() })),
             })
           : Stream.empty,
     },

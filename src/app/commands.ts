@@ -82,6 +82,16 @@ export const LoadAirport = Command.define('LoadAirport', {
     }).pipe(Effect.catch((e) => Effect.succeed(Message.FailedLoadAirport({ id, error: e.message })))),
 })
 
+export const LoadArtcc = Command.define('LoadArtcc', {
+  args: { source: DataSource, id: Schema.String },
+  messages: [Message.CompletedLoadArtcc, Message.FailedLoadArtcc],
+  execute: ({ source, id }) =>
+    Effect.gen(function* () {
+      const data = yield* VnasData
+      return Message.CompletedLoadArtcc({ artcc: yield* data.artcc(source, id) })
+    }).pipe(Effect.catch((e) => Effect.succeed(Message.FailedLoadArtcc({ id, error: e.message })))),
+})
+
 export const LoadScenario = Command.define('LoadScenario', {
   args: { source: DataSource, airportId: Schema.String, scenarioId: Schema.String },
   messages: [Message.CompletedLoadScenario, Message.FailedLoadScenario],

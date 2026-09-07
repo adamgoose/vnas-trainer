@@ -12,6 +12,7 @@
 }
 .app.tower { --accent: #b388ff; --accent-ink: #160c24; }
 .app.tracon { --accent: #2dd4bf; --accent-ink: #062a25; }
+.app.center { --accent: #e6dc5a; --accent-ink: #1f1c05; }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--f-s); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; overflow: hidden; }
@@ -112,7 +113,32 @@ select:disabled { opacity: .5; }
 .smaps .grp { margin: 6px 0 3px; color: var(--accent); letter-spacing: .12em; font-size: 9.5px; text-transform: uppercase; }
 .smaps input { margin: 0; }
 .scope { position: absolute; inset: 0; background: var(--bg); overflow: hidden; touch-action: none; }
-.scope-static, .stars-static { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+.scope-static, .stars-static, .eram-static { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+/* ERAM (Center): CRC's palette, an olive toolbar of two-line buttons, the MCA feedback and Response Area in the corner */
+.eram { position: absolute; inset: 0; background: #02040f; overflow: hidden; touch-action: none; font-family: var(--f-m); }
+.eram-canvas { position: relative; display: block; width: 100%; height: 100%; cursor: crosshair; }
+.etb { position: absolute; left: 8px; top: 8px; right: 120px; display: flex; flex-wrap: wrap; gap: 2px; z-index: 2; align-items: stretch; }
+.etb button { min-width: 62px; height: 30px; padding: 0 5px; border: 1px solid #2a2f3a; border-radius: 0; background: #0a0d18; color: #b9b47a; font-family: var(--f-m); font-size: 9px; line-height: 1.15; letter-spacing: .03em; text-transform: uppercase; cursor: pointer; }
+.etb button:hover { color: #efe9a8; }
+.etb .etb-map { background: #5a1418; color: #f1e7c8; border-color: #7a2a2e; }
+.etb .etb-map.open { background: #8a1f25; }
+.etb .etb-filter { border-left: 4px solid #2a2f3a; }
+.etb .etb-filter[aria-pressed="true"] { border-left-color: #6da84a; color: #efe9a8; }
+.etb .etb-gap { flex: 0 0 8px; }
+.etb-note { align-self: center; color: #6f7f97; font-size: 10px; padding: 0 8px; }
+.egm { position: absolute; left: 8px; top: 44px; z-index: 3; background: rgba(6, 8, 16, .96); border: 1px solid #2a2f3a; padding: 6px 8px; min-width: 260px; display: flex; flex-direction: column; gap: 2px; }
+.egm .grp { color: var(--accent); letter-spacing: .12em; font-size: 9.5px; text-transform: uppercase; margin: 2px 0 4px; }
+.egm button { text-align: left; background: none; border: 1px solid transparent; color: #b9b47a; font-family: var(--f-m); font-size: 10.5px; padding: 3px 6px; cursor: pointer; }
+.egm button b { color: #efe9a8; font-weight: 600; margin-right: 6px; }
+.egm button:hover, .egm button[aria-pressed="true"] { border-color: #6da84a; color: #efe9a8; }
+.etime { position: absolute; right: 12px; top: 10px; z-index: 2; padding: 3px 10px; border: 1px solid #3a3f4a; background: #0a0d18; color: #efe9a8; font-size: 15px; letter-spacing: .1em; }
+.emca { position: absolute; left: 8px; bottom: 30px; z-index: 2; display: flex; flex-direction: column; gap: 4px; max-width: min(60%, 560px); }
+.efb { padding: 4px 8px; background: #0a0d18; border: 1px solid #2a2f3a; color: #b9b47a; font-size: 12px; letter-spacing: .06em; min-width: 200px; }
+.efb.ok { color: #7fd66a; }
+.efb.bad { color: #e0574f; }
+.era { padding: 4px 8px; background: #0a0d18; border: 1px solid #2a2f3a; color: #efe9a8; font-size: 11.5px; letter-spacing: .04em; white-space: pre-wrap; }
+.era button { margin-top: 4px; background: none; border: 1px solid #3a3f4a; color: #b9b47a; font-family: var(--f-m); font-size: 9px; padding: 2px 6px; cursor: pointer; }
+.eram .scope-hud.ehud { bottom: 8px; }
 .scope-canvas { position: relative; display: block; width: 100%; height: 100%; cursor: grab; }
 .scope-canvas.drag { cursor: grabbing; }
 .scope-strip { position: absolute; left: 12px; top: 10px; z-index: 2; width: 320px; max-width: calc(100% - 24px); background: rgba(11, 14, 16, .9); border: 1px solid var(--rule); border-radius: 2px; overflow: hidden; }

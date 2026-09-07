@@ -67,7 +67,8 @@ export const loadScenario = (world: World, scenario: Scenario | null): WorldResu
   let airborneLoaded = 0
   const launchQueue: Record<string, number> = {}
   for (const r of scenario?.ac ?? []) {
-    const [squawk, next] = nextInt(prng, 6000)
+    const [squawk, afterSquawk] = nextInt(prng, 6000)
+    const [cidNumber, next] = nextInt(afterSquawk, 900)
     prng = next
     if (aircraft.some((a) => a.callsign === r.cs)) {
       skipped++
@@ -80,6 +81,8 @@ export const loadScenario = (world: World, scenario: Scenario | null): WorldResu
       destination: r.dst,
       delay: r.d,
       squawk: String(1000 + squawk),
+      cid: String(100 + cidNumber),
+      assignedAltitude: r.alt ?? null,
       transponder: 'S',
       flightPlan: {
         rules: r.r || 'I',

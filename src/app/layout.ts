@@ -8,7 +8,7 @@ import { Schema } from 'effect'
 
 import { type PositionMode, positionFor } from '../positions'
 
-export const Panel = Schema.Literals(['controls', 'scenarios', 'asdex', 'stars', 'strips', 'console', 'rewind', 'commands', 'settings', 'session'])
+export const Panel = Schema.Literals(['controls', 'scenarios', 'asdex', 'stars', 'eram', 'strips', 'console', 'rewind', 'commands', 'settings', 'session'])
 export type Panel = typeof Panel.Type
 export const PANELS: ReadonlyArray<Panel> = Panel.literals
 
@@ -59,7 +59,7 @@ export const Layout = Schema.Struct({
 })
 export type Layout = typeof Layout.Type
 
-export const Layouts = Schema.Struct({ ground: Layout, tower: Layout, tracon: Layout })
+export const Layouts = Schema.Struct({ ground: Layout, tower: Layout, tracon: Layout, center: Layout })
 export type Layouts = typeof Layouts.Type
 
 export const Size = Schema.Struct({ width: Schema.Number, height: Schema.Number })
@@ -93,7 +93,8 @@ export const PANEL_SPECS: Readonly<Record<Panel, PanelSpec>> = {
   scenarios: { title: 'Scenarios', transient: true, fixed: false, size: { w: 760, h: 520 }, dock: [{ beside: 'strips', edge: 'top' }], rootEdge: 'right' },
   asdex: { title: 'ASDE-X', transient: false, fixed: false, size: { w: 720, h: 520 }, dock: [{ beside: 'stars', edge: 'left' }, { beside: 'strips', edge: 'left' }], rootEdge: 'left' },
   stars: { title: 'STARS', transient: false, fixed: false, size: { w: 720, h: 520 }, dock: [{ beside: 'asdex', edge: 'right' }, { beside: 'strips', edge: 'left' }], rootEdge: 'right' },
-  strips: { title: 'Strips', transient: false, fixed: false, size: { w: 320, h: 520 }, dock: [{ beside: 'stars', edge: 'right' }, { beside: 'asdex', edge: 'right' }], rootEdge: 'right' },
+  eram: { title: 'ERAM', transient: false, fixed: false, size: { w: 820, h: 560 }, dock: [{ beside: 'strips', edge: 'left' }], rootEdge: 'left' },
+  strips: { title: 'Strips', transient: false, fixed: false, size: { w: 320, h: 520 }, dock: [{ beside: 'stars', edge: 'right' }, { beside: 'eram', edge: 'right' }, { beside: 'asdex', edge: 'right' }], rootEdge: 'right' },
   console: { title: 'Console', transient: false, fixed: false, size: { w: 760, h: 240 }, dock: [], rootEdge: 'bottom' },
   rewind: { title: 'Rewind', transient: false, fixed: false, size: { w: 760, h: 220 }, dock: [{ beside: 'console', edge: 'top' }], rootEdge: 'bottom' },
   commands: { title: 'Command reference', transient: true, fixed: false, size: { w: 760, h: 620 }, dock: [], rootEdge: 'right' },
@@ -107,7 +108,7 @@ export const BAR_SHARE = 0.01
 /** The panels a position has: the ground scope needs a ground scope, the radar a radar. */
 export const availablePanels = (mode: PositionMode): ReadonlyArray<Panel> => {
   const position = positionFor(mode)
-  return PANELS.filter((p) => (p === 'asdex' ? position.groundScope : p === 'stars' ? position.hasRadar : true))
+  return PANELS.filter((p) => (p === 'asdex' ? position.groundScope : p === 'stars' ? position.hasRadar : p === 'eram' ? position.hasEram : true))
 }
 
 // TREE
@@ -406,6 +407,7 @@ export const defaultLayouts: Layouts = {
   ground: { root: columns([['asdex', 0.78], ['strips', 0.22]]), floating: [], rects: {} },
   tower: { root: columns([['asdex', 0.4], ['stars', 0.4], ['strips', 0.2]]), floating: [], rects: {} },
   tracon: { root: columns([['stars', 0.78], ['strips', 0.22]]), floating: [], rects: {} },
+  center: { root: columns([['eram', 0.8], ['strips', 0.2]]), floating: [], rects: {} },
 }
 
 /** What comes back from storage: trees repaired, and the transient windows closed. */
@@ -416,4 +418,5 @@ export const loadedLayouts = (layouts: Layouts): Layouts => ({
   ground: loadedLayout(layouts.ground),
   tower: loadedLayout(layouts.tower),
   tracon: loadedLayout(layouts.tracon),
+  center: loadedLayout(layouts.center),
 })

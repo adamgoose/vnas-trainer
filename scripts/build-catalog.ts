@@ -12,9 +12,9 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { Schema } from 'effect'
 
-import { AirportFile, type CatalogIndex, decodeCatalogIndex } from '../src/domain/catalog'
-import { NAV_MARGIN_NM, decodeNavData, navForAirport } from '../src/domain/navdata'
-import { API, FILES, type ArtccDocument, type CompactScenario, type FacilityIndex, type GeoJson, type VnasScenario, type VnasTrainingAirport, assembleAirport, compactMap, compactScenario, facilityIndex, parseLenientJSON, scenarioForAirport } from '../src/domain/vnas'
+import { AirportFile, ArtccFile, type CatalogIndex, decodeCatalogIndex } from '../src/domain/catalog'
+import { NAV_MARGIN_NM, decodeNavData, navForAirport, navForArtcc } from '../src/domain/navdata'
+import { API, FILES, type ArtccDocument, type CompactScenario, type FacilityIndex, type GeoJson, type VnasScenario, type VnasTrainingAirport, assembleAirport, assembleArtcc, compactMap, compactScenario, facilityIndex, parseLenientJSON, scenarioForAirport } from '../src/domain/vnas'
 
 const OUT = new URL('../catalog/', import.meta.url)
 const wanted = process.argv.slice(2).filter((a) => !a.startsWith('--')).map((s) => s.toUpperCase())
@@ -59,6 +59,7 @@ type AirportSummary = Readonly<{ id: string; artccId: string; lastUpdatedAt?: st
 type ScenarioSummary = Readonly<{ id: string; name: string; artccId?: string | null }>
 
 await mkdir(new URL('airports/', OUT), { recursive: true })
+await mkdir(new URL('artccs/', OUT), { recursive: true })
 
 const [artccSummaries, airportSummaries, scenarioSummaries] = await Promise.all([
   get<ReadonlyArray<ArtccSummary>>('/artcc-summaries'),
@@ -83,10 +84,19 @@ const artccIds = [...new Set(airports.map((a) => a.artccId))].sort()
 console.log(`${airports.length} training airports across ${artccIds.length} ARTCC(s)`)
 
 const facIndex: Record<string, FacilityIndex> = {}
+/** ARTCC files (Phase 9): the ERAM GeoMaps, sectors and centre positions, with the en-route nav across the ARTCC. */
+const eram: Record<string, boolean> = {}
+const validateArtcc = Schema.decodeUnknownSync(ArtccFile)
 await pool(artccIds, 4, async (id) => {
   const doc = await get<ArtccDocument>(`/artccs/${id}`)
   facIndex[id] = facilityIndex(doc)
-  console.log(`  ${id}: ${Object.keys(facIndex[id]!.facilities).length} facilities`)
+  const artcc = assembleArtcc({ id, name: artccName[id] ?? id, document: doc, nav: navForArtcc(nav, id) })
+  validateArtcc(artcc)
+  await writeFile(new URL(`artccs/${id}.json`, OUT), JSON.stringify(artcc))
+  eram[id] = artcc.geoMaps.length > 0
+  console.log(
+    `  ${id}: ${Object.keys(facIndex[id]!.facilities).length} facilities, ${artcc.geoMaps.length} GeoMaps (${artcc.geoMaps.reduce((n, g) => n + g.maps.length, 0)} maps), ${artcc.sectors.length} sectors, ${Object.keys(artcc.nav.fixes).length} fixes, ${Object.keys(artcc.nav.airways ?? {}).length} airways within ${artcc.rangeNm} nm`,
+  )
 })
 
 const scenList = scenarioSummaries.filter((s) => s.artccId !== null && s.artccId !== undefined && artccIds.includes(s.artccId))
@@ -160,7 +170,7 @@ const previous: CatalogIndex | null =
         .catch(() => null)
     : null
 const kept = (previous?.artccs ?? []).filter((a) => !artccIds.includes(a.id))
-const built = Object.keys(index).map((id) => ({ id, name: artccName[id] ?? id, airports: index[id]!.sort((a, b) => a.id.localeCompare(b.id)) }))
+const built = Object.keys(index).map((id) => ({ id, name: artccName[id] ?? id, airports: index[id]!.sort((a, b) => a.id.localeCompare(b.id)), eram: eram[id] === true }))
 const artccs = [...kept, ...built].sort((a, b) => a.id.localeCompare(b.id))
 await writeFile(new URL('index.json', OUT), JSON.stringify({ built: new Date().toISOString(), artccs }))
 console.log(

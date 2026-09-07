@@ -86,7 +86,15 @@ export const Aircraft = Schema.Struct({
   handoff: Schema.Boolean,
   handoffAt: Schema.Number,
   /** who the aircraft was switched to; tower keeps it on the scope until it lands */
-  handoffTo: Schema.NullOr(Schema.Literals(['departure', 'center', 'tower'])),
+  handoffTo: Schema.NullOr(Schema.Literals(['departure', 'center', 'tower', 'approach'])),
+  /** ERAM (Phase 9): the computer id, the flight plan's assigned altitude, an interim altitude, line-4 heading/speed/free text, a sector handoff */
+  cid: Schema.String,
+  assignedAltitude: Schema.NullOr(Schema.Number),
+  interimAltitude: Schema.NullOr(Schema.Number),
+  hsf: Schema.Struct({ heading: Schema.NullOr(Schema.Number), speed: Schema.NullOr(Schema.Number), text: Schema.NullOr(Schema.String) }),
+  /** sector the track is being handed to, and when; the other sector accepts after HANDOFF_ACCEPT_S */
+  handoffSector: Schema.NullOr(Schema.String),
+  handoffSectorAt: Schema.Number,
   /** fixes still to fly, next first; empty means fly the heading */
   fixes: Schema.Array(Schema.String),
   /** controller-assigned speed; null lets the pilot pick */
@@ -157,6 +165,12 @@ export const makeAircraft = (fields: Partial<Aircraft> & Pick<Aircraft, 'callsig
   handoff: false,
   handoffAt: 0,
   handoffTo: null,
+  cid: '000',
+  assignedAltitude: null,
+  interimAltitude: null,
+  hsf: { heading: null, speed: null, text: null },
+  handoffSector: null,
+  handoffSectorAt: 0,
   fixes: [],
   assignedSpeed: null,
   approach: null,
@@ -170,6 +184,11 @@ export const makeAircraft = (fields: Partial<Aircraft> & Pick<Aircraft, 'callsig
   flightPlan: emptyFlightPlan,
   ...fields,
 })
+
+/** a sector handoff shows as accepted (O in field E) this long after it was started */
+export const HANDOFF_ACCEPT_S = 8
+
+export const handoffAccepted = (a: Aircraft, simTime: number): boolean => a.handoffSector !== null && simTime - a.handoffSectorAt >= HANDOFF_ACCEPT_S
 
 // PERFORMANCE
 

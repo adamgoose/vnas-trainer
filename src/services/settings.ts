@@ -20,7 +20,7 @@ export const Settings = Schema.Struct({
   ttsVoice: Schema.String,
   voice: Schema.String,
   radio: Schema.Boolean,
-  mode: Schema.Literals(['ground', 'tower', 'tracon']),
+  mode: Schema.Literals(['ground', 'tower', 'tracon', 'center']),
   /** shared sessions: an optional TURN relay for NATs that block direct connections */
   turnUrl: Schema.String,
   turnUsername: Schema.String,
@@ -33,6 +33,8 @@ export const Settings = Schema.Struct({
   cabLayersOff: Schema.Record(Schema.String, Schema.Array(Schema.String)),
   /** STARS video maps on the display, by airport id; absent means the defaults (see `defaultMaps`) */
   starsMaps: Schema.Record(Schema.String, Schema.Array(Schema.String)),
+  /** the ERAM GeoMap shown and its filters, by ARTCC id (Phase 9) */
+  eramView: Schema.Record(Schema.String, Schema.Struct({ geoMap: Schema.String, filters: Schema.Array(Schema.Number) })),
   /** the window layout of each position (see `app/layout.ts`) */
   layouts: Layouts,
 })
@@ -60,6 +62,7 @@ export const defaultSettings: Settings = {
   asdexCabMap: false,
   cabLayersOff: {},
   starsMaps: {},
+  eramView: {},
   layouts: defaultLayouts,
 }
 

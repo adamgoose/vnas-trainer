@@ -1,12 +1,13 @@
 import { Schema } from 'effect'
 import { defineMessageUnion } from 'foldkit/message'
 
-import { AirportFile, CatalogIndex, Scenario } from '../domain/catalog'
+import { AirportFile, ArtccFile, CatalogIndex, Scenario } from '../domain/catalog'
 import { AtcCommand } from '../domain/commands'
 import { Translation } from '../domain/prompt'
 import { SessionEvent } from '../domain/session'
 import { Dir, Edge, Grip, Panel } from './layout'
 import { BrowserVoice, ModelCatalogue } from './model'
+import { EramMessage } from '../positions/center/eram'
 import { StarsMessage } from '../positions/local/stars'
 import { Settings } from '../services/settings'
 
@@ -18,6 +19,8 @@ export const Message = defineMessageUnion({
   FailedLoadIndex: { error: Schema.String },
   CompletedLoadAirport: { airport: AirportFile },
   FailedLoadAirport: { id: Schema.String, error: Schema.String },
+  CompletedLoadArtcc: { artcc: ArtccFile },
+  FailedLoadArtcc: { id: Schema.String, error: Schema.String },
   CompletedLoadScenario: { airportId: Schema.String, scenario: Scenario },
   FailedLoadScenario: { error: Schema.String },
   CompletedLoadPavement: { id: Schema.String, asdex: Schema.Boolean },
@@ -27,7 +30,7 @@ export const Message = defineMessageUnion({
   CompletedBlurCommand: {},
   CompletedReplaceDeepLink: {},
   Ticked: { now: Schema.Number },
-  ChangedPosition: { mode: Schema.Literals(['ground', 'tower', 'tracon']) },
+  ChangedPosition: { mode: Schema.Literals(['ground', 'tower', 'tracon', 'center']) },
   ChangedArtcc: { id: Schema.String },
   ChangedAirport: { id: Schema.String },
   ChangedScenario: { id: Schema.String },
@@ -97,6 +100,7 @@ export const Message = defineMessageUnion({
     edge: Schema.NullOr(Edge),
   },
   GotStars: { message: StarsMessage },
+  GotEram: { message: EramMessage },
   PressedPtt: {},
   ReleasedPtt: {},
   CompletedStartRecording: {},

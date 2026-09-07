@@ -8,9 +8,9 @@ import { Schema } from 'effect'
 import { defineTaggedUnion } from 'foldkit/schema'
 
 import { Aircraft } from './aircraft'
-import { type AirportFile, AirportNav, type FacilityPosition, FleetEntry, InitialAltitudes, LonLat } from './catalog'
+import { type AirportFile, AirportNav, type ArtccFile, type FacilityPosition, FleetEntry, InitialAltitudes, LonLat, SectorPosition } from './catalog'
 import { Graph, buildGraph } from './graph'
-import { emptyNav } from './navdata'
+import { emptyNav, mergeNav } from './navdata'
 import { Phrase } from './phrase'
 import { Prng, seedPrng } from './prng'
 import { PositionRules } from './rules'
@@ -32,6 +32,8 @@ export const WorldAirport = Schema.Struct({
   approach: Schema.NullOr(RadioPosition),
   center: Schema.NullOr(RadioPosition),
   fleet: Schema.Array(FleetEntry),
+  /** the ARTCC's sector positions (Phase 9), handoff targets on ERAM */
+  sectors: Schema.Array(SectorPosition),
 })
 export type WorldAirport = typeof WorldAirport.Type
 
@@ -82,7 +84,7 @@ export const radarCenterOf = (airport: AirportFile): LonLat | null => {
   return null
 }
 
-export const makeWorld = (airport: AirportFile, rules: PositionRules, seed: number): World => {
+export const makeWorld = (airport: AirportFile, rules: PositionRules, seed: number, artcc: ArtccFile | null = null): World => {
   const graph = buildGraph(airport.map)
   const center = radarCenterOf(airport) ?? [
     (graph.bounds.lon0 + graph.bounds.lon1) / 2,
@@ -103,6 +105,7 @@ export const makeWorld = (airport: AirportFile, rules: PositionRules, seed: numb
       approach: radio(airport.stars?.app),
       center: radio(airport.stars?.ctr),
       fleet: airport.fleet,
+      sectors: artcc?.positions ?? [],
     },
     graph,
     rules,
@@ -113,9 +116,16 @@ export const makeWorld = (airport: AirportFile, rules: PositionRules, seed: numb
     arrivalsEnabled: false,
     nextArrivalAt: 0,
     scenario: null,
-    nav: airport.nav ?? emptyNav,
+    nav: mergeNav(airport.nav ?? emptyNav, artcc?.nav ?? null),
   }
 }
+
+/** The ARTCC's en-route picture arrived after the World was made: merge its nav and sectors in. */
+export const withArtcc = (world: World, artcc: ArtccFile, airportNav: AirportNav | null): World => ({
+  ...world,
+  airport: { ...world.airport, sectors: artcc.positions },
+  nav: mergeNav(airportNav ?? emptyNav, artcc.nav),
+})
 
 export const findAircraft = (world: World, callsign: string): Aircraft | undefined =>
   world.aircraft.find((a) => a.callsign === callsign)
@@ -149,6 +159,17 @@ export const approachRadioName = (world: World): string => world.airport.approac
 
 export const departureRadioName = (world: World): string => world.airport.departure?.radio ?? `${cityOf(world)} Departure`
 
-/** The facility a departure is switched to under the position's rules. */
-export const nextFacility = (world: World): RadioPosition | null =>
-  world.rules.handoffTo === 'center' ? world.airport.center : world.airport.departure
+/** The facility a departure is switched to under the position's rules; a sector the track was handed to wins. */
+export const nextFacility = (world: World, handoffSector: string | null = null): RadioPosition | null => {
+  const sector = handoffSector === null ? undefined : world.airport.sectors.find((s) => s.sector === handoffSector)
+  if (sector !== undefined) {
+    return { radio: sector.radio || centerRadioName(world), freq: sector.freq === '' ? null : sector.freq }
+  }
+  return world.rules.handoffTo === 'center' ? world.airport.center : world.airport.departure
+}
+
+export const centerRadioName = (world: World): string => world.airport.center?.radio ?? `${cityOf(world)} Center`
+
+/** The position an airborne aircraft calls under the rules: approach (departures the departure), or the centre. */
+export const checkInRadioName = (world: World, departing: boolean): string =>
+  world.rules.checkInWith === 'center' ? centerRadioName(world) : departing ? departureRadioName(world) : approachRadioName(world)

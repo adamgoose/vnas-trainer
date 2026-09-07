@@ -6,12 +6,13 @@
 import { Schema } from 'effect'
 import { defineTaggedUnion } from 'foldkit/schema'
 
-import { CatalogIndex, Stars } from '../domain/catalog'
+import { ArtccFile, CatalogIndex, Stars } from '../domain/catalog'
 import { Snapshot } from '../domain/session'
 import { World } from '../domain/world'
 import { Edge, Panel, Size } from './layout'
 import { CommandRecord, LogLine } from './log'
 import { Review, Timeline, emptyTimeline } from './timeline'
+import { EramModel, initialEram } from '../positions/center/eram'
 import { StarsModel, initialStars } from '../positions/local/stars'
 import { Settings, defaultSettings } from '../services/settings'
 
@@ -45,6 +46,15 @@ export const AirportLoad = defineTaggedUnion({
   Ready: { info: AirportInfo, world: World },
 })
 export type AirportLoad = typeof AirportLoad.Type
+
+/** The ARTCC file (Phase 9): loaded before the airport so the World gets its nav and sectors; a failure is tolerated. */
+export const ArtccLoad = defineTaggedUnion({
+  Idle: {},
+  Loading: { id: Schema.String },
+  Failed: { id: Schema.String, error: Schema.String },
+  Ready: { artcc: ArtccFile },
+})
+export type ArtccLoad = typeof ArtccLoad.Type
 
 export const Pavement = defineTaggedUnion({
   None: {},
@@ -151,6 +161,8 @@ export const Model = Schema.Struct({
   /** the ASDE-X display panel (DISP) is open */
   asdexPanelOpen: Schema.Boolean,
   stars: StarsModel,
+  artcc: ArtccLoad,
+  eram: EramModel,
   devicePixelRatio: Schema.Number,
   running: Schema.Boolean,
   rate: Schema.Number,
@@ -198,6 +210,8 @@ export const initialModel: Model = {
   radial: null,
   asdexPanelOpen: false,
   stars: initialStars,
+  artcc: ArtccLoad.Idle(),
+  eram: initialEram,
   devicePixelRatio: 1,
   running: true,
   rate: 1,
@@ -229,4 +243,5 @@ export const isGuest = (model: Model): boolean => model.session.role === 'guest'
 export const isReviewing = (model: Model): boolean => model.review !== null
 
 export const worldOf = (model: Model): World | null => (model.airport._tag === 'Ready' ? model.airport.world : null)
+export const artccOf = (model: Model): ArtccFile | null => (model.artcc._tag === 'Ready' ? model.artcc.artcc : null)
 export const infoOf = (model: Model): AirportInfo | null => (model.airport._tag === 'Ready' ? model.airport.info : null)

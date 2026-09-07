@@ -7,9 +7,9 @@
 import { Context, Data, Effect, Layer, Ref, Schema } from 'effect'
 import { defineTaggedUnion } from 'foldkit/schema'
 
-import { AirportFile, CatalogIndex, type Scenario } from '../domain/catalog'
-import { NAV_MARGIN_NM, type NavData, decodeNavData, navForAirport } from '../domain/navdata'
-import { API, type ArtccDocument, FILES, type VnasScenario, type VnasTrainingAirport, assembleAirport, compactMap, compactScenario, facilityIndex, parseLenientJSON, scenarioForAirport } from '../domain/vnas'
+import { AirportFile, ArtccFile, CatalogIndex, type Scenario } from '../domain/catalog'
+import { NAV_MARGIN_NM, type NavData, decodeNavData, navForAirport, navForArtcc } from '../domain/navdata'
+import { API, type ArtccDocument, FILES, type VnasScenario, type VnasTrainingAirport, assembleAirport, assembleArtcc, compactMap, compactScenario, facilityIndex, parseLenientJSON, scenarioForAirport } from '../domain/vnas'
 import { HttpError, HttpText } from './http'
 
 export class DataError extends Data.TaggedError('DataError')<{ message: string }> {}
@@ -28,6 +28,8 @@ export type VnasDataShape = Readonly<{
   airport: (source: DataSource, id: string, artcc: string) => Effect.Effect<AirportFile, DataError>
   /** the full scenario of an airport loaded earlier; the catalog has it inline, live mode fetches it */
   scenario: (source: DataSource, airportId: string, scenarioId: string) => Effect.Effect<Scenario, DataError>
+  /** the ARTCC's en-route picture (ERAM GeoMaps, sectors, nav); a catalog built before Phase 9 has none */
+  artcc: (source: DataSource, id: string) => Effect.Effect<ArtccFile, DataError>
 }>
 
 export class VnasData extends Context.Service<VnasData, VnasDataShape>()('VnasData') {}
@@ -87,6 +89,18 @@ export const VnasDataLive = Layer.effect(VnasData)(
 
     const catalogIndex = getJson(http, `${CATALOG_BASE}index.json`).pipe(Effect.flatMap(decode(CatalogIndex)))
     const catalogAirport = (id: string) => getJson(http, `${CATALOG_BASE}airports/${id}.json`).pipe(Effect.flatMap(decode(AirportFile)))
+    const catalogArtcc = (id: string) => getJson(http, `${CATALOG_BASE}artccs/${id}.json`).pipe(Effect.flatMap(decode(ArtccFile)))
+
+    const liveArtcc = (proxy: string, id: string) =>
+      Effect.gen(function* () {
+        const [artccs, doc, nav] = yield* Effect.all([
+          vnas(proxy, '/artcc-summaries') as Effect.Effect<ReadonlyArray<ArtccSummary>, HttpError | Error>,
+          vnas(proxy, `/artccs/${id}`) as Effect.Effect<ArtccDocument, HttpError | Error>,
+          navData,
+        ])
+        const name = artccs.find((a) => a.id === id)?.name ?? id
+        return yield* decode(ArtccFile)(assembleArtcc({ id, name, document: doc, nav: nav === null ? null : navForArtcc(nav, id) }))
+      })
 
     const liveIndex = (proxy: string) =>
       Effect.gen(function* () {
@@ -165,6 +179,11 @@ export const VnasDataLive = Layer.effect(VnasData)(
       })
 
     return {
+      artcc: (source, id) =>
+        DataSource.match(source, {
+          Catalog: () => catalogArtcc(id),
+          Live: ({ proxy }) => liveArtcc(proxy, id),
+        }).pipe(Effect.mapError(toDataError)),
       index: (source) =>
         DataSource.match(source, {
           Catalog: () => catalogIndex,
