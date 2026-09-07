@@ -26,10 +26,10 @@ ATCTrainer's CLI does — `1877 PUSH A` matches `DAL1877`.
 
 | Ground | Tower / general |
 |---|---|
-| `PUSH [taxiway]` | `LUAW` · `CTO` · `EXIT [taxiway]` · `GA` |
-| `TAXI {path} [HS {pt}]` | `SQ {code}` · `SN` · `SS` · `ID` |
-| `RWY {rw} TAXI {path}` | `SAY {gate\|type\|rwy}` · `DEL` |
-| `HS {pt}` · `CROSS` · `RES` · `HOLD` | `PAUSE` · `UNPAUSE` · `SIMRATE {1-8}` |
+| `PUSH [taxiway]` | `LUAW` · `CTO [L\|R] [hdg]` · `EXIT [taxiway]` · `GA` |
+| `TAXI {path} [CROSS {rw}] [HS {pt}]` | `SQ {code}` · `SN` · `SS` · `ID` |
+| `RWY {rw} TAXI {path} [CROSS {rw}] [HS {pt}]` | `SAY {gate\|type\|rwy}` · `DEL` |
+| `HS {pt}` · `CROSS [rw]` · `RES` · `HOLD` | `PAUSE` · `UNPAUSE` · `SIMRATE {1-8}` |
 | `GIVEWAY {acft}` · `BREAK` · `TAXIALL` | |
 
 The **Commands** button in the header has the full reference.

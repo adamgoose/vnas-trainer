@@ -45,6 +45,8 @@ export const Graph = Schema.Struct({
   taxiways: Schema.Record(Schema.String, Schema.Array(Schema.Number)),
   /** nodeTaxiways[node] lists the taxiway names through that node */
   nodeTaxiways: Schema.Array(Schema.Array(Schema.String)),
+  /** nodeRunways[node] lists the full runway names whose chain includes that node */
+  nodeRunways: Schema.Array(Schema.Array(Schema.String)),
   parking: Schema.Record(Schema.String, Parking),
   bounds: Bounds,
   projection: Projection,
@@ -52,6 +54,21 @@ export const Graph = Schema.Struct({
 export type Graph = typeof Graph.Type
 
 export const isRunwayName = (graph: Graph, name: string): boolean => graph.runwayNames.includes(name)
+
+/**
+ * The runways the step from node `a` to node `b` enters: runways `b` is on that `a`
+ * is not. A taxiway crossing a runway shares one node with it and never traverses a
+ * runway-named edge, so this, not the edge name, is what says a runway is being
+ * entered. Moving along a runway or leaving it enters nothing.
+ */
+export const runwaysEntered = (graph: Graph, a: number, b: number): ReadonlyArray<string> => {
+  const after = graph.nodeRunways[b] ?? []
+  if (after.length === 0) {
+    return after
+  }
+  const before = graph.nodeRunways[a] ?? []
+  return before.length === 0 ? after : after.filter((r) => !before.includes(r))
+}
 
 export const buildGraph = (map: AirportMap): Graph => {
   const all: Array<LonLat> = [
@@ -194,8 +211,16 @@ export const buildGraph = (map: AirportMap): Graph => {
       set.forEach((n) => nodeTaxiways[n]!.push(name))
     }
   }
+  const nodeRunways: Array<Array<string>> = nodes.map(() => [])
+  for (const [name, chain] of runwayChains) {
+    for (const n of chain) {
+      if (!nodeRunways[n]!.includes(name)) {
+        nodeRunways[n]!.push(name)
+      }
+    }
+  }
 
-  return { nodes, adjacency, runwayEnds, runwayNames, taxiways, nodeTaxiways, parking, bounds, projection }
+  return { nodes, adjacency, runwayEnds, runwayNames, taxiways, nodeTaxiways, nodeRunways, parking, bounds, projection }
 }
 
 // QUERIES

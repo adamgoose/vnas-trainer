@@ -2,14 +2,14 @@ import { describe, expect, test } from 'bun:test'
 
 import { isProp, performance } from '../src/domain/aircraft'
 import { distanceFt, headingDiff } from '../src/domain/geo'
-import { holdNodeFor, isRunwayName, edgeName } from '../src/domain/graph'
+import { edgeName, holdNodeFor, isRunwayName, runwaysEntered } from '../src/domain/graph'
 import { spoken, written } from '../src/domain/phrase'
 import { stepWorld } from '../src/domain/physics'
 import { GROUND_RULES, LOCAL_RULES } from '../src/domain/rules'
 import { loadScenario } from '../src/domain/scenario'
 import { findAircraft, makeWorld } from '../src/domain/world'
 import { aircraftNamed, command, emptyWorld, groundWorld, msp, pilotLines, refusal, run, runUntil, scenarioNamed, scenarioPlacing, stateOf, systemLines } from './helpers'
-import { withPath } from '../src/domain/physics'
+import { DEPARTURE_TURN_AGL_FT, autoExit, withPath } from '../src/domain/physics'
 
 const AAL = 'AAL894'
 
@@ -115,10 +115,11 @@ describe('pushback and taxi', () => {
   test('RWY routes to the hold node, reads back the route and holds short automatically', () => {
     const world = groundWorld()
     const taxied = command(world, `${AAL} RWY 30L`)
-    expect(pilotLines(taxied.events)).toEqual([`${AAL}: runway 30L, taxi via D W W3 A3 A`])
+    expect(pilotLines(taxied.events)).toEqual([`${AAL}: runway 30L, taxi via D B A`])
     const a = aircraftNamed(taxied.world, AAL)
     expect(a.state).toBe('TAXI')
     expect(a.runway).toBe('30L')
+    expect(a.holdLeg).toBeNull()
     expect(a.path![a.path!.length - 1]).toBe(holdNodeFor(world.graph, '30L')!)
     const short = runUntil(taxied.world, stateOf(AAL, 'SHORT'), 900)
     expect(pilotLines(short.events)).toContain(`${AAL}: holding short of 30L`)
@@ -169,19 +170,112 @@ describe('pushback and taxi', () => {
 
   test('HS holds at a taxiway on the route; RES crosses it', () => {
     const world = groundWorld()
-    const taxied = command(world, `${AAL} RWY 30L TAXI D HS A3`)
-    expect(pilotLines(taxied.events)).toEqual([`${AAL}: hold short of A3`, `${AAL}: runway 30L, taxi via D W W3 A3 A`])
+    const taxied = command(world, `${AAL} RWY 30L TAXI D HS B`)
+    expect(pilotLines(taxied.events)).toEqual([`${AAL}: hold short of B`, `${AAL}: runway 30L, taxi via D A`])
     const a = aircraftNamed(taxied.world, AAL)
     expect(a.holdLeg).not.toBeNull()
-    expect(edgeName(world.graph, a.path![a.holdLeg!]!, a.path![a.holdLeg! + 1]!)).toBe('A3')
+    expect(a.holdShortLeg).toBe(a.holdLeg)
+    expect(edgeName(world.graph, a.path![a.holdLeg!]!, a.path![a.holdLeg! + 1]!)).toBe('B')
     expect(refusal(taxied.world, `${AAL} HS ZZ`)).toBe('ZZ is not on the route')
+    expect(refusal(world, `${AAL} RWY 30L TAXI D HS ZZ`)).toBe('ZZ is not on the route')
     const short = runUntil(taxied.world, stateOf(AAL, 'SHORT'), 600)
-    expect(pilotLines(short.events)).toContain(`${AAL}: holding short of A3`)
+    expect(pilotLines(short.events)).toContain(`${AAL}: holding short of B`)
     const resumed = command(short.world, `${AAL} RES`)
-    expect(pilotLines(resumed.events)).toEqual([`${AAL}: crossing A3`])
-    expect(aircraftNamed(resumed.world, AAL).state).toBe('TAXI')
+    expect(pilotLines(resumed.events)).toEqual([`${AAL}: crossing B`])
+    const r = aircraftNamed(resumed.world, AAL)
+    expect(r.state).toBe('TAXI')
+    expect(r.holdShortLeg).toBeNull()
+    expect(r.holdLeg).toBeNull()
     const done = runUntil(resumed.world, stateOf(AAL, 'SHORT'), 600)
     expect(pilotLines(done.events)).toContain(`${AAL}: holding short of 30L`)
+  })
+
+  /** The route to 17 from the terminal crosses 4-22 on A and 12R-30L at A10, both through a shared node, never on a runway edge. */
+  test('a taxi route holds short of every runway it crosses until CROSS, one at a time', () => {
+    const world = groundWorld()
+    const graph = world.graph
+    const taxied = command(world, `${AAL} RWY 17`)
+    const a = aircraftNamed(taxied.world, AAL)
+    const entered = a.path!.slice(0, -1).flatMap((n, i) => runwaysEntered(graph, n, a.path![i + 1]!))
+    expect(entered).toEqual(['4-22', '12R-30L'])
+    expect(a.path!.slice(0, -1).some((n, i) => isRunwayName(graph, edgeName(graph, n, a.path![i + 1]!) ?? ''))).toBe(false)
+    expect(a.holdLeg).not.toBeNull()
+    expect(runwaysEntered(graph, a.path![a.holdLeg!]!, a.path![a.holdLeg! + 1]!)).toEqual(['4-22'])
+    const taxiing = run(taxied.world, 20)
+    expect(refusal(taxiing.world, `${AAL} RES`)).toBe('already moving')
+    const first = runUntil(taxiing.world, stateOf(AAL, 'SHORT'), 600)
+    expect(pilotLines(first.events)).toContain(`${AAL}: holding short of 4-22`)
+    const f = aircraftNamed(first.world, AAL)
+    expect(f.leg).toBe(f.holdLeg!)
+    expect(graph.nodeRunways[f.path![f.leg]!]).toEqual([])
+    expect(refusal(first.world, `${AAL} CROSS 99`)).toBe('no runway 99')
+    const crossed = command(first.world, `${AAL} CROSS 4`)
+    expect(pilotLines(crossed.events)).toEqual([`${AAL}: crossing 4`])
+    const c = aircraftNamed(crossed.world, AAL)
+    expect(c.state).toBe('TAXI')
+    expect(c.cleared).toEqual(['4-22'])
+    expect(runwaysEntered(graph, c.path![c.holdLeg!]!, c.path![c.holdLeg! + 1]!)).toEqual(['12R-30L'])
+    const second = runUntil(run(crossed.world, 5).world, stateOf(AAL, 'SHORT'), 600)
+    expect(pilotLines(second.events)).toContain(`${AAL}: holding short of 12R-30L`)
+    const again = command(second.world, `${AAL} CROSS`)
+    expect(pilotLines(again.events)).toEqual([`${AAL}: crossing 12R-30L`])
+    expect(aircraftNamed(again.world, AAL).holdLeg).toBeNull()
+    const done = runUntil(run(again.world, 5).world, stateOf(AAL, 'SHORT'), 900)
+    expect(pilotLines(done.events)).toContain(`${AAL}: holding short of 17`)
+    expect(aircraftNamed(done.world, AAL).path![aircraftNamed(done.world, AAL).leg]).toBe(holdNodeFor(graph, '17')!)
+  })
+
+  test('CROSS clauses in a taxi clearance clear those runways up front', () => {
+    const world = groundWorld()
+    const taxied = command(world, `${AAL} RWY 17 TAXI A CROSS 4 12R`)
+    expect(pilotLines(taxied.events)).toEqual([`${AAL}: runway 17, taxi via D C A A10 W10 W, cross runway 4, cross runway 12R`])
+    const a = aircraftNamed(taxied.world, AAL)
+    expect(a.cleared).toEqual(['4-22', '12R-30L'])
+    expect(a.holdLeg).toBeNull()
+    const done = runUntil(taxied.world, stateOf(AAL, 'SHORT'), 1200)
+    expect(pilotLines(done.events).filter((l) => l.includes('holding short'))).toEqual([`${AAL}: holding short of 17`])
+    expect(refusal(world, `${AAL} RWY 17 CROSS 99`)).toBe('no runway 99')
+    const one = command(world, `${AAL} TAXI A W10 CROSS 4 HS 12R`)
+    expect(pilotLines(one.events)).toEqual([`${AAL}: hold short of 12R`, `${AAL}: taxi via D C A A10 W10, cross runway 4`])
+    const o = aircraftNamed(one.world, AAL)
+    expect(o.cleared).toEqual(['4-22'])
+    expect(runwaysEntered(world.graph, o.path![o.holdLeg!]!, o.path![o.holdLeg! + 1]!)).toEqual(['12R-30L'])
+  })
+
+  test('a hold-short point beyond a runway crossing survives the crossing', () => {
+    const world = groundWorld()
+    const taxied = command(world, `${AAL} RWY 17 HS W10`)
+    const a = aircraftNamed(taxied.world, AAL)
+    expect(a.holdShortLeg).toBeGreaterThan(a.holdLeg!)
+    const first = runUntil(taxied.world, stateOf(AAL, 'SHORT'), 600)
+    expect(pilotLines(first.events)).toContain(`${AAL}: holding short of 4-22`)
+    const crossed = command(first.world, `${AAL} CROSS 4`)
+    const c = aircraftNamed(crossed.world, AAL)
+    expect(c.holdShortLeg).toBe(a.holdShortLeg)
+    const second = runUntil(run(crossed.world, 5).world, stateOf(AAL, 'SHORT'), 600)
+    expect(pilotLines(second.events)).toContain(`${AAL}: holding short of 12R-30L`)
+    const again = command(second.world, `${AAL} CROSS 12R`)
+    expect(aircraftNamed(again.world, AAL).holdLeg).toBe(a.holdShortLeg)
+    const third = runUntil(run(again.world, 5).world, stateOf(AAL, 'SHORT'), 600)
+    expect(pilotLines(third.events)).toContain(`${AAL}: holding short of W10`)
+    const resumed = command(third.world, `${AAL} RES`)
+    expect(pilotLines(resumed.events)).toEqual([`${AAL}: crossing W10`])
+    const done = runUntil(run(resumed.world, 5).world, stateOf(AAL, 'SHORT'), 900)
+    expect(pilotLines(done.events)).toContain(`${AAL}: holding short of 17`)
+  })
+
+  test('CROSS for a runway further along pre-clears it without releasing the current hold', () => {
+    const world = groundWorld()
+    const first = runUntil(command(world, `${AAL} RWY 17`).world, stateOf(AAL, 'SHORT'), 600)
+    const ahead = command(first.world, `${AAL} CROSS 12R`)
+    expect(pilotLines(ahead.events)).toEqual([`${AAL}: crossing 12R`])
+    const a = aircraftNamed(ahead.world, AAL)
+    expect(a.state).toBe('SHORT')
+    expect(a.cleared).toEqual(['12R-30L'])
+    expect(runwaysEntered(world.graph, a.path![a.holdLeg!]!, a.path![a.holdLeg! + 1]!)).toEqual(['4-22'])
+    const crossed = command(ahead.world, `${AAL} CROSS`)
+    expect(pilotLines(crossed.events)).toEqual([`${AAL}: crossing 4-22`])
+    expect(aircraftNamed(crossed.world, AAL).holdLeg).toBeNull()
   })
 
   test('a route across a runway holds short of it until CROSS, then re-arms the next', () => {
@@ -192,14 +286,15 @@ describe('pushback and taxi', () => {
     const exit = graph.adjacency[end.chain[1]!]!.find((e) => !isRunwayName(graph, e.name))!.to
     const nodes = [hold, end.chain[0]!, end.chain[1]!, exit]
     const staged = withPath(graph, { ...aircraftNamed(world, AAL), state: 'TAXI', gate: null, position: graph.nodes[hold]! }, nodes)
-    expect(staged.holdLeg).toBe(1)
+    expect(staged.holdLeg).toBe(0)
     const crossing = edgeName(graph, nodes[1]!, nodes[2]!)!
     expect(isRunwayName(graph, crossing)).toBe(true)
+    expect(runwaysEntered(graph, nodes[0]!, nodes[1]!)).toEqual([crossing])
     const w = { ...world, aircraft: world.aircraft.map((x) => (x.callsign === AAL ? staged : x)) }
     expect(refusal(w, `${AAL} CROSS`)).toBeNull()
     const short = runUntil(w, stateOf(AAL, 'SHORT'), 300)
     expect(pilotLines(short.events)).toContain(`${AAL}: holding short of ${crossing}`)
-    expect(aircraftNamed(short.world, AAL).leg).toBe(1)
+    expect(aircraftNamed(short.world, AAL).leg).toBe(0)
     const crossed = command(short.world, `${AAL} CROSS`)
     expect(pilotLines(crossed.events)).toEqual([`${AAL}: crossing ${crossing}`])
     const c = aircraftNamed(crossed.world, AAL)
@@ -298,6 +393,42 @@ describe('departure', () => {
     expect(a.targetAltitude).toBe(7000)
     expect(airborne.seconds).toBeGreaterThan(20)
     expect(airborne.seconds).toBeLessThan(30)
+  })
+
+  test('CTO with a heading reads it back and turns out through 400 ft', () => {
+    const world = holdingShort()
+    const cleared = command(world, `${AAL} CTO L 250`)
+    expect(pilotLines(cleared.events)).toEqual([`${AAL}: turn left heading 250, runway 30L, cleared for takeoff`])
+    const c = aircraftNamed(cleared.world, AAL)
+    expect(c.state).toBe('TKOF')
+    expect(c.departureHeading).toBe(250)
+    expect(c.departureTurn).toBe('L')
+    const airborne = runUntil(cleared.world, stateOf(AAL, 'AIRB'), 120)
+    const a = aircraftNamed(airborne.world, AAL)
+    expect(headingDiff(a.targetHeading, a.heading)).toBeLessThan(1)
+    expect(a.departureHeading).toBe(250)
+    const turning = runUntil(airborne.world, (w) => aircraftNamed(w, AAL).targetHeading === 250, 120)
+    const t = aircraftNamed(turning.world, AAL)
+    expect(t.altitude).toBeGreaterThanOrEqual(world.airport.elevation + DEPARTURE_TURN_AGL_FT)
+    expect(t.altitude).toBeLessThan(world.airport.elevation + DEPARTURE_TURN_AGL_FT + 50)
+    expect(t.turn).toBe('L')
+    expect(t.departureHeading).toBeNull()
+    const done = runUntil(turning.world, (w) => headingDiff(aircraftNamed(w, AAL).heading, 250) < 0.01, 120)
+    expect(aircraftNamed(done.world, AAL).turn).toBeNull()
+    expect(pilotLines(command(holdingShort(), `${AAL} CTO 270`).events)).toEqual([`${AAL}: fly heading 270, runway 30L, cleared for takeoff`])
+    expect(pilotLines(command(holdingShort(), `${AAL} CTO R 090`).events)).toEqual([`${AAL}: turn right heading 090, runway 30L, cleared for takeoff`])
+    expect(refusal(holdingShort(), `${AAL} CTO L`)).toBe('heading?')
+  })
+
+  test('a heading given after takeoff replaces the one from the clearance', () => {
+    const world = holdingShort()
+    const airborne = runUntil(command(world, `${AAL} CTO R 090`).world, stateOf(AAL, 'AIRB'), 120).world
+    const vectored = command(airborne, `${AAL} TL 210`)
+    const v = aircraftNamed(vectored.world, AAL)
+    expect(v.departureHeading).toBeNull()
+    expect(v.targetHeading).toBe(210)
+    const later = run(vectored.world, 90)
+    expect(aircraftNamed(later.world, AAL).targetHeading).toBe(210)
   })
 
   test('the tower flight model climbs, turns and levels off', () => {
@@ -418,6 +549,39 @@ describe('arrivals', () => {
     const sent = command(spawned.world, `${cs} GA`)
     expect(pilotLines(sent.events)).toEqual([`${cs}: going around`])
     expect(aircraftNamed(sent.world, cs).state).toBe('AIRB')
+  })
+
+  test('an arrival taxiing to its gate holds short of the runways it must cross', () => {
+    const world = groundWorld()
+    const graph = world.graph
+    const end = graph.runwayEnds['4']!
+    const mid = Math.floor(end.chain.length / 2)
+    const rolling = {
+      ...aircraftNamed(world, 'AAL894'),
+      state: 'ROLLOUT' as const,
+      runway: '4',
+      destinationGate: 'H1',
+      gate: null,
+      position: graph.nodes[end.chain[mid]!]!,
+      path: end.chain,
+      leg: mid,
+      frac: 0,
+      origin: null,
+      speed: 19,
+    }
+    const out = autoExit(world, rolling)
+    const a = out.aircraft!
+    expect(a.state).toBe('TAXI')
+    expect(a.cleared).toEqual(['4-22'])
+    expect(a.holdLeg).not.toBeNull()
+    expect(runwaysEntered(graph, a.path![a.holdLeg!]!, a.path![a.holdLeg! + 1]!)).toEqual(['12R-30L'])
+    const w = { ...world, aircraft: world.aircraft.map((x) => (x.callsign === 'AAL894' ? a : x)) }
+    const short = runUntil(w, stateOf('AAL894', 'SHORT'), 900)
+    expect(pilotLines(short.events)).toContain('AAL894: holding short of 12R-30L')
+    const crossed = command(short.world, 'AAL894 CROSS 30L')
+    expect(pilotLines(crossed.events)).toEqual(['AAL894: crossing 30L'])
+    const parked = runUntil(crossed.world, stateOf('AAL894', 'PARKED'), 1200)
+    expect(pilotLines(parked.events)).toContain('AAL894: in the blocks at H1')
   })
 
   test('arrivals only generate while enabled', () => {

@@ -17,7 +17,7 @@ import {
   reciprocal,
   turnDelta,
 } from './geo'
-import { type Graph, edgeName, gateNames, isRunwayName, nearestNode, runwayCourse } from './graph'
+import { type Graph, edgeName, gateNames, isRunwayName, nearestNode, runwayCourse, runwaysEntered } from './graph'
 import { type Phrase, altitudeWords, callsign as callsignToken, gate as gateToken, numberWords, phrase, runway as runwayToken, taxiways } from './phrase'
 import { type Prng, nextBetween, nextInt, pick, pickWeighted } from './prng'
 import { findPath } from './route'
@@ -51,6 +51,8 @@ export const GLIDE_FT_PER_NM = 318
 export const GO_AROUND_KT = 160
 export const HANDOFF_REMOVE_S = 20
 export const IDENT_S = 4
+/** a heading given with the takeoff clearance is flown once this high above the field */
+export const DEPARTURE_TURN_AGL_FT = 400
 /** a fix is sequenced this close to it */
 export const NAV_LEAD_NM = 0.8
 /** cleared for an approach, the aircraft joins the final course from within this cross-track distance … */
@@ -78,8 +80,12 @@ const keep = (aircraft: Aircraft, events: ReadonlyArray<SimEvent> = []): StepOut
 
 // PATHS
 
+/** The runway leg `i` enters (path[i+1] is on it, path[i] is not) that is not yet cleared, or null. */
 export const legRunway = (graph: Graph, a: Aircraft, i: number): string | null =>
-  a.path !== null && i + 1 < a.path.length ? edgeName(graph, a.path[i]!, a.path[i + 1]!) : null
+  a.path === null ? null : runwayEnteredAt(graph, a.path, i, a.cleared)
+
+const runwayEnteredAt = (graph: Graph, path: ReadonlyArray<number>, i: number, cleared: ReadonlyArray<string>): string | null =>
+  i + 1 < path.length ? (runwaysEntered(graph, path[i]!, path[i + 1]!).find((r) => !cleared.includes(r)) ?? null) : null
 
 const firstRunwayLegOf = (
   graph: Graph,
@@ -88,8 +94,7 @@ const firstRunwayLegOf = (
   cleared: ReadonlyArray<string>,
 ): number | null => {
   for (let i = from; i + 1 < path.length; i++) {
-    const name = edgeName(graph, path[i]!, path[i + 1]!)
-    if (name !== null && isRunwayName(graph, name) && !cleared.includes(name)) {
+    if (runwayEnteredAt(graph, path, i, cleared) !== null) {
       return i
     }
   }
@@ -99,15 +104,33 @@ const firstRunwayLegOf = (
 export const firstRunwayLeg = (graph: Graph, a: Aircraft, from: number): number | null =>
   a.path === null ? null : firstRunwayLegOf(graph, a.path, from, a.cleared)
 
+/** What the aircraft stops for at `holdLeg`: the runway it would enter, else the HS taxiway. */
+export const holdTarget = (graph: Graph, a: Aircraft): string | null => {
+  if (a.path === null || a.holdLeg === null) {
+    return null
+  }
+  const runway = legRunway(graph, a, a.holdLeg)
+  if (runway !== null) {
+    return runway
+  }
+  return a.holdLeg + 1 < a.path.length ? edgeName(graph, a.path[a.holdLeg]!, a.path[a.holdLeg + 1]!) : null
+}
+
+/**
+ * Re-arm the stop from leg `from`: the earlier of the next uncleared runway and
+ * the controller's hold-short point. A hold-short point already behind is dropped.
+ */
+export const armHold = (graph: Graph, a: Aircraft, from: number): Aircraft => {
+  const holdShortLeg = a.holdShortLeg !== null && a.holdShortLeg >= from ? a.holdShortLeg : null
+  const runwayLeg = a.path === null ? null : firstRunwayLegOf(graph, a.path, from, a.cleared)
+  const holdLeg =
+    runwayLeg === null ? holdShortLeg : holdShortLeg === null ? runwayLeg : Math.min(runwayLeg, holdShortLeg)
+  return { ...a, holdShortLeg, holdLeg }
+}
+
 /** Start following `nodes` from the current position; arms the first uncleared runway. */
-export const withPath = (graph: Graph, a: Aircraft, nodes: ReadonlyArray<number>): Aircraft => ({
-  ...a,
-  path: nodes,
-  leg: 0,
-  frac: 0,
-  origin: a.position,
-  holdLeg: firstRunwayLegOf(graph, nodes, 0, a.cleared),
-})
+export const withPath = (graph: Graph, a: Aircraft, nodes: ReadonlyArray<number>): Aircraft =>
+  armHold(graph, { ...a, path: nodes, leg: 0, frac: 0, origin: a.position, holdShortLeg: null }, 0)
 
 const legPoints = (
   graph: Graph,
@@ -130,6 +153,7 @@ const advance = (graph: Graph, tick: number, a: Aircraft, dt: number): Aircraft 
   let frac = a.frac
   let origin = a.origin
   let holdLeg = a.holdLeg
+  let holdShortLeg = a.holdShortLeg
   while (move > 0 && leg < path.length - 1) {
     const [c, d] = legPoints(graph, path, leg, origin)
     const len = Math.max(distanceFt(proj, c, d), 1)
@@ -143,7 +167,9 @@ const advance = (graph: Graph, tick: number, a: Aircraft, dt: number): Aircraft 
       frac = 0
       origin = null
       if (holdLeg !== null && leg > holdLeg) {
-        holdLeg = firstRunwayLegOf(graph, path, leg, a.cleared)
+        const rearmed = armHold(graph, { ...a, holdShortLeg }, leg)
+        holdLeg = rearmed.holdLeg
+        holdShortLeg = rearmed.holdShortLeg
       }
     }
   }
@@ -158,7 +184,7 @@ const advance = (graph: Graph, tick: number, a: Aircraft, dt: number): Aircraft 
     position = graph.nodes[path[path.length - 1]!]!
   }
   const history = tick % 10 === 0 ? [...a.history, position].slice(-6) : a.history
-  return { ...a, leg, frac, origin, holdLeg, position, heading, history }
+  return { ...a, leg, frac, origin, holdLeg, holdShortLeg, position, heading, history }
 }
 
 const atPathEnd = (a: Aircraft): boolean => a.path === null || a.leg >= a.path.length - 1
@@ -303,8 +329,14 @@ const speedWanted = (a: Aircraft): number => {
 const handoffName = (world: World, a: Aircraft): string =>
   a.handoffTo === 'center' ? (world.airport.center?.radio ?? 'center') : a.handoffTo === 'tower' ? towerRadioName(world) : departureRadioName(world)
 
+/** Through 400 ft, a heading assigned with the takeoff clearance becomes the heading flown. */
+const turnOut = (world: World, a: Aircraft): Aircraft =>
+  a.departureHeading !== null && a.altitude >= world.airport.elevation + DEPARTURE_TURN_AGL_FT
+    ? { ...a, targetHeading: a.departureHeading, turn: a.departureTurn, departureHeading: null, departureTurn: null }
+    : a
+
 const stepAir = (world: World, input: Aircraft, dt: number): StepOut => {
-  const navigated = followFixes(world, input)
+  const navigated = followFixes(world, turnOut(world, input))
   const approached = flyApproach(world, navigated)
   if (approached.aircraft === null || approached.aircraft.state !== 'AIRB') {
     return approached
@@ -391,7 +423,7 @@ export const autoExit = (world: World, a: Aircraft): StepOut => {
   const routed: Aircraft =
     nodes === null
       ? { ...slowed, cleared, state: 'HOLD', runway: null }
-      : { ...withPath(graph, { ...slowed, cleared }, nodes), state: 'TAXI', holdLeg: null, runway: null }
+      : { ...withPath(graph, { ...slowed, cleared }, nodes), state: 'TAXI', runway: null }
   const exitName = graph.nodeTaxiways[exitNode]?.[0]
   return keep(
     routed,
@@ -492,7 +524,7 @@ const stepGround = (world: World, a: Aircraft, dt: number): StepOut => {
     const stopped: Aircraft = { ...moving, speed: 0 }
     if (stopped.state !== 'SHORT') {
       const next: Aircraft = { ...stopped, state: 'SHORT' }
-      const name = (a.holdLeg !== null ? legRunway(graph, a, a.holdLeg) : null) ?? a.runway
+      const name = holdTarget(graph, a) ?? a.runway
       return keep(next, [said(next, name !== null ? holdPointPhrase(graph, name) : phrase('holding short of the runway'))])
     }
     return keep(stopped)

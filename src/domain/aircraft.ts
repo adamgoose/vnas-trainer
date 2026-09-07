@@ -49,8 +49,10 @@ export const Aircraft = Schema.Struct({
   frac: Schema.Number,
   /** where leg 0 starts when the aircraft is not on a node (a gate, a final) */
   origin: Schema.NullOr(LonLat),
-  /** leg index to stop at (a runway not yet cleared, or a HS point) */
+  /** leg index to stop at: the earlier of the next uncleared runway and the HS point */
   holdLeg: Schema.NullOr(Schema.Number),
+  /** leg index of the controller's hold-short point (HS), kept while runways before it are crossed */
+  holdShortLeg: Schema.NullOr(Schema.Number),
   /** runways this taxi clearance may enter */
   cleared: Schema.Array(Schema.String),
   blockedBy: Schema.NullOr(Schema.String),
@@ -63,6 +65,9 @@ export const Aircraft = Schema.Struct({
   runway: Schema.NullOr(Schema.String),
   destinationGate: Schema.NullOr(Schema.String),
   lineUpAfterTaxi: Schema.Boolean,
+  /** heading assigned with the takeoff clearance, flown once through 400 ft */
+  departureHeading: Schema.NullOr(Schema.Number),
+  departureTurn: Schema.NullOr(Schema.Literals(['L', 'R'])),
   departure: Schema.NullOr(Schema.String),
   destination: Schema.NullOr(Schema.String),
   squawk: Schema.String,
@@ -121,6 +126,7 @@ export const makeAircraft = (fields: Partial<Aircraft> & Pick<Aircraft, 'callsig
   frac: 0,
   origin: null,
   holdLeg: null,
+  holdShortLeg: null,
   cleared: [],
   blockedBy: null,
   breakUntil: -1,
@@ -130,6 +136,8 @@ export const makeAircraft = (fields: Partial<Aircraft> & Pick<Aircraft, 'callsig
   runway: null,
   destinationGate: null,
   lineUpAfterTaxi: false,
+  departureHeading: null,
+  departureTurn: null,
   departure: null,
   destination: null,
   squawk: '1200',

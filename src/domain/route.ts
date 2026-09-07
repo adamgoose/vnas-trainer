@@ -1,9 +1,11 @@
 /**
  * Routing over the taxiway graph (docs/REWRITE.md section 5, "Routing"). Shortest
- * path with a runway penalty; when the controller named taxiways, edges not on them
- * cost `w * 1.5 + 380` so the named ones are a bias rather than hard waypoints.
+ * path with a runway penalty on every step that enters a runway (waived for runways
+ * the controller cleared the aircraft across) and on every edge along one; when the
+ * controller named taxiways, edges not on them cost `w * 1.5 + 380` so the named
+ * ones are a bias rather than hard waypoints.
  */
-import { type Graph, farthestOn, isRunwayName, nodesNamed } from './graph'
+import { type Graph, farthestOn, isRunwayName, nodesNamed, runwaysEntered } from './graph'
 
 export const RUNWAY_PENALTY_FT = 6000
 export const PUSHBACK_RUNWAY_PENALTY_FT = 900000
@@ -13,6 +15,8 @@ export const UNNAMED_FIXED_FT = 380
 export type RouteOptions = Readonly<{
   prefer?: ReadonlySet<string> | undefined
   runwayPenalty?: number | undefined
+  /** full runway names the route may enter without the penalty */
+  cleared?: ReadonlyArray<string> | undefined
 }>
 
 type Heap = Array<readonly [number, number]>
@@ -63,6 +67,9 @@ export const findPath = (
 ): ReadonlyArray<number> | null => {
   const runwayPenalty = options.runwayPenalty ?? RUNWAY_PENALTY_FT
   const prefer = options.prefer
+  const cleared = options.cleared ?? []
+  /** entering this runway costs the penalty */
+  const penalised = (name: string): boolean => !cleared.includes(name)
   const dist = new Array<number>(graph.nodes.length).fill(Infinity)
   const prev = new Array<number>(graph.nodes.length).fill(-1)
   dist[from] = 0
@@ -78,9 +85,8 @@ export const findPath = (
     for (const e of graph.adjacency[n] ?? []) {
       const cost = isRunwayName(graph, e.name)
         ? e.w + runwayPenalty
-        : prefer !== undefined && !prefer.has(e.name)
-          ? e.w + e.w * UNNAMED_FACTOR + UNNAMED_FIXED_FT
-          : e.w
+        : (prefer !== undefined && !prefer.has(e.name) ? e.w + e.w * UNNAMED_FACTOR + UNNAMED_FIXED_FT : e.w) +
+          (runwayPenalty > 0 && runwaysEntered(graph, n, e.to).some(penalised) ? runwayPenalty : 0)
       const nd = d + cost
       if (nd < dist[e.to]!) {
         dist[e.to] = nd
@@ -106,13 +112,15 @@ export type RouteResult = Readonly<{ path: ReadonlyArray<number> }> | Readonly<{
 
 /**
  * One shortest path to `finalNode`, or to the farthest node of the last named
- * taxiway when no destination is given, biased toward the named taxiways.
+ * taxiway when no destination is given, biased toward the named taxiways and free
+ * to cross the `cleared` runways.
  */
 export const routeVia = (
   graph: Graph,
   from: number,
   names: ReadonlyArray<string>,
   finalNode: number | null,
+  cleared: ReadonlyArray<string> = [],
 ): RouteResult => {
   for (const name of names) {
     if (nodesNamed(graph, name) === null) {
@@ -130,7 +138,7 @@ export const routeVia = (
       return { error: `unfamiliar with ${last}` }
     }
   }
-  const path = findPath(graph, from, goal, { prefer: new Set(names) })
+  const path = findPath(graph, from, goal, { prefer: new Set(names), cleared })
   if (path === null || path.length < 2) {
     return { error: 'no route from here' }
   }

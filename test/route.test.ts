@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { buildGraph, edgeName, holdNodeFor, isRunwayName } from '../src/domain/graph'
+import { buildGraph, edgeName, holdNodeFor, isRunwayName, nearestOn, runwaysEntered } from '../src/domain/graph'
 import { PUSHBACK_RUNWAY_PENALTY_FT, findPath, routeVia } from '../src/domain/route'
 import { msp } from './helpers'
 
@@ -8,7 +8,8 @@ describe('routing', () => {
   const graph = buildGraph(msp.map)
   const e16 = graph.parking['E16']!.node
   const legs = (path: ReadonlyArray<number>) => path.slice(0, -1).map((n, i) => edgeName(graph, n, path[i + 1]!)!)
-  const crossesRunway = (path: ReadonlyArray<number>) => legs(path).some((n) => isRunwayName(graph, n))
+  const entered = (path: ReadonlyArray<number>) => path.slice(0, -1).flatMap((n, i) => runwaysEntered(graph, n, path[i + 1]!))
+  const crossesRunway = (path: ReadonlyArray<number>) => legs(path).some((n) => isRunwayName(graph, n)) || entered(path).length > 0
 
   test('finds a path that starts and ends where asked', () => {
     const hold = holdNodeFor(graph, '30L')!
@@ -24,6 +25,24 @@ describe('routing', () => {
     const free = findPath(graph, e16, hold30R, { runwayPenalty: 0 })!
     expect(crossesRunway(withPenalty)).toBe(false)
     expect(free.length).toBeLessThanOrEqual(withPenalty.length)
+  })
+
+  /** A taxiway crossing a runway shares a node with it and no runway edge; the penalty applies to that step too. */
+  test('the penalty counts a crossing through a shared node, so a route to 30L no longer crosses 30L', () => {
+    const hold30L = holdNodeFor(graph, '30L')!
+    const viaD = { prefer: new Set(['D']) }
+    expect(entered(findPath(graph, e16, hold30L, viaD)!)).toEqual([])
+    expect(entered(findPath(graph, e16, hold30L, { ...viaD, runwayPenalty: 0 })!)).toEqual(['12R-30L'])
+  })
+
+  test('a cleared runway may be entered without the penalty, but not taxied along', () => {
+    const hold17 = holdNodeFor(graph, '17')!
+    const plain = findPath(graph, e16, hold17)!
+    expect([...entered(plain)].sort()).toEqual(['12R-30L', '4-22'])
+    const cleared = findPath(graph, e16, hold17, { cleared: ['4-22', '12R-30L'] })!
+    expect([...entered(cleared)].sort()).toEqual(['12R-30L', '4-22'])
+    expect(legs(cleared).some((n) => isRunwayName(graph, n))).toBe(false)
+    expect(cleared.length).toBeLessThanOrEqual(plain.length)
   })
 
   test('naming taxiways biases the route onto them', () => {
@@ -52,8 +71,7 @@ describe('routing', () => {
   test('a pushback penalty of 9e5 never crosses a runway', () => {
     for (const gate of ['E16', 'G16', 'A2']) {
       const node = graph.parking[gate]!.node
-      const anyTaxiwayNode = graph.taxiways['A']![0]!
-      const p = findPath(graph, node, anyTaxiwayNode, { runwayPenalty: PUSHBACK_RUNWAY_PENALTY_FT })!
+      const p = findPath(graph, node, nearestOn(graph, 'A', node)!, { runwayPenalty: PUSHBACK_RUNWAY_PENALTY_FT })!
       expect(crossesRunway(p)).toBe(false)
     }
   })

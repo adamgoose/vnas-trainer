@@ -8,9 +8,10 @@ import { defineTaggedUnion } from 'foldkit/schema'
 
 import type { Aircraft } from './aircraft'
 import { distanceFt } from './geo'
-import { type Graph, edgeName, holdNodeFor, isRunwayName, nearestNode, nearestOn } from './graph'
+import { type Graph, edgeName, holdNodeFor, isRunwayName, nearestNode, nearestOn, runwaysEntered } from './graph'
 import {
   type Phrase,
+  type PhrasePart,
   type PhraseToken,
   altitudeWords,
   callsign as callsignToken,
@@ -22,7 +23,7 @@ import {
   runway as runwayToken,
   taxiways,
 } from './phrase'
-import { autoExit, firstRunwayLeg, goAround, legRunway, withPath } from './physics'
+import { armHold, autoExit, goAround, holdTarget, withPath } from './physics'
 import { PUSHBACK_RUNWAY_PENALTY_FT, findPath, routeVia } from './route'
 import {
   SimEvent,
@@ -40,8 +41,8 @@ import {
 
 export const AtcCommand = defineTaggedUnion({
   Push: { taxiway: Schema.NullOr(Schema.String) },
-  Taxi: { via: Schema.Array(Schema.String), holdShort: Schema.NullOr(Schema.String) },
-  Runway: { runway: Schema.String, via: Schema.Array(Schema.String), holdShort: Schema.NullOr(Schema.String) },
+  Taxi: { via: Schema.Array(Schema.String), cross: Schema.Array(Schema.String), holdShort: Schema.NullOr(Schema.String) },
+  Runway: { runway: Schema.String, via: Schema.Array(Schema.String), cross: Schema.Array(Schema.String), holdShort: Schema.NullOr(Schema.String) },
   HoldShort: { point: Schema.String },
   Cross: { runway: Schema.NullOr(Schema.String) },
   Resume: {},
@@ -50,7 +51,7 @@ export const AtcCommand = defineTaggedUnion({
   GiveWay: { callsign: Schema.String },
   TaxiAll: {},
   LineUpAndWait: {},
-  ClearedForTakeoff: {},
+  ClearedForTakeoff: { heading: Schema.NullOr(Schema.Number), turn: Schema.NullOr(Schema.Literals(['L', 'R'])) },
   Exit: {},
   GoAround: {},
   ClearedToLand: {},
@@ -114,13 +115,30 @@ const parseHeading = (s: string | undefined): number | null => {
   return Number.isFinite(h) && h >= 1 && h <= 360 ? h : null
 }
 
-const splitHoldShort = (args: ReadonlyArray<string>): readonly [ReadonlyArray<string>, string | null] => {
-  const at = args.findIndex((t) => t.toUpperCase() === 'HS')
-  if (at < 0) {
-    return [args, null]
+type TaxiClauses = Readonly<{ via: ReadonlyArray<string>; cross: ReadonlyArray<string>; holdShort: string | null }>
+
+/** `path [CROSS rwy...] [HS pt]` in any order: CROSS takes every token up to the next keyword, HS one. */
+const splitClauses = (args: ReadonlyArray<string>): TaxiClauses => {
+  const via: Array<string> = []
+  const cross: Array<string> = []
+  let holdShort: string | null = null
+  let list = via
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i]!
+    if (t === 'HS') {
+      holdShort = args[i + 1] ?? null
+      i++
+      list = via
+    } else if (t === 'CROSS') {
+      list = cross
+    } else {
+      list.push(t)
+    }
   }
-  return [args.slice(0, at), args[at + 1]?.toUpperCase() ?? null]
+  return { via, cross, holdShort }
 }
+
+const TURN_WORDS: Readonly<Record<string, 'L' | 'R'>> = { L: 'L', TL: 'L', LEFT: 'L', R: 'R', TR: 'R', RIGHT: 'R' }
 
 type Parsed = AtcCommand | Readonly<{ error: string }>
 
@@ -130,8 +148,8 @@ const parseVerb = (verb: string, args: ReadonlyArray<string>): Parsed => {
     case 'PUSH':
       return AtcCommand.Push({ taxiway: upper[0] ?? null })
     case 'TAXI': {
-      const [via, holdShort] = splitHoldShort(upper)
-      return via.length === 0 ? { error: 'taxi where?' } : AtcCommand.Taxi({ via, holdShort })
+      const { via, cross, holdShort } = splitClauses(upper)
+      return via.length === 0 ? { error: 'taxi where?' } : AtcCommand.Taxi({ via, cross, holdShort })
     }
     case 'RWY': {
       const runway = upper[0]
@@ -139,8 +157,8 @@ const parseVerb = (verb: string, args: ReadonlyArray<string>): Parsed => {
         return { error: 'which runway?' }
       }
       const rest = upper[1] === 'TAXI' ? upper.slice(2) : upper.slice(1)
-      const [via, holdShort] = splitHoldShort(rest)
-      return AtcCommand.Runway({ runway, via, holdShort })
+      const { via, cross, holdShort } = splitClauses(rest)
+      return AtcCommand.Runway({ runway, via, cross, holdShort })
     }
     case 'HS':
       return upper[0] === undefined ? { error: 'hold short of what?' } : AtcCommand.HoldShort({ point: upper[0] })
@@ -159,8 +177,15 @@ const parseVerb = (verb: string, args: ReadonlyArray<string>): Parsed => {
       return AtcCommand.TaxiAll()
     case 'LUAW':
       return AtcCommand.LineUpAndWait()
-    case 'CTO':
-      return AtcCommand.ClearedForTakeoff()
+    case 'CTO': {
+      if (upper.length === 0) {
+        return AtcCommand.ClearedForTakeoff({ heading: null, turn: null })
+      }
+      const turn = TURN_WORDS[upper[0]!] ?? null
+      const rest = turn !== null || upper[0] === 'FH' ? upper.slice(1) : upper
+      const heading = parseHeading(rest[0])
+      return heading === null ? { error: 'heading?' } : AtcCommand.ClearedForTakeoff({ heading, turn })
+    }
     case 'EXIT':
       return AtcCommand.Exit()
     case 'GA':
@@ -273,23 +298,48 @@ const reply = (aircraft: Aircraft, p: Phrase, before: ReadonlyArray<SimEvent> = 
 })
 const fail = (error: string): Outcome => ({ error })
 
-type TaxiTokens = Readonly<{ names: ReadonlyArray<string>; gate: string | null }> | Readonly<{ error: string }>
+/** A runway designator or full name to the full name, or null when unknown. */
+const runwayNamed = (graph: Graph, token: string): string | null =>
+  graph.runwayEnds[token]?.runway ?? (isRunwayName(graph, token) ? token : null)
 
+type TaxiTokens =
+  | Readonly<{ names: ReadonlyArray<string>; gate: string | null; runways: ReadonlyArray<string> }>
+  | Readonly<{ error: string }>
+
+/** Taxiways route the aircraft; a gate or spot ends the route; a runway named as a taxiway is cleared for the taxi. */
 const resolveTaxiTokens = (graph: Graph, tokens: ReadonlyArray<string>): TaxiTokens => {
   const names: Array<string> = []
+  const runways: Array<string> = []
   let gate: string | null = null
   for (const t of tokens) {
+    const runway = runwayNamed(graph, t)
     if (graph.taxiways[t] !== undefined) {
       names.push(t)
     } else if (graph.parking[t] !== undefined) {
       gate = t
-    } else if (graph.runwayEnds[t] !== undefined) {
-      names.push(graph.runwayEnds[t]!.runway)
+    } else if (runway !== null) {
+      names.push(runway)
+      runways.push(runway)
     } else {
       return { error: `unfamiliar with ${t}` }
     }
   }
-  return { names, gate }
+  return { names, gate, runways }
+}
+
+/** The runways of a CROSS clause as full names, in the order given. */
+const resolveCrossings = (graph: Graph, tokens: ReadonlyArray<string>): ReadonlyArray<string> | Readonly<{ error: string }> => {
+  const runways: Array<string> = []
+  for (const t of tokens) {
+    const runway = runwayNamed(graph, t)
+    if (runway === null) {
+      return { error: `no runway ${t}` }
+    }
+    if (!runways.includes(runway)) {
+      runways.push(runway)
+    }
+  }
+  return runways
 }
 
 const beginTaxi = (
@@ -298,24 +348,29 @@ const beginTaxi = (
   names: ReadonlyArray<string>,
   gate: string | null,
   runway: string | null,
+  cleared: ReadonlyArray<string>,
 ): Aircraft | Readonly<{ error: string }> => {
   const graph = world.graph
   const home = a.gate !== null ? graph.parking[a.gate] : undefined
   const from = a.state === 'PARKED' && home !== undefined ? home.node : nearestNode(graph, a.position)
   const finalNode = gate !== null ? (graph.parking[gate]?.node ?? null) : runway !== null ? holdNodeFor(graph, runway) : null
-  const route = routeVia(graph, from, names, finalNode)
+  const route = routeVia(graph, from, names, finalNode, cleared)
   if ('error' in route) {
     return route
   }
   const start: Aircraft = a.state === 'PARKED' && home !== undefined ? { ...a, position: home.c } : a
   return {
-    ...withPath(graph, { ...start, cleared: [] }, route.path),
+    ...withPath(graph, { ...start, cleared }, route.path),
     destinationGate: gate,
     runway,
     state: 'TAXI',
     giveWayTo: null,
   }
 }
+
+/** ", cross runway 12R" for each runway of the CROSS clause, as the controller named them. */
+const crossingWords = (tokens: ReadonlyArray<string>): ReadonlyArray<PhrasePart> =>
+  tokens.flatMap((t) => [', cross runway', runwayToken(t)])
 
 /**
  * The route as the pilot reads it back: runs of one name, short runs flanked by
@@ -374,31 +429,50 @@ const holdShort = (graph: Graph, a: Aircraft, point: string): Outcome => {
   if (a.path === null) {
     return fail('hold short of what?')
   }
-  const runwayName = graph.runwayEnds[point]?.runway
+  const runway = runwayNamed(graph, point)
   for (let i = a.leg; i + 1 < a.path.length; i++) {
     const name = edgeName(graph, a.path[i]!, a.path[i + 1]!)
-    if (name === point || (runwayName !== undefined && name === runwayName)) {
-      const isRunway = runwayName !== undefined || isRunwayName(graph, point)
-      return reply({ ...a, holdLeg: i }, phrase('hold short of', isRunway ? runwayToken(point) : taxiways([point])))
+    const enters = runway !== null && runwaysEntered(graph, a.path[i]!, a.path[i + 1]!).includes(runway)
+    if (enters || name === point || (runway !== null && name === runway)) {
+      const held = armHold(graph, { ...a, holdShortLeg: i }, a.leg)
+      return reply(held, phrase('hold short of', runway !== null ? runwayToken(point) : taxiways([point])))
     }
   }
   return fail(`${point} is not on the route`)
 }
 
+/**
+ * Clear the aircraft across a runway: the one named, else the one it is holding
+ * short of (or would next hold short of), else its departure runway. A hold-short
+ * point at that same crossing is released with it; the next stop is re-armed and
+ * the aircraft moves again only if nothing holds it where it is.
+ */
 const cross = (graph: Graph, a: Aircraft, named: string | null): Outcome => {
-  const name =
-    a.holdLeg !== null && a.path !== null
-      ? edgeName(graph, a.path[a.holdLeg]!, a.path[a.holdLeg + 1]!)
-      : a.runway !== null
-        ? (graph.runwayEnds[a.runway]?.runway ?? null)
-        : null
-  if (name === null) {
-    return fail('not holding short of anything')
+  const target = holdTarget(graph, a)
+  let name: string | null
+  if (named !== null) {
+    name = runwayNamed(graph, named)
+    if (name === null) {
+      return fail(`no runway ${named}`)
+    }
+  } else {
+    name = target ?? (a.runway !== null ? runwayNamed(graph, a.runway) : null)
+    if (name === null) {
+      return fail('not holding short of anything')
+    }
   }
-  const cleared = a.cleared.includes(name) ? a.cleared : [...a.cleared, name]
-  const next: Aircraft = { ...a, cleared, state: a.state === 'SHORT' ? 'TAXI' : a.state }
-  return reply({ ...next, holdLeg: firstRunwayLeg(graph, next, next.leg) }, phrase('crossing', runwayToken(named ?? name)))
+  const cleared = isRunwayName(graph, name) && !a.cleared.includes(name) ? [...a.cleared, name] : a.cleared
+  const releasesHoldShort = a.holdShortLeg !== null && a.holdShortLeg === a.holdLeg && target === name
+  const armed = armHold(graph, { ...a, cleared, holdShortLeg: releasesHoldShort ? null : a.holdShortLeg }, a.leg)
+  const stillHeld = armed.holdLeg !== null && armed.leg >= armed.holdLeg
+  const next: Aircraft = { ...armed, state: armed.state === 'SHORT' && !stillHeld ? 'TAXI' : armed.state }
+  const token = named !== null || isRunwayName(graph, name) ? runwayToken(named ?? name) : taxiways([name])
+  return reply(next, phrase('crossing', token))
 }
+
+/** Stopped at (or about to stop at) the armed hold point, with route still ahead. */
+const heldAtStop = (a: Aircraft): boolean =>
+  a.holdLeg !== null && a.path !== null && a.leg >= a.holdLeg && a.leg < a.path.length - 1
 
 const withTaxiReadback = (
   world: World,
@@ -407,9 +481,11 @@ const withTaxiReadback = (
   readback: (summary: ReadonlyArray<PhraseToken>) => Phrase,
 ): Outcome => {
   const hs = holdShortPoint !== null ? holdShort(world.graph, taxied, holdShortPoint) : null
-  const after = hs !== null && !('error' in hs) ? hs.aircraft : taxied
-  const before = hs !== null && !('error' in hs) ? hs.events : []
-  return reply(after, readback(routeSummary(world.graph, after)), before)
+  if (hs !== null && 'error' in hs) {
+    return hs
+  }
+  const after = hs !== null ? hs.aircraft : taxied
+  return reply(after, readback(routeSummary(world.graph, after)), hs !== null ? hs.events : [])
 }
 
 const executeFor = (world: World, a: Aircraft, command: AtcCommand): Outcome => {
@@ -446,21 +522,27 @@ const executeFor = (world: World, a: Aircraft, command: AtcCommand): Outcome => 
       return reply(next, phrase('pushing back off', gateToken(a.gate ?? '')))
     },
 
-    Taxi: ({ via, holdShort: hs }) => {
+    Taxi: ({ via, cross: crossing, holdShort: hs }) => {
       const tokens = resolveTaxiTokens(graph, via)
       if ('error' in tokens) {
         return fail(tokens.error)
       }
-      const taxied = beginTaxi(world, a, tokens.names, tokens.gate, null)
+      const crossings = resolveCrossings(graph, crossing)
+      if ('error' in crossings) {
+        return fail(crossings.error)
+      }
+      const taxied = beginTaxi(world, a, tokens.names, tokens.gate, null, [...tokens.runways, ...crossings])
       if ('error' in taxied) {
         return fail(taxied.error)
       }
       return withTaxiReadback(world, taxied, hs, (summary) =>
-        summary.length > 0 ? phrase('taxi via', ...summary) : phrase('taxi via the ramp'),
+        summary.length > 0
+          ? phrase('taxi via', ...summary, ...crossingWords(crossing))
+          : phrase('taxi via the ramp', ...crossingWords(crossing)),
       )
     },
 
-    Runway: ({ runway, via, holdShort: hs }) => {
+    Runway: ({ runway, via, cross: crossing, holdShort: hs }) => {
       if (graph.runwayEnds[runway] === undefined) {
         return fail(`no runway ${runway}`)
       }
@@ -468,14 +550,18 @@ const executeFor = (world: World, a: Aircraft, command: AtcCommand): Outcome => 
       if ('error' in tokens) {
         return fail(tokens.error)
       }
-      const taxied = beginTaxi(world, a, tokens.names, null, runway)
+      const crossings = resolveCrossings(graph, crossing)
+      if ('error' in crossings) {
+        return fail(crossings.error)
+      }
+      const taxied = beginTaxi(world, a, tokens.names, null, runway, [...tokens.runways, ...crossings])
       if ('error' in taxied) {
         return fail(taxied.error)
       }
       return withTaxiReadback(world, taxied, hs, (summary) =>
         summary.length > 0
-          ? phrase('runway', runwayToken(runway), ', taxi via', ...summary)
-          : phrase('runway', runwayToken(runway), ', taxi via the field'),
+          ? phrase('runway', runwayToken(runway), ', taxi via', ...summary, ...crossingWords(crossing))
+          : phrase('runway', runwayToken(runway), ', taxi via the field', ...crossingWords(crossing)),
       )
     },
 
@@ -484,7 +570,7 @@ const executeFor = (world: World, a: Aircraft, command: AtcCommand): Outcome => 
     Cross: ({ runway }) => cross(graph, a, runway),
 
     Resume: () => {
-      if (a.holdLeg !== null) {
+      if (heldAtStop(a)) {
         return cross(graph, a, null)
       }
       if (a.state === 'HOLD' || a.state === 'PUSHED' || a.state === 'SHORT') {
@@ -522,13 +608,10 @@ const executeFor = (world: World, a: Aircraft, command: AtcCommand): Outcome => 
       if (route === null) {
         return fail('cannot reach the runway')
       }
-      return reply(
-        { ...withPath(graph, { ...a, cleared }, route), holdLeg: null, state: 'TAXI', lineUpAfterTaxi: true },
-        phrase('line up and wait'),
-      )
+      return reply({ ...withPath(graph, { ...a, cleared }, route), state: 'TAXI', lineUpAfterTaxi: true }, phrase('line up and wait'))
     },
 
-    ClearedForTakeoff: () => {
+    ClearedForTakeoff: ({ heading, turn }) => {
       const end = a.runway !== null ? graph.runwayEnds[a.runway] : undefined
       if (end === undefined) {
         return fail('no departure runway assigned')
@@ -548,9 +631,21 @@ const executeFor = (world: World, a: Aircraft, command: AtcCommand): Outcome => 
         }
         nodes = [...route, ...chain.slice(1)]
       }
+      const rolling: Aircraft = {
+        ...withPath(graph, { ...a, cleared }, nodes),
+        holdLeg: null,
+        state: 'TKOF',
+        lineUpAfterTaxi: false,
+        departureHeading: heading,
+        departureTurn: heading === null ? null : turn,
+      }
+      if (heading === null) {
+        return reply(rolling, phrase('cleared for takeoff runway', runwayToken(a.runway ?? '')))
+      }
+      const lead = turn === 'L' ? 'turn left heading' : turn === 'R' ? 'turn right heading' : 'fly heading'
       return reply(
-        { ...withPath(graph, { ...a, cleared }, nodes), holdLeg: null, state: 'TKOF', lineUpAfterTaxi: false },
-        phrase('cleared for takeoff runway', runwayToken(a.runway ?? '')),
+        rolling,
+        phrase(lead, digits(String(heading).padStart(3, '0')), ', runway', runwayToken(a.runway ?? ''), ', cleared for takeoff'),
       )
     },
 
@@ -618,7 +713,7 @@ const executeFor = (world: World, a: Aircraft, command: AtcCommand): Outcome => 
       }
       const lead = turn === 'L' ? 'turn left heading' : turn === 'R' ? 'turn right heading' : 'heading'
       return reply(
-        { ...a, targetHeading: heading % 360, turn, fixes: [], approach: null, established: false },
+        { ...a, targetHeading: heading % 360, turn, fixes: [], approach: null, established: false, departureHeading: null, departureTurn: null },
         phrase(lead, digits(String(heading).padStart(3, '0'))),
       )
     },
@@ -632,7 +727,10 @@ const executeFor = (world: World, a: Aircraft, command: AtcCommand): Outcome => 
       }
       const at = a.fixes.indexOf(fix)
       const fixes = at >= 0 ? a.fixes.slice(at) : [fix]
-      return reply({ ...a, fixes, turn: null, approach: null, established: false }, phrase('direct', fixToken(fix)))
+      return reply(
+        { ...a, fixes, turn: null, approach: null, established: false, departureHeading: null, departureTurn: null },
+        phrase('direct', fixToken(fix)),
+      )
     },
 
     Speed: ({ knots }) => {
