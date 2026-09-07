@@ -80,6 +80,8 @@ export const StarsMessage = defineMessageUnion({
   ClickedRangeOut: {},
   ClickedCentre: {},
   ClickedMaps: {},
+  /** a pointer went down outside the MAPS panel (and its button) while it was open */
+  PressedOutsideMaps: {},
   ToggledMap: { id: Schema.String },
   CompletedLoadMap: { id: Schema.String },
   FailedLoadMap: { id: Schema.String, error: Schema.String },
@@ -241,6 +243,7 @@ export const starsUpdate = (model: StarsModel, artcc: string, input: StarsInput)
     ClickedRangeOut: () => ({ model: evo(model, { view: (view) => rangeView(Math.min(MAX_RANGE_NM, Math.round((view.w / 2) * 1.5))) }) }),
     ClickedCentre: () => ({ model: evo(model, { view: () => rangeView(DEFAULT_RANGE_NM) }) }),
     ClickedMaps: () => ({ model: evo(model, { mapsOpen: (open) => !open }) }),
+    PressedOutsideMaps: () => ({ model: evo(model, { mapsOpen: () => false }) }),
 
     ToggledMap: ({ id }) => {
       if (model.shown.includes(id)) {

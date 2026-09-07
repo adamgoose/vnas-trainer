@@ -9,7 +9,8 @@ import type { ScopeView } from '../app/model'
 
 export const FIT_PADDING = 0.04
 export const MIN_VIEW_FRACTION = 0.03
-export const MAX_VIEW_FRACTION = 1.6
+/** zoomed right out, the longer side of the field takes this fraction of the matching side of the view */
+export const MAX_VIEW_FRACTION = 3
 export const WHEEL_IN = 0.885
 export const WHEEL_OUT = 1.13
 export const BUTTON_IN = 0.7
@@ -55,11 +56,22 @@ export const fit = (graph: Graph, view: ScopeView): ScopeView => {
   }
 }
 
+/**
+ * The widest view allowed, in feet: the field's width or, in a view taller than
+ * the field is wide, its height scaled by the view's aspect, times the maximum
+ * fraction, so a tall narrow pane can still zoom out to see the whole field.
+ */
+export const maxViewWidthFt = (graph: Graph, view: ScopeView): number => {
+  const { w, h } = worldSize(graph)
+  const aspect = view.height > 0 ? view.width / view.height : 1
+  return MAX_VIEW_FRACTION * Math.max(w, h * aspect)
+}
+
 /** Multiply the visible width by `k` keeping the world point under (x, y) fixed. */
 export const zoomAt = (graph: Graph, view: ScopeView, x: number, y: number, k: number): ScopeView => {
   const { w } = worldSize(graph)
   const wanted = viewWidthFt(view) * k
-  const clamped = Math.max(w * MIN_VIEW_FRACTION, Math.min(w * MAX_VIEW_FRACTION, wanted))
+  const clamped = Math.max(w * MIN_VIEW_FRACTION, Math.min(maxViewWidthFt(graph, view), wanted))
   const scale = view.width / clamped
   const under = canvasToWorld(view, x, y)
   return { ...view, scale, originX: under.x - x / scale, originY: under.y - y / scale }

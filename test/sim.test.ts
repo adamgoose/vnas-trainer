@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { isProp, performance } from '../src/domain/aircraft'
 import { distanceFt, headingDiff } from '../src/domain/geo'
-import { edgeName, holdNodeFor, isRunwayName, runwaysEntered } from '../src/domain/graph'
+import { edgeName, holdNodeFor, isRunwayName, runwayCourse, runwaysEntered } from '../src/domain/graph'
 import { spoken, written } from '../src/domain/phrase'
 import { stepWorld } from '../src/domain/physics'
 import { GROUND_RULES, LOCAL_RULES } from '../src/domain/rules'
@@ -382,6 +382,11 @@ describe('departure', () => {
     expect(pilotLines(luaw.events)).toContain(`${AAL}: lined up runway 30L`)
     const threshold = world.graph.nodes[world.graph.runwayEnds['30L']!.chain[0]!]!
     expect(distanceFt(world.graph.projection, aircraftNamed(luaw.world, AAL).position, threshold)).toBeLessThan(2)
+    const course = runwayCourse(world.graph, '30L')!
+    expect(headingDiff(aircraftNamed(luaw.world, AAL).heading, course)).toBeGreaterThan(30)
+    const aligned = run(luaw.world, 15)
+    expect(headingDiff(aircraftNamed(aligned.world, AAL).heading, course)).toBeLessThan(0.01)
+    expect(aircraftNamed(aligned.world, AAL).state).toBe('LUAW')
     const cleared = command(luaw.world, `${AAL} CTO`)
     expect(pilotLines(cleared.events)).toEqual([`${AAL}: cleared for takeoff runway 30L`])
     expect(aircraftNamed(cleared.world, AAL).state).toBe('TKOF')

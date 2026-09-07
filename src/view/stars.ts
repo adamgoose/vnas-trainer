@@ -318,7 +318,7 @@ export const starsView = Submodel.defineView<StarsModel, StarsMessage, StarsInpu
       h.div(
         [h.Class('sbar')],
         [
-          h.button([h.Type('button'), h.OnClick(StarsMessage.ClickedMaps())], ['MAPS']),
+          h.button([h.Type('button'), h.Class('smaps-btn'), h.OnClick(StarsMessage.ClickedMaps())], ['MAPS']),
           h.button([h.Type('button'), h.AriaLabel('Range down'), h.OnClick(StarsMessage.ClickedRangeIn())], ['RNG−']),
           h.button([h.Type('button'), h.AriaLabel('Range up'), h.OnClick(StarsMessage.ClickedRangeOut())], ['RNG+']),
           h.button([h.Type('button'), h.AriaLabel('Recentre'), h.OnClick(StarsMessage.ClickedCentre())], ['CTR']),

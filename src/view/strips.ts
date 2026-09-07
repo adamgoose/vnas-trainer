@@ -34,7 +34,7 @@ const flightPlanView = (a: Aircraft, h: HtmlBuilder<Message>): Html => {
   )
 }
 
-const stripView = (model: Model, airportId: string, a: Aircraft, h: HtmlBuilder<Message>): Html => {
+export const stripView = (model: Model, airportId: string, a: Aircraft, h: HtmlBuilder<Message>): Html => {
   const pending = a.delay > 0
   const colour = pending ? '#55646c' : STATE_COLOUR[a.state]
   const selected = a.callsign === model.selected
@@ -92,6 +92,13 @@ const stripView = (model: Model, airportId: string, a: Aircraft, h: HtmlBuilder<
       selected ? flightPlanView(a, h) : h.empty,
     ],
   )
+}
+
+/** The selected aircraft's strip, details open, for the top-left corner of the ground scope. */
+export const selectedStripView = (model: Model, h: HtmlBuilder<Message>): Html => {
+  const world = worldOf(model)
+  const a = model.selected === null || world === null ? undefined : world.aircraft.find((x) => x.callsign === model.selected)
+  return a === undefined ? h.empty : h.div([h.Class('scope-strip')], [stripView(model, world?.airport.id ?? '', a, h)])
 }
 
 export const stripsView = (model: Model, h: HtmlBuilder<Message>): Html => {

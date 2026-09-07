@@ -302,6 +302,32 @@ export const sidFromRoute = (route: string | null | undefined): string | null =>
   return m ? m[1]! : null
 }
 
+const AIRWAY = /^[JQVT]\d+$/
+
+/** The SID's transition: "ZMBRO7 ODI J30 …" and "ZMBRO7.ODI …" -> "ODI"; null when the route joins an airway or has none. */
+export const sidTransitionFromRoute = (route: string | null | undefined): string | null => {
+  const tokens = (route ?? '').trim().split(/\s+/)
+  const first = tokens[0] ?? ''
+  if (sidFromRoute(first) === null) {
+    return null
+  }
+  const dotted = /^[A-Z]{2,5}\d\.([A-Z0-9]+)$/.exec(first)
+  if (dotted !== null) {
+    return dotted[1]!
+  }
+  const next = tokens[1] ?? ''
+  return /^[A-Z]{2,5}$/.test(next) && !AIRWAY.test(next) ? next : null
+}
+
+/** "ZMBRO7.ODI" for the data block: the SID with its transition when the route names one. */
+export const departureProcedure = (sid: string | null, route: string | null | undefined): string | null => {
+  if (sid === null) {
+    return null
+  }
+  const transition = sidTransitionFromRoute(route)
+  return transition === null ? sid : `${sid}.${transition}`
+}
+
 /** "… CVE DRLLR5" -> "DRLLR5" */
 export const starFromRoute = (route: string | null | undefined): string | null => {
   const tokens = (route ?? '').trim().split(/\s+/)

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { aircraftType, assembleAirport, compactMap, compactScenario, facilityIndex, formatFrequency, parseLenientJSON, scenarioForAirport, sidFromRoute, starFromRoute, starsForAirport } from '../src/domain/vnas'
+import { aircraftType, assembleAirport, compactMap, compactScenario, departureProcedure, facilityIndex, formatFrequency, parseLenientJSON, scenarioForAirport, sidFromRoute, sidTransitionFromRoute, starFromRoute, starsForAirport } from '../src/domain/vnas'
 
 describe('vNAS transforms', () => {
   test('lenient JSON repairs comment lines, leading zeros and trailing commas', () => {
@@ -20,6 +20,14 @@ describe('vNAS transforms', () => {
   test('SID and STAR come from the first and last route tokens', () => {
     expect(sidFromRoute('ZMBRO7 ODI J30 JOT VHP J24 FLM TAFTT PARQR3')).toBe('ZMBRO7')
     expect(sidFromRoute('ZMBRO7.ODI J30')).toBe('ZMBRO7')
+    expect(sidTransitionFromRoute('ZMBRO7 ODI J30 JOT VHP J24 FLM TAFTT PARQR3')).toBe('ODI')
+    expect(sidTransitionFromRoute('ZMBRO7.ODI J30')).toBe('ODI')
+    expect(sidTransitionFromRoute('COULT1 J34 BAE')).toBeNull()
+    expect(sidTransitionFromRoute('ZMBRO7')).toBeNull()
+    expect(sidTransitionFromRoute('GOLLF GEP5')).toBeNull()
+    expect(departureProcedure('ZMBRO7', 'ZMBRO7 ODI J30 JOT')).toBe('ZMBRO7.ODI')
+    expect(departureProcedure('COULT1', 'COULT1 J34 BAE')).toBe('COULT1')
+    expect(departureProcedure(null, 'GOLLF GEP5')).toBeNull()
     expect(sidFromRoute('J30 JOT')).toBeNull()
     expect(starFromRoute('ZMBRO7 ODI J30 JOT VHP J24 FLM TAFTT PARQR3')).toBe('PARQR3')
     expect(starFromRoute('CVE.DRLLR5')).toBeNull()

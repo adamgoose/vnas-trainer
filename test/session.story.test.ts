@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { Command, given, message, model, story } from 'foldkit/story'
 
-import { HostRoom, JoinRoom, LeaveRoom, LoadAirport, LoadIndex, LoadPavement, ProbeRecognition, ReadDeepLink, ReplaceDeepLink, SaveSettings, SendSession, Speak } from '../src/app/commands'
+import { FocusCommand, HostRoom, JoinRoom, LeaveRoom, LoadAirport, LoadIndex, LoadPavement, ProbeRecognition, ReadDeepLink, ReplaceDeepLink, SaveSettings, SendSession, Speak } from '../src/app/commands'
 import { LoadStarsMap, StarsMessage, defaultMaps } from '../src/positions/local/stars'
 import { Message } from '../src/app/message'
 import { type Model, initialModel, worldOf } from '../src/app/model'
@@ -95,11 +95,14 @@ describe('hosting', () => {
     story(
       update,
       given(hosting()),
+      message(Message.ClickedStrip({ callsign: 'DAL2057' })),
+      Command.resolve(FocusCommand, Message.CompletedFocusCommand()),
       message(Message.ReceivedSession({ peerId: 'guest-1', event: SessionEvent.RequestedCommand({ callsign: 'AAL894', command: AtcCommand.Push({ taxiway: null }), said: 'AAL894 PUSH' }) })),
       Command.expectExact(Speak, SendSession({ event: SessionEvent.Commanded({ callsign: 'AAL894', command: AtcCommand.Push({ taxiway: null }), said: 'AAL894 PUSH' }), target: null })),
       Command.resolve(Speak, Message.CompletedSpeak()),
       Command.resolve(SendSession, Message.CompletedSendSession()),
       model((m) => {
+        expect(m.selected).toBe('DAL2057')
         expect(m.log[1]?.text).toBe('AAL894 PUSH')
         expect(m.log[0]?.text).toBe('pushing back off E16')
       }),
@@ -173,12 +176,15 @@ describe('joining', () => {
       model((m) => expect(worldOf(m)!.tick).toBe(7)),
       message(Message.ReceivedSession({ peerId: 'stranger', event: SessionEvent.Stepped({ steps: 7 }) })),
       model((m) => expect(worldOf(m)!.tick).toBe(7)),
+      message(Message.ClickedStrip({ callsign: 'DAL2057' })),
+      Command.resolve(FocusCommand, Message.CompletedFocusCommand()),
       message(Message.ReceivedSession({ peerId: 'host-1', event: SessionEvent.Commanded({ callsign: 'AAL894', command: AtcCommand.Push({ taxiway: null }), said: 'AAL894 PUSH' }) })),
       Command.resolve(Speak, Message.CompletedSpeak()),
       model((m) => {
         expect(worldOf(m)!.aircraft.find((a) => a.callsign === 'AAL894')!.state).toBe('PUSH')
         expect(m.log[1]?.text).toBe('AAL894 PUSH')
-        expect(m.selected).toBe('AAL894')
+        /** the peer's command leaves this browser's selection alone */
+        expect(m.selected).toBe('DAL2057')
       }),
       message(Message.UpdatedCommandText({ value: 'AAL894 HOLD' })),
       message(Message.SubmittedCommand()),

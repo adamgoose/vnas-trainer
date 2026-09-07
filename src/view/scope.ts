@@ -14,6 +14,7 @@ import { ScopeSurface } from '../app/commands'
 import type { Aircraft, AircraftState } from '../domain/aircraft'
 import type { Graph } from '../domain/graph'
 import type { Ring, VideoMap, VideoMapFeature } from '../domain/videomap'
+import { departureProcedure } from '../domain/vnas'
 import { toCanvas, toWorld, viewWidthFt, worldSize } from './viewport'
 
 export const COLOURS = {
@@ -262,7 +263,7 @@ const staticCanvas = (graph: Graph, view: ScopeView, pavementId: string | null, 
 
 const lazyStatic = createLazy()
 
-const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: boolean, showTags: boolean): ReadonlyArray<Canvas.Shape> => {
+const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: boolean, showTags: boolean, accent: string): ReadonlyArray<Canvas.Shape> => {
   const { w } = worldSize(graph)
   const s = viewWidthFt(view) / w
   const size = (7.5 * view.width) / 1000 * (Math.max(0.55, Math.min(1.6, s)) / s)
@@ -308,9 +309,13 @@ const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: bo
         : a.runway !== null
           ? `${a.type} ${a.runway}`
           : `${a.type}${a.destinationGate !== null ? ' ' + a.destinationGate : ''}`
+    const procedure = departureProcedure(a.flightPlan.sid, a.flightPlan.route)
     shapes.push(
       Canvas.Text({ x: tx, y: ty, content: a.callsign, font: `600 ${font.toFixed(1)}px ${MONO}`, fill: selected ? COLOURS.cyan : COLOURS.ink, align: 'Left', baseline: 'Alphabetic' }),
       Canvas.Text({ x: tx, y: ty + font * 1.12, content: second, font: `${(font * 0.86).toFixed(1)}px ${MONO}`, fill: COLOURS.ink3, align: 'Left', baseline: 'Alphabetic' }),
+      ...(procedure === null
+        ? []
+        : [Canvas.Text({ x: tx, y: ty + font * 2.1, content: procedure, font: `${(font * 0.86).toFixed(1)}px ${MONO}`, fill: accent, align: 'Left', baseline: 'Alphabetic' })]),
     )
   }
   return shapes
@@ -330,7 +335,7 @@ const scopeCanvas = (model: Model, h: HtmlBuilder<Message>): Html => {
   const shapes: ReadonlyArray<Canvas.Shape> = [
     Canvas.Group({
       scale: { x: dpr, y: dpr },
-      shapes: world.aircraft.filter((a) => a.delay <= 0).flatMap((a) => aircraftShapes(graph, view, a, a.callsign === model.selected, showTags)),
+      shapes: world.aircraft.filter((a) => a.delay <= 0).flatMap((a) => aircraftShapes(graph, view, a, a.callsign === model.selected, showTags, accentFor(model.settings.mode))),
     }),
   ]
   return Canvas.view(
@@ -391,7 +396,8 @@ const LEGEND: ReadonlyArray<readonly [string, string]> = [
   [COLOURS.cyan, 'runway / airborne'],
 ]
 
-export const scopeView = (model: Model, h: HtmlBuilder<Message>): Html => {
+/** `inset` is drawn in the top-left corner: the selected aircraft's strip (see `selectedStripView`). */
+export const scopeView = (model: Model, h: HtmlBuilder<Message>, inset: Html = h.empty): Html => {
   const world = worldOf(model)
   const overlay = overlayText(model)
   const active = world === null ? 0 : world.aircraft.filter((a) => a.delay <= 0).length
@@ -402,6 +408,7 @@ export const scopeView = (model: Model, h: HtmlBuilder<Message>): Html => {
     [
       staticScope(model, h),
       scopeCanvas(model, h),
+      inset,
       h.div(
         [h.Class('scope-keys')],
         LEGEND.map(([colour, label]) => h.span([], [h.i([h.Style({ background: colour })]), label])),

@@ -46,6 +46,8 @@ export const CONFLICT_SLOW_KT = 7
 export const CONFLICT_STOP_FT = 180
 export const GIVE_WAY_CLEAR_FT = 420
 export const BREAK_S = 15
+/** degrees per second an aircraft swings onto the runway heading after lining up */
+export const LINE_UP_TURN_DEG_S = 12
 export const FINAL_KT = 140
 export const GLIDE_FT_PER_NM = 318
 export const GO_AROUND_KT = 160
@@ -499,6 +501,17 @@ const holdPointPhrase = (graph: Graph, name: string): Phrase =>
     ? phrase('holding short of', runwayToken(name))
     : phrase('holding short of', taxiways([name]))
 
+/** Lined up, the aircraft swings onto the runway heading at the ground turn rate. */
+const alignedOnRunway = (graph: Graph, a: Aircraft, dt: number): number => {
+  const course = a.runway !== null ? runwayCourse(graph, a.runway) : null
+  if (course === null) {
+    return a.heading
+  }
+  const delta = turnDelta(a.heading, course)
+  const step = LINE_UP_TURN_DEG_S * dt
+  return Math.abs(delta) <= step ? course : (a.heading + Math.sign(delta) * step + 360) % 360
+}
+
 const stepGround = (world: World, a: Aircraft, dt: number): StepOut => {
   const graph = world.graph
   const proj = graph.projection
@@ -617,7 +630,10 @@ export const stepAircraft = (world: World, input: Aircraft, dt: number): StepOut
       ? { aircraft: null, events: [SimEvent.Removed({ callsign: a.callsign, text: `${a.callsign} landed runway ${a.runway ?? ''}` })] }
       : autoExit(world, rolled)
   }
-  if (a.state === 'HOLD' || a.state === 'LUAW' || a.state === 'PUSHED' || a.state === 'SHORT') {
+  if (a.state === 'LUAW') {
+    return keep({ ...a, speed: Math.max(0, a.speed - 14 * dt), heading: alignedOnRunway(graph, a, dt) })
+  }
+  if (a.state === 'HOLD' || a.state === 'PUSHED' || a.state === 'SHORT') {
     return keep({ ...a, speed: Math.max(0, a.speed - 14 * dt) })
   }
   return stepGround(world, a, dt)

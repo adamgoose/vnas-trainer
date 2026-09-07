@@ -6,6 +6,7 @@ import type { SessionEvent } from '../domain/session'
 import { Message } from './message'
 import { type Model } from './model'
 import { SIM_STEP_S } from '../domain/physics'
+import { StarsMessage } from '../positions/local/stars'
 import type { Microphone } from '../services/microphone'
 import type { OpenRouter } from '../services/openRouter'
 import { Recognition, RecognitionEvent } from '../services/recognition'
@@ -44,6 +45,24 @@ export const subscriptions = Subscription.make<Model, Message, Services>()((entr
       type: 'hashchange',
       toMessage: () => Message.ChangedDeepLink(parseDeepLink(globalThis.location.hash)),
     }),
+  ),
+  /** while the STARS MAPS panel is open, a pointer down anywhere outside it (or its button) closes it */
+  mapsOutside: entry(
+    { open: Schema.Boolean },
+    {
+      modelToDependencies: (model) => ({ open: model.stars.mapsOpen }),
+      dependenciesToStream: ({ open }) =>
+        open
+          ? Subscription.fromEventFilterMap<PointerEvent, Message>({
+              target: () => globalThis.document,
+              type: 'pointerdown',
+              toMessage: (event) =>
+                event.target instanceof Element && event.target.closest('.smaps, .smaps-btn') !== null
+                  ? Option.none()
+                  : Option.some(Message.GotStars({ message: StarsMessage.PressedOutsideMaps() })),
+            })
+          : Stream.empty,
+    },
   ),
   keys: entry(
     { dialogOpen: Schema.Boolean },

@@ -9,7 +9,7 @@ import { dialogView } from './dialogs'
 import { headerView } from './header'
 import { accentFor, scopeView } from './scope'
 import { starsView } from './stars'
-import { stripsView } from './strips'
+import { selectedStripView, stripsView } from './strips'
 
 export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
   const info = infoOf(model)
@@ -29,7 +29,7 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
       [h.Class(`app ${model.settings.mode}`)],
       [
         headerView(model, h),
-        h.main([], [h.div([h.Class(`scopes ${pane}`)], [pane === 'stars' ? h.empty : scopeView(model, h), pane === 'ground' ? h.empty : radar]), stripsView(model, h)]),
+        h.main([], [h.div([h.Class(`scopes ${pane}`)], [pane === 'stars' ? h.empty : scopeView(model, h, selectedStripView(model, h)), pane === 'ground' ? h.empty : radar]), stripsView(model, h)]),
         deckView(model, h),
         dialogView(model, h),
       ],

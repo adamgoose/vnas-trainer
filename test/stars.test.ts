@@ -37,6 +37,16 @@ describe('STARS pane', () => {
     expect(zoomAt(model, 400, 200, 100).w).toBe(320)
   })
 
+  test('MAPS toggles the panel; a press outside it closes it and is otherwise ignored', () => {
+    const run = (m: typeof initialStars, message: StarsMessage) => starsUpdate(m, 'ZMP', { message, world: null }).model
+    const opened = run(initialStars, StarsMessage.ClickedMaps())
+    expect(opened.mapsOpen).toBe(true)
+    const closed = run(opened, StarsMessage.PressedOutsideMaps())
+    expect(closed.mapsOpen).toBe(false)
+    expect(run(closed, StarsMessage.PressedOutsideMaps()).mapsOpen).toBe(false)
+    expect(run(opened, StarsMessage.ClickedMaps()).mapsOpen).toBe(false)
+  })
+
   test('range buttons step by 1.5 within 3 to 160 nm and CTR restores 15', () => {
     const run = (m: typeof initialStars, message: StarsMessage) => starsUpdate(m, 'ZMP', { message, world: null }).model
     let m = initialStars

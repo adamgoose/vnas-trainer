@@ -257,12 +257,13 @@ const receiveSession = (model: Model, peerId: string, event: SessionEvent): Retu
       const stepped = stepWorldTimes(world, steps)
       return applyEvents(withWorld(model, stepped.world), stepped.events)
     },
+    /** A peer's command never moves this browser's selection: the user may be mid-way through typing for another aircraft. */
     Commanded: ({ callsign, command, said }) => {
       if (!isGuest(model) || peerId !== model.session.hostId) {
         return { model }
       }
       const logged = said === null ? model : pushLog(model, 'atc', null, said)
-      const ran = runCommand(evo(logged, { selected: (s) => callsign ?? s }), callsign, command)
+      const ran = runCommand(logged, callsign, command)
       return { model: ran.model, commands: ran.commands }
     },
     Controlled: ({ control: c }) => (isGuest(model) && peerId === model.session.hostId ? applyControl(model, c) : { model }),
@@ -271,7 +272,7 @@ const receiveSession = (model: Model, peerId: string, event: SessionEvent): Retu
         return { model }
       }
       const logged = said === null ? model : pushLog(model, 'atc', null, said)
-      const ran = runCommand(evo(logged, { selected: (s) => callsign ?? s }), callsign, command, false, said)
+      const ran = runCommand(logged, callsign, command, false, said)
       return { model: ran.model, commands: ran.commands }
     },
     RequestedControl: ({ control: c }) => (isHost(model) ? control(model, c) : { model }),
