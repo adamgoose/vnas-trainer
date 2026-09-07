@@ -7,6 +7,7 @@ import { Schema } from 'effect'
 import { defineTaggedUnion } from 'foldkit/schema'
 
 import { CatalogIndex, Stars } from '../domain/catalog'
+import { Snapshot } from '../domain/session'
 import { AtcCommand } from '../domain/commands'
 import { World } from '../domain/world'
 import { StarsModel, initialStars } from '../positions/local/stars'
@@ -85,11 +86,35 @@ export const CommandRecord = Schema.Struct({
 })
 export type CommandRecord = typeof CommandRecord.Type
 
-export const Dialog = Schema.Literals(['none', 'help', 'settings'])
+export const Dialog = Schema.Literals(['none', 'help', 'settings', 'session'])
 export type Dialog = typeof Dialog.Type
 
-export const DeepLink = Schema.Struct({ airport: Schema.NullOr(Schema.String), scenario: Schema.NullOr(Schema.String) })
+export const DeepLink = Schema.Struct({
+  airport: Schema.NullOr(Schema.String),
+  scenario: Schema.NullOr(Schema.String),
+  /** a session room code from a `#join/CODE` link */
+  room: Schema.NullOr(Schema.String),
+})
 export type DeepLink = typeof DeepLink.Type
+
+export const SessionRole = Schema.Literals(['solo', 'host', 'guest'])
+export type SessionRole = typeof SessionRole.Type
+
+export const SessionState = Schema.Struct({
+  role: SessionRole,
+  room: Schema.NullOr(Schema.String),
+  status: Schema.Literals(['idle', 'connecting', 'connected', 'failed']),
+  error: Schema.NullOr(Schema.String),
+  peers: Schema.Array(Schema.String),
+  /** the peer whose snapshots and steps we follow (guests) */
+  hostId: Schema.NullOr(Schema.String),
+  /** a snapshot waiting for its airport to load (guests) */
+  pendingSnapshot: Schema.NullOr(Snapshot),
+  roomInput: Schema.String,
+})
+export type SessionState = typeof SessionState.Type
+
+export const initialSession: SessionState = { role: 'solo', room: null, status: 'idle', error: null, peers: [], hostId: null, pendingSnapshot: null, roomInput: '' }
 
 export const PttState = Schema.Literals(['idle', 'tx', 'busy', 'listen'])
 export type PttState = typeof PttState.Type
@@ -140,12 +165,13 @@ export const Model = Schema.Struct({
   /** the transient "translating…" line shown at the top of the log */
   pendingAi: Schema.NullOr(Schema.String),
   recognitionAvailable: Schema.Boolean,
+  session: SessionState,
 })
 export type Model = typeof Model.Type
 
 export const initialModel: Model = {
   settings: defaultSettings,
-  deepLink: { airport: null, scenario: null },
+  deepLink: { airport: null, scenario: null, room: null },
   index: IndexLoad.Loading(),
   airport: AirportLoad.Idle(),
   scenarioLoading: null,
@@ -171,7 +197,11 @@ export const initialModel: Model = {
   ptt: 'idle',
   pendingAi: null,
   recognitionAvailable: false,
+  session: initialSession,
 }
+
+export const isHost = (model: Model): boolean => model.session.role === 'host'
+export const isGuest = (model: Model): boolean => model.session.role === 'guest'
 
 export const worldOf = (model: Model): World | null => (model.airport._tag === 'Ready' ? model.airport.world : null)
 export const infoOf = (model: Model): AirportInfo | null => (model.airport._tag === 'Ready' ? model.airport.info : null)

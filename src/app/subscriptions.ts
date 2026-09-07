@@ -2,6 +2,7 @@ import { Clock, Effect, Option, Schema, Stream } from 'effect'
 import { Subscription } from 'foldkit'
 
 import { parseDeepLink } from './commands'
+import type { SessionEvent } from '../domain/session'
 import { Message } from './message'
 import { type Model } from './model'
 import { SIM_STEP_S } from '../domain/physics'
@@ -9,13 +10,14 @@ import type { Microphone } from '../services/microphone'
 import type { OpenRouter } from '../services/openRouter'
 import { Recognition, RecognitionEvent } from '../services/recognition'
 import type { SettingsStore } from '../services/settings'
+import { Session, SessionIncoming } from '../services/session'
 import { Speech, SpeechEvent } from '../services/speech'
 import type { VideoMaps } from '../services/videoMaps'
 import type { VnasData } from '../services/vnasData'
 
 export const TICK_MS = SIM_STEP_S * 1000
 
-export type Services = VnasData | VideoMaps | SettingsStore | OpenRouter | Speech | Microphone | Recognition
+export type Services = VnasData | VideoMaps | SettingsStore | OpenRouter | Speech | Microphone | Recognition | Session
 
 const isTyping = (): boolean => {
   const el = globalThis.document?.activeElement
@@ -26,7 +28,7 @@ export const subscriptions = Subscription.make<Model, Message, Services>()((entr
   tick: entry(
     { isActive: Schema.Boolean },
     {
-      modelToDependencies: (model) => ({ isActive: model.running && model.airport._tag === 'Ready' }),
+      modelToDependencies: (model) => ({ isActive: model.running && model.airport._tag === 'Ready' && model.session.role !== 'guest' }),
       dependenciesToStream: ({ isActive }) =>
         isActive
           ? Stream.tick(`${TICK_MS} millis`).pipe(
@@ -82,6 +84,22 @@ export const subscriptions = Subscription.make<Model, Message, Services>()((entr
     Stream.unwrap(
       Effect.map(Speech, (speech) =>
         speech.events.pipe(Stream.map((event) => SpeechEvent.match(event, { FellBack: ({ error }) => Message.ReportedSpeechFallback({ error }) }))),
+      ),
+    ),
+  ),
+  sessionEvents: Subscription.persistent(
+    Stream.unwrap(
+      Effect.map(Session, (session) =>
+        session.events.pipe(
+          Stream.map((event) =>
+            SessionIncoming.match<Message>(event, {
+              PeerJoined: ({ peerId }) => Message.PeerJoined({ peerId }),
+              PeerLeft: ({ peerId }) => Message.PeerLeft({ peerId }),
+              Received: ({ peerId, event: received }) => Message.ReceivedSession({ peerId, event: received as SessionEvent }),
+              JoinFailed: ({ error }) => Message.FailedSession({ error }),
+            }),
+          ),
+        ),
       ),
     ),
   ),

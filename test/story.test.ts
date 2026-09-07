@@ -20,7 +20,7 @@ const big = msp.scen.reduce((best, s) => (s.ac.length > best.ac.length ? s : bes
 /** The model after the whole load chain, with the biggest scenario applied. */
 const ready = (): Model => {
   let m = update(initialModel, Message.CompletedLoadSettings({ settings: defaultSettings })).model
-  m = update(m, Message.CompletedReadDeepLink({ airport: 'MSP', scenario: big.id })).model
+  m = update(m, Message.CompletedReadDeepLink({ airport: 'MSP', scenario: big.id, room: null })).model
   m = update(m, Message.ResizedScope({ width: 1000, height: 700, devicePixelRatio: 2 })).model
   m = update(m, Message.CompletedLoadIndex({ index })).model
   m = update(m, Message.CompletedLoadAirport({ airport: msp })).model
@@ -40,7 +40,7 @@ describe('boot chain', () => {
       message(Message.CompletedLoadSettings({ settings: defaultSettings })),
       Command.expectExact(ReadDeepLink, ProbeRecognition),
       Command.resolve(ProbeRecognition, Message.CompletedProbeRecognition({ available: false })),
-      Command.resolve(ReadDeepLink, Message.CompletedReadDeepLink({ airport: null, scenario: null })),
+      Command.resolve(ReadDeepLink, Message.CompletedReadDeepLink({ airport: null, scenario: null, room: null })),
       Command.expectExact(LoadIndex({ source: DataSource.Catalog() })),
       Command.resolve(LoadIndex, Message.CompletedLoadIndex({ index })),
       Command.expectExact(LoadAirport({ source: DataSource.Catalog(), id: 'MSP', artcc: 'ZMP' })),
@@ -78,21 +78,21 @@ describe('boot chain', () => {
   test('a deep link picks the airport and scenario; otherwise the busiest airport loads', () => {
     story(
       update,
-      given({ ...initialModel, deepLink: { airport: 'FCM', scenario: null } }),
+      given({ ...initialModel, deepLink: { airport: 'FCM', scenario: null, room: null } }),
       message(Message.CompletedLoadIndex({ index })),
       Command.expectExact(LoadAirport({ source: DataSource.Catalog(), id: 'FCM', artcc: 'ZMP' })),
       Command.resolve(LoadAirport, Message.FailedLoadAirport({ id: 'FCM', error: 'x' })),
     )
     story(
       update,
-      given({ ...initialModel, deepLink: { airport: 'ZZZ', scenario: null } }),
+      given({ ...initialModel, deepLink: { airport: 'ZZZ', scenario: null, room: null } }),
       message(Message.CompletedLoadIndex({ index })),
       Command.expectExact(LoadAirport({ source: DataSource.Catalog(), id: 'MSP', artcc: 'ZMP' })),
       Command.resolve(LoadAirport, Message.FailedLoadAirport({ id: 'MSP', error: 'x' })),
     )
     story(
       update,
-      given({ ...initialModel, index: { _tag: 'Ready', index }, airport: { _tag: 'Loading', id: 'MSP' }, deepLink: { airport: 'MSP', scenario: big.id } }),
+      given({ ...initialModel, index: { _tag: 'Ready', index }, airport: { _tag: 'Loading', id: 'MSP' }, deepLink: { airport: 'MSP', scenario: big.id, room: null } }),
       message(Message.CompletedLoadAirport({ airport: msp })),
       Command.expectHas(LoadScenario({ source: DataSource.Catalog(), airportId: 'MSP', scenarioId: big.id })),
       Command.resolve(LoadScenario, Message.FailedLoadScenario({ error: 'x' })),

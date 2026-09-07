@@ -17,6 +17,10 @@ export const Settings = Schema.Struct({
   radio: Schema.Boolean,
   mode: Schema.Literals(['ground', 'tower']),
   view: Schema.Literals(['ground', 'both', 'stars']),
+  /** shared sessions: an optional TURN relay for NATs that block direct connections */
+  turnUrl: Schema.String,
+  turnUsername: Schema.String,
+  turnCredential: Schema.String,
 })
 export type Settings = typeof Settings.Type
 
@@ -35,6 +39,9 @@ export const defaultSettings: Settings = {
   radio: true,
   mode: 'ground',
   view: 'both',
+  turnUrl: '',
+  turnUsername: '',
+  turnCredential: '',
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)

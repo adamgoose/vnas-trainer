@@ -17,7 +17,8 @@
   "dependencies": {
     "@effect/platform-browser": "4.0.0-rc.112",
     "effect": "4.0.0-rc.112",
-    "foldkit": "0.158.0"
+    "foldkit": "0.158.0",
+    "trystero": "^0.25.4"
   },
   "devDependencies": {
     "@foldkit/devtools": "0.158.0",

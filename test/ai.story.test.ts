@@ -15,7 +15,7 @@ const keyed = { ...defaultSettings, key: 'sk-test', model: 'test/model', audioMo
 
 const ready = (settings = defaultSettings): Model => {
   let m = update(initialModel, Message.CompletedLoadSettings({ settings })).model
-  m = update(m, Message.CompletedReadDeepLink({ airport: 'MSP', scenario: big.id })).model
+  m = update(m, Message.CompletedReadDeepLink({ airport: 'MSP', scenario: big.id, room: null })).model
   m = update(m, Message.ResizedScope({ width: 1000, height: 700, devicePixelRatio: 1 })).model
   m = update(m, Message.CompletedLoadIndex({ index: { built: '', artccs: [{ id: 'ZMP', name: 'Minneapolis ARTCC', airports: [{ id: 'MSP', name: 'Minneapolis ATCT', n: 64, asdex: true, gates: 220, taxi: 106, stars: true }] }] } })).model
   m = update(m, Message.CompletedLoadAirport({ airport: msp })).model

@@ -11,6 +11,9 @@ import { evo } from 'foldkit/struct'
 import {
   BlurCommand,
   FocusCommand,
+  HostRoom,
+  JoinRoom,
+  LeaveRoom,
   LoadAirport,
   LoadBrowserVoices,
   LoadIndex,
@@ -22,6 +25,7 @@ import {
   ReadDeepLink,
   ReplaceDeepLink,
   SaveSettings,
+  SendSession,
   Speak,
   StartRecognition,
   StartRecording,
@@ -35,7 +39,7 @@ import {
   TranslateText,
 } from './commands'
 import { Message } from './message'
-import { AirportLoad, type AirportInfo, IndexLoad, type LogLine, type Model, Pavement, infoOf, initialModel, worldOf } from './model'
+import { AirportLoad, type AirportInfo, IndexLoad, type LogLine, type Model, Pavement, infoOf, initialModel, initialSession, isGuest, isHost, worldOf } from './model'
 import type { Services } from './subscriptions'
 import { TICK_MS } from './subscriptions'
 import type { AirportFile, CatalogIndex } from '../domain/catalog'
@@ -44,9 +48,11 @@ import { type Phrase, spoken, spokenCallsign, spokenFreeText, written } from '..
 import { MAX_STEPS_PER_TICK, stepWorldTimes } from '../domain/physics'
 import { type Translation, buildPrompt } from '../domain/prompt'
 import { loadScenario } from '../domain/scenario'
+import { SessionControl, SessionEvent, type Snapshot, isRoomCode, normaliseRoomCode } from '../domain/session'
 import { SimEvent, type World, makeWorld, matchCallsign } from '../domain/world'
 import { type PositionMode, positionFor } from '../positions'
 import { StarsOut, starsInit, starsUpdate } from '../positions/local/stars'
+import { type TurnServer } from '../services/session'
 import { type Settings, defaultSettings } from '../services/settings'
 import { sourceForProxy } from '../services/vnasData'
 import { BUTTON_IN, BUTTON_OUT, WHEEL_IN, WHEEL_OUT, fit, hitTest, pan, resize, zoomAt, zoomCentre } from '../view/viewport'
@@ -132,7 +138,8 @@ export const applyEvents = (model: Model, events: ReadonlyArray<SimEvent>, optio
 
 type Ran = Readonly<{ model: Model; commands: Commands; ok: boolean }>
 
-const runCommand = (model: Model, callsign: string | null, command: AtcCommand, quiet = false): Ran => {
+/** Execute a command here. On the host the executed command is also broadcast so every peer applies it. */
+const runCommand = (model: Model, callsign: string | null, command: AtcCommand, quiet = false, said: string | null = null): Ran => {
   const world = worldOf(model)
   if (world === null) {
     return { model, commands: [], ok: false }
@@ -145,8 +152,130 @@ const runCommand = (model: Model, callsign: string | null, command: AtcCommand, 
     commandLog: (log) => [...log, { tick: world.tick, callsign, command }],
     selected: (s) => (command._tag === 'Delete' && s === callsign ? null : s),
   })
-  return { ...applyEvents(recorded, result.events, { quiet }), ok: true }
+  const applied = applyEvents(recorded, result.events, { quiet })
+  return { model: applied.model, commands: [...applied.commands, ...broadcast(model, SessionEvent.Commanded({ callsign, command, said }))], ok: true }
 }
+
+/**
+ * Where a command goes: a guest asks the host and applies it when the host's
+ * broadcast comes back; the host and a solo player execute it here.
+ */
+const dispatchCommand = (model: Model, callsign: string | null, command: AtcCommand, said: string | null, quiet = false): Ran =>
+  isGuest(model)
+    ? { model, commands: [SendSession({ event: SessionEvent.RequestedCommand({ callsign, command, said }), target: model.session.hostId })], ok: true }
+    : runCommand(model, callsign, command, quiet, said)
+
+// SESSION HELPERS
+
+const turnOf = (settings: Settings): TurnServer | null =>
+  settings.turnUrl.trim() === '' ? null : { url: settings.turnUrl.trim(), username: settings.turnUsername, credential: settings.turnCredential }
+
+const broadcast = (model: Model, event: SessionEvent): Commands => (isHost(model) ? [SendSession({ event, target: null })] : [])
+
+const snapshotOf = (model: Model): Snapshot | null => {
+  const world = worldOf(model)
+  const info = infoOf(model)
+  if (world === null || info === null) {
+    return null
+  }
+  return { airportId: info.id, artcc: info.artcc, scenarioId: world.scenario?.id ?? null, world, running: model.running, rate: model.rate, mode: model.settings.mode }
+}
+
+const withSession = (model: Model, patch: Partial<Model['session']>): Model => evo(model, { session: (session) => ({ ...session, ...patch }) })
+
+/** Session-wide state that is not an aircraft command; applied the same way on every peer. */
+const applyControl = (model: Model, control: SessionControl): Return =>
+  SessionControl.match<Return>(control, {
+    SetRunning: ({ running }) => ({ model: evo(model, { running: () => running, lastTickAt: () => null }) }),
+    SetRate: ({ rate }) => ({ model: evo(model, { rate: () => rate }) }),
+    SetArrivals: ({ enabled }) => {
+      const world = worldOf(model)
+      if (world === null) {
+        return { model }
+      }
+      const next = withWorld(model, { ...world, arrivalsEnabled: enabled, nextArrivalAt: world.simTime + 5 })
+      return {
+        model: pushLog(next, 'sys', null, enabled ? `arrival generator on — ${world.airport.fleet.length > 0 ? `${world.airport.id} fleet mix` : 'generic GA mix'}` : 'arrival generator off'),
+      }
+    },
+    SetPosition: ({ mode }) => {
+      const settings = { ...model.settings, mode }
+      const world = worldOf(model)
+      const switched = evo(model, { settings: () => settings, draft: () => settings })
+      const withRules = world === null ? switched : withWorld(switched, { ...world, rules: rulesFor(mode) })
+      const logged = world === null ? withRules : pushLog(withRules, 'sys', null, `${positionLabel(mode)} position — try: ${positionTips(mode, world)}`)
+      return { model: logged, commands: [SaveSettings({ settings })] }
+    },
+  })
+
+/** A control from the UI: guests ask the host; the host applies and broadcasts. */
+const control = (model: Model, c: SessionControl): Return => {
+  if (isGuest(model)) {
+    return { model, commands: [SendSession({ event: SessionEvent.RequestedControl({ control: c }), target: model.session.hostId })] }
+  }
+  const applied = applyControl(model, c)
+  return { model: applied.model, commands: [...(applied.commands ?? []), ...broadcast(model, SessionEvent.Controlled({ control: c }))] }
+}
+
+/** A guest takes the host's picture: the World, clock state and position; the log starts over. */
+const applySnapshot = (model: Model, snapshot: Snapshot, hostId: string): Return => {
+  const info = infoOf(model)
+  if (info === null || info.id !== snapshot.airportId) {
+    return {
+      model: withSession(evo(model, { airport: () => AirportLoad.Loading({ id: snapshot.airportId }), pavement: () => Pavement.None(), selected: () => null }), { pendingSnapshot: snapshot, hostId }),
+      commands: [LoadAirport({ source: sourceForProxy(model.settings.proxy), id: snapshot.airportId, artcc: snapshot.artcc })],
+    }
+  }
+  const settings = { ...model.settings, mode: snapshot.mode }
+  const taken = evo(withWorld(model, snapshot.world), {
+    running: () => snapshot.running,
+    rate: () => snapshot.rate,
+    settings: () => settings,
+    draft: () => settings,
+    log: () => [],
+    commandLog: () => [],
+    selected: () => null,
+    scenarioLoading: () => null,
+    lastTickAt: () => null,
+  })
+  return {
+    model: pushLog(withSession(taken, { pendingSnapshot: null, hostId, status: 'connected' }), 'sys', null, `joined session ${model.session.room ?? ''} — following ${snapshot.airportId}`),
+    commands: [SaveSettings({ settings })],
+  }
+}
+
+/** What a peer sent us, by our role. */
+const receiveSession = (model: Model, peerId: string, event: SessionEvent): Return =>
+  SessionEvent.match<Return>(event, {
+    Snapshot: ({ snapshot }) => (isGuest(model) ? applySnapshot(model, snapshot, peerId) : { model }),
+    Stepped: ({ steps }) => {
+      const world = worldOf(model)
+      if (!isGuest(model) || world === null || peerId !== model.session.hostId) {
+        return { model }
+      }
+      const stepped = stepWorldTimes(world, steps)
+      return applyEvents(withWorld(model, stepped.world), stepped.events)
+    },
+    Commanded: ({ callsign, command, said }) => {
+      if (!isGuest(model) || peerId !== model.session.hostId) {
+        return { model }
+      }
+      const logged = said === null ? model : pushLog(model, 'atc', null, said)
+      const ran = runCommand(evo(logged, { selected: (s) => callsign ?? s }), callsign, command)
+      return { model: ran.model, commands: ran.commands }
+    },
+    Controlled: ({ control: c }) => (isGuest(model) && peerId === model.session.hostId ? applyControl(model, c) : { model }),
+    RequestedCommand: ({ callsign, command, said }) => {
+      if (!isHost(model)) {
+        return { model }
+      }
+      const logged = said === null ? model : pushLog(model, 'atc', null, said)
+      const ran = runCommand(evo(logged, { selected: (s) => callsign ?? s }), callsign, command, false, said)
+      return { model: ran.model, commands: ran.commands }
+    },
+    RequestedControl: ({ control: c }) => (isHost(model) ? control(model, c) : { model }),
+    RequestedScenario: ({ scenarioId }) => (isHost(model) ? selectScenario(model, scenarioId) : { model }),
+  })
 
 const airportInfo = (airport: AirportFile): AirportInfo => ({
   id: airport.id,
@@ -194,9 +323,15 @@ const applyScenario = (model: Model, scenarioId: string | null, scenario: Parame
     Object.keys(loaded.world.graph.taxiways).length > 0
       ? `${positionLabel(model.settings.mode)} position. Select an aircraft, then try: ${positionTips(model.settings.mode, loaded.world)}`
       : 'This training map has runways only — no taxiways, so PUSH and TAXI are unavailable here. Try: LUAW · CTO · Arrivals.'
+  const withTips = pushLog(announced.model, 'sys', null, tips)
+  const snapshot = snapshotOf(withTips)
   return {
-    model: pushLog(announced.model, 'sys', null, tips),
-    commands: [...announced.commands, ReplaceDeepLink({ airport: info.id, scenario: scenarioId })],
+    model: withTips,
+    commands: [
+      ...announced.commands,
+      ReplaceDeepLink({ airport: info.id, scenario: scenarioId }),
+      ...(snapshot === null ? [] : broadcast(withTips, SessionEvent.Snapshot({ snapshot }))),
+    ],
   }
 }
 
@@ -263,7 +398,7 @@ export const applyTranslation = (model: Model, translation: Translation, said: s
       }
       const parsed = parseCommandLine(w, callsign, `${callsign} ${line}`)
       if (parsed._tag === 'Parsed') {
-        const out = runCommand(state.model, parsed.callsign, parsed.command, true)
+        const out = dispatchCommand(state.model, parsed.callsign, parsed.command, null, true)
         return { model: out.model, commands: [...state.commands, ...out.commands], ok: state.ok && out.ok }
       }
       const error = parsed._tag === 'Invalid' ? `unable — ${parsed.error}` : `could not run "${line}"`
@@ -304,16 +439,22 @@ export const update = (model: Model, message: Message): Return =>
       commands: [ReadDeepLink(), ProbeRecognition()],
     }),
 
-    CompletedReadDeepLink: ({ airport, scenario }) => ({
-      model: evo(model, { deepLink: () => ({ airport, scenario }), index: () => IndexLoad.Loading() }),
-      commands: [LoadIndex({ source: sourceForProxy(model.settings.proxy) })],
+    CompletedReadDeepLink: ({ airport, scenario, room }) => ({
+      model: withSession(evo(model, { deepLink: () => ({ airport, scenario, room }), index: () => IndexLoad.Loading() }), room === null ? {} : { role: 'guest', room, status: 'connecting', roomInput: room }),
+      commands: [LoadIndex({ source: sourceForProxy(model.settings.proxy) }), ...(room === null ? [] : [JoinRoom({ room, turn: turnOf(model.settings) })])],
     }),
 
-    ChangedDeepLink: ({ airport, scenario }) => {
+    ChangedDeepLink: ({ airport, scenario, room }) => {
+      if (room !== null && model.session.room !== room) {
+        return {
+          model: withSession(evo(model, { deepLink: () => ({ airport, scenario, room }) }), { role: 'guest', room, status: 'connecting', roomInput: room, error: null }),
+          commands: [JoinRoom({ room, turn: turnOf(model.settings) })],
+        }
+      }
       if (airport === null) {
         return { model }
       }
-      const withLink = evo(model, { deepLink: () => ({ airport, scenario }) })
+      const withLink = evo(model, { deepLink: () => ({ airport, scenario, room }) })
       const info = infoOf(model)
       if (info !== null && info.id === airport) {
         return selectScenario(withLink, scenario)
@@ -350,9 +491,13 @@ export const update = (model: Model, message: Message): Return =>
         scope: fit(world.graph, { ...model.scope, fitted: false }),
         stars: radar.model,
       }
+      const pending = model.session.pendingSnapshot
       const wanted = model.deepLink.airport === airport.id ? model.deepLink.scenario : null
       const scenarioId = wanted !== null && info.scenarios.some((s) => s.id === wanted) ? wanted : (info.scenarios[0]?.id ?? null)
-      const next = selectScenario(fitted, scenarioId)
+      const next =
+        isGuest(model) && pending !== null && pending.airportId === airport.id && model.session.hostId !== null
+          ? applySnapshot(fitted, pending, model.session.hostId)
+          : selectScenario(fitted, scenarioId)
       return {
         model: next.model,
         commands: [
@@ -400,21 +545,16 @@ export const update = (model: Model, message: Message): Return =>
         return { model }
       }
       const clocked = evo(model, { lastTickAt: () => now - since + n * TICK_MS })
-      if (!model.running) {
+      if (!model.running || isGuest(model)) {
         return { model: clocked }
       }
-      const stepped = stepWorldTimes(world, n * model.rate)
-      return applyEvents(withWorld(clocked, stepped.world), stepped.events)
+      const steps = n * model.rate
+      const stepped = stepWorldTimes(world, steps)
+      const applied = applyEvents(withWorld(clocked, stepped.world), stepped.events)
+      return { model: applied.model, commands: [...applied.commands, ...broadcast(model, SessionEvent.Stepped({ steps }))] }
     },
 
-    ChangedPosition: ({ mode }) => {
-      const settings = { ...model.settings, mode }
-      const world = worldOf(model)
-      const switched = evo(model, { settings: () => settings, draft: () => settings })
-      const withRules = world === null ? switched : withWorld(switched, { ...world, rules: rulesFor(mode) })
-      const logged = world === null ? withRules : pushLog(withRules, 'sys', null, `${positionLabel(mode)} position — try: ${positionTips(mode, world)}`)
-      return { model: logged, commands: [SaveSettings({ settings })] }
-    },
+    ChangedPosition: ({ mode }) => control(model, SessionControl.SetPosition({ mode })),
 
     ChangedArtcc: ({ id }) => {
       if (model.index._tag !== 'Ready') {
@@ -426,27 +566,18 @@ export const update = (model: Model, message: Message): Return =>
 
     ChangedAirport: ({ id }) => startLoadingAirport(model, id),
 
-    ChangedScenario: ({ id }) => selectScenario(model, id === '' ? null : id),
+    ChangedScenario: ({ id }) =>
+      isGuest(model)
+        ? { model, commands: [SendSession({ event: SessionEvent.RequestedScenario({ scenarioId: id === '' ? null : id }), target: model.session.hostId })] }
+        : selectScenario(model, id === '' ? null : id),
 
-    ClickedTogglePlay: () => ({ model: evo(model, { running: (r) => !r, lastTickAt: () => null }) }),
+    ClickedTogglePlay: () => control(model, SessionControl.SetRunning({ running: !model.running })),
 
-    ClickedRate: () => ({ model: evo(model, { rate: cycleRate }) }),
+    ClickedRate: () => control(model, SessionControl.SetRate({ rate: cycleRate(model.rate) })),
 
     ClickedArrivals: () => {
       const world = worldOf(model)
-      if (world === null) {
-        return { model }
-      }
-      const enabled = !world.arrivalsEnabled
-      const next = withWorld(model, { ...world, arrivalsEnabled: enabled, nextArrivalAt: world.simTime + 5 })
-      return {
-        model: pushLog(
-          next,
-          'sys',
-          null,
-          enabled ? `arrival generator on — ${world.airport.fleet.length > 0 ? `${world.airport.id} fleet mix` : 'generic GA mix'}` : 'arrival generator off',
-        ),
-      }
+      return world === null ? { model } : control(model, SessionControl.SetArrivals({ enabled: !world.arrivalsEnabled }))
     },
 
     ResizedScope: ({ width, height, devicePixelRatio }) => {
@@ -529,11 +660,11 @@ export const update = (model: Model, message: Message): Return =>
           commands: [TranslateText({ key: model.settings.key, model: model.settings.model, system: prompt.system, user: prompt.user, said: text })],
         }
       }
-      const logged = pushLog(evo(entered, { selected: (s) => parsed.callsign ?? s }), 'atc', null, text)
+      const selected = evo(entered, { selected: (s) => parsed.callsign ?? s })
       if (parsed._tag === 'Invalid') {
-        return { model: pushLog(logged, 'err', parsed.callsign, `unable — ${parsed.error}`) }
+        return { model: pushLog(pushLog(selected, 'atc', null, text), 'err', parsed.callsign, `unable — ${parsed.error}`) }
       }
-      const ran = runCommand(logged, parsed.callsign, parsed.command)
+      const ran = dispatchCommand(isGuest(selected) ? selected : pushLog(selected, 'atc', null, text), parsed.callsign, parsed.command, text)
       return { model: ran.model, commands: ran.commands }
     },
 
@@ -554,7 +685,7 @@ export const update = (model: Model, message: Message): Return =>
     PressedEscape: () => ({ model, commands: [BlurCommand()] }),
 
     IssuedCommand: ({ callsign, command }) => {
-      const ran = runCommand(model, callsign, command)
+      const ran = dispatchCommand(model, callsign, command, null)
       return { model: ran.model, commands: ran.commands }
     },
 
@@ -734,4 +865,73 @@ export const update = (model: Model, message: Message): Return =>
     },
 
     CompletedTestVoice: ({ detail, ok }) => ({ model: status(model, detail, ok ? 'ok' : 'bad') }),
+
+    // SHARED SESSIONS
+
+    ClickedSession: () => ({ model: evo(model, { dialog: () => 'session' }) }),
+
+    ClickedHostSession: () => ({
+      model: withSession(model, { role: 'host', status: 'connecting', error: null, peers: [], hostId: null }),
+      commands: [HostRoom({ turn: turnOf(model.settings) })],
+    }),
+
+    UpdatedRoomInput: ({ value }) => ({ model: withSession(model, { roomInput: value }) }),
+
+    ClickedJoinSession: () => {
+      const room = normaliseRoomCode(model.session.roomInput)
+      if (!isRoomCode(room)) {
+        return { model: withSession(model, { error: 'a room code is six letters and digits' }) }
+      }
+      return {
+        model: withSession(model, { role: 'guest', room, status: 'connecting', error: null, peers: [], hostId: null }),
+        commands: [JoinRoom({ room, turn: turnOf(model.settings) })],
+      }
+    },
+
+    ClickedLeaveSession: () => ({
+      model: pushLog(evo(model, { session: () => ({ ...initialSession, roomInput: model.session.roomInput }), lastTickAt: () => null }), 'sys', null, 'left the session — running solo from here'),
+      commands: [LeaveRoom()],
+    }),
+
+    CompletedHostRoom: ({ room }) => ({
+      model: pushLog(withSession(model, { role: 'host', room, status: 'connected', roomInput: room }), 'sys', null, `hosting session ${room} — share the code or the link`),
+    }),
+
+    CompletedJoinRoom: ({ room }) => ({ model: withSession(model, { role: 'guest', room, status: 'connecting' }) }),
+
+    FailedJoinRoom: ({ error }) => ({ model: pushLog(withSession(model, { role: 'solo', status: 'failed', error }), 'err', null, `could not join the session (${error})`) }),
+
+    CompletedLeaveRoom: () => ({ model }),
+    CompletedSendSession: () => ({ model }),
+
+    FailedSendSession: ({ error }) => ({ model: pushLog(model, 'err', null, `session send failed (${error})`) }),
+
+    PeerJoined: ({ peerId }) => {
+      const joined = withSession(model, { peers: [...model.session.peers.filter((p) => p !== peerId), peerId], status: 'connected' })
+      const snapshot = snapshotOf(joined)
+      return {
+        model: pushLog(joined, 'sys', null, `peer ${peerId.slice(0, 6)} joined`),
+        commands: isHost(model) && snapshot !== null ? [SendSession({ event: SessionEvent.Snapshot({ snapshot }), target: peerId })] : [],
+      }
+    },
+
+    PeerLeft: ({ peerId }) => {
+      const left = withSession(model, { peers: model.session.peers.filter((p) => p !== peerId) })
+      if (isGuest(model) && peerId === model.session.hostId) {
+        return {
+          model: pushLog(evo(left, { session: () => ({ ...initialSession, roomInput: model.session.roomInput }), lastTickAt: () => null }), 'sys', null, 'the host left — running solo from here'),
+          commands: [LeaveRoom()],
+        }
+      }
+      return { model: pushLog(left, 'sys', null, `peer ${peerId.slice(0, 6)} left`) }
+    },
+
+    ReceivedSession: ({ peerId, event }) => receiveSession(model, peerId, event),
+
+    FailedSession: ({ error }) => {
+      const logged = pushLog(model, 'err', null, `session connection problem: ${error}`)
+      return model.session.role === 'guest' && model.session.status !== 'connected'
+        ? { model: pushLog(withSession(logged, { role: 'solo', status: 'failed', error }), 'sys', null, 'could not reach the host — running solo; add a TURN server in Settings if your networks need a relay') }
+        : { model: withSession(logged, { status: 'failed', error }) }
+    },
   })

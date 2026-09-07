@@ -206,6 +206,15 @@ export const settingsView = (model: Model, h: HtmlBuilder<Message>): Html =>
         ...field(h, 's-proxy', 'vNAS proxy URL', textInput(h, model, 's-proxy', 'proxy', 'https://vnas-proxy.you.workers.dev/?url='),
           'Leave empty to use the catalog. When set, the vNAS URL is appended (URL-encoded) to this prefix and every airport, map and scenario is fetched live.'),
       ]),
+      h.h3([], ['Shared sessions']),
+      h.p([], [
+        'Sessions connect browsers directly. Most home networks connect on their own; when two peers cannot (symmetric or carrier-grade NAT), a TURN relay carries the traffic. Any TURN provider works; leave empty until you need it.',
+      ]),
+      h.div([h.Class('field')], [
+        ...field(h, 's-turn', 'TURN server', textInput(h, model, 's-turn', 'turnUrl', 'turn:relay.example.com:3478'), 'A turn: or turns: URL.'),
+        ...field(h, 's-turn-user', 'TURN username', textInput(h, model, 's-turn-user', 'turnUsername', '')),
+        ...field(h, 's-turn-cred', 'TURN credential', textInput(h, model, 's-turn-cred', 'turnCredential', '', 'password')),
+      ]),
     ],
     [
       h.span([h.Class(`status ${model.settingsStatus.kind}`)], [model.settingsStatus.text]),
@@ -216,5 +225,56 @@ export const settingsView = (model: Model, h: HtmlBuilder<Message>): Html =>
     h,
   )
 
+export const sessionLink = (room: string): string =>
+  `${globalThis.location?.origin ?? ''}${globalThis.location?.pathname ?? '/'}#join/${room}`
+
+export const sessionView = (model: Model, h: HtmlBuilder<Message>): Html => {
+  const session = model.session
+  const solo = session.role === 'solo'
+  return shell(
+    'Shared session',
+    [
+      h.p([], [
+        'Anyone can watch this session live and give instructions, an instructor for example. One browser ',
+        h.b([], ['hosts']), ': it keeps the clock and the authoritative airport, and everyone else follows it with the same controls. Connections are direct between browsers with no server in between; if two networks cannot connect, add a TURN relay in Settings.',
+      ]),
+      ...(solo
+        ? [
+            h.h3([], ['Host']),
+            h.div([h.Class('field')], [
+              h.label([], ['Start a session here']),
+              h.div([h.Class('row')], [h.button([h.Class('tbtn'), h.Type('button'), h.OnClick(Message.ClickedHostSession())], ['Host a session'])]),
+              h.small([], ['You get a six-character code and a link to share.']),
+            ]),
+            h.h3([], ['Join']),
+            h.div([h.Class('field')], [
+              h.label([h.For('s-room')], ['Room code']),
+              h.div([h.Class('row')], [
+                h.input([h.Id('s-room'), h.Type('text'), h.Autocomplete('off'), h.Placeholder('ABC123'), h.Value(session.roomInput), h.OnInput((value) => Message.UpdatedRoomInput({ value }))]),
+                h.button([h.Class('tbtn'), h.Type('button'), h.OnClick(Message.ClickedJoinSession())], ['Join']),
+              ]),
+              h.small([], ['Joining replaces what you see with the host\'s session; leaving keeps a copy running solo.']),
+            ]),
+          ]
+        : [
+            h.h3([], [session.role === 'host' ? 'Hosting' : 'Joined']),
+            h.div([h.Class('field')], [
+              h.label([], ['Room code']),
+              h.div([h.Class('row')], [h.b([h.Class('room-code')], [session.room ?? ''])]),
+              h.label([], ['Link']),
+              h.div([h.Class('row')], [h.input([h.Type('text'), h.Readonly(true), h.Value(sessionLink(session.room ?? ''))])]),
+              h.label([], ['Peers']),
+              h.div([h.Class('row')], [session.peers.length === 0 ? 'waiting for peers…' : session.peers.map((p) => p.slice(0, 6)).join(', ')]),
+              h.label([], ['Status']),
+              h.div([h.Class('row')], [session.status === 'connecting' ? 'connecting…' : session.status]),
+            ]),
+          ]),
+      session.error === null ? h.empty : h.p([h.Class('bad')], [session.error]),
+    ],
+    solo ? [] : [h.button([h.Class('tbtn'), h.Type('button'), h.OnClick(Message.ClickedLeaveSession())], ['Leave session'])],
+    h,
+  )
+}
+
 export const dialogView = (model: Model, h: HtmlBuilder<Message>): Html =>
-  model.dialog === 'help' ? helpView(h) : model.dialog === 'settings' ? settingsView(model, h) : h.empty
+  model.dialog === 'help' ? helpView(h) : model.dialog === 'settings' ? settingsView(model, h) : model.dialog === 'session' ? sessionView(model, h) : h.empty

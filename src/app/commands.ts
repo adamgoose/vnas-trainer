@@ -9,6 +9,8 @@ import { Command, Dom, Mount } from 'foldkit'
 import { storeVideoMap } from './mapCache'
 import { Message } from './message'
 import { parseTranslation } from '../domain/prompt'
+import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SessionEvent, normaliseRoomCode } from '../domain/session'
+import { Session, TurnServer } from '../services/session'
 import { Microphone } from '../services/microphone'
 import { OpenRouter } from '../services/openRouter'
 import { Recognition } from '../services/recognition'
@@ -36,9 +38,12 @@ export const SaveSettings = Command.define('SaveSettings', {
     }),
 })
 
-export const parseDeepLink = (hash: string): Readonly<{ airport: string | null; scenario: string | null }> => {
-  const [apt = '', scen = ''] = hash.replace(/^#/, '').split('/')
-  return { airport: apt.toUpperCase() || null, scenario: scen || null }
+export const parseDeepLink = (hash: string): Readonly<{ airport: string | null; scenario: string | null; room: string | null }> => {
+  const [first = '', second = ''] = hash.replace(/^#/, '').split('/')
+  if (first.toLowerCase() === 'join') {
+    return { airport: null, scenario: null, room: normaliseRoomCode(second) || null }
+  }
+  return { airport: first.toUpperCase() || null, scenario: second || null, room: null }
 }
 
 export const ReadDeepLink = Command.define('ReadDeepLink', {
@@ -325,4 +330,55 @@ export const TestVoice = Command.define('TestVoice', {
             : 'playing browser voice',
       })
     }).pipe(Effect.catch((e) => Effect.succeed(Message.CompletedTestVoice({ ok: false, detail: `speech failed: ${e.message}` })))),
+})
+
+// SHARED SESSIONS
+
+const randomRoomCode = (): string => {
+  const bytes = new Uint8Array(ROOM_CODE_LENGTH)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (b) => ROOM_CODE_ALPHABET[b % ROOM_CODE_ALPHABET.length]!).join('')
+}
+
+export const HostRoom = Command.define('HostRoom', {
+  args: { turn: Schema.NullOr(TurnServer) },
+  messages: [Message.CompletedHostRoom, Message.FailedJoinRoom],
+  execute: ({ turn }) =>
+    Effect.gen(function* () {
+      const session = yield* Session
+      const room = randomRoomCode()
+      yield* session.join(room, turn)
+      return Message.CompletedHostRoom({ room })
+    }).pipe(Effect.catch((e) => Effect.succeed(Message.FailedJoinRoom({ error: e.message })))),
+})
+
+export const JoinRoom = Command.define('JoinRoom', {
+  args: { room: Schema.String, turn: Schema.NullOr(TurnServer) },
+  messages: [Message.CompletedJoinRoom, Message.FailedJoinRoom],
+  execute: ({ room, turn }) =>
+    Effect.gen(function* () {
+      const session = yield* Session
+      yield* session.join(room, turn)
+      return Message.CompletedJoinRoom({ room })
+    }).pipe(Effect.catch((e) => Effect.succeed(Message.FailedJoinRoom({ error: e.message })))),
+})
+
+export const LeaveRoom = Command.define('LeaveRoom', {
+  messages: [Message.CompletedLeaveRoom],
+  execute: Effect.gen(function* () {
+    const session = yield* Session
+    yield* session.leave
+    return Message.CompletedLeaveRoom()
+  }),
+})
+
+export const SendSession = Command.define('SendSession', {
+  args: { event: SessionEvent, target: Schema.NullOr(Schema.String) },
+  messages: [Message.CompletedSendSession, Message.FailedSendSession],
+  execute: ({ event, target }) =>
+    Effect.gen(function* () {
+      const session = yield* Session
+      yield* session.send(event, target)
+      return Message.CompletedSendSession()
+    }).pipe(Effect.catch((e) => Effect.succeed(Message.FailedSendSession({ error: e.message })))),
 })

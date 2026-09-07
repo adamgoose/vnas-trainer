@@ -52,6 +52,10 @@ export const headerView = (model: Model, h: HtmlBuilder<Message>): Html => {
       ),
       h.button([h.Class('tbtn'), h.Type('button'), h.OnClick(Message.ClickedHelp())], ['Commands']),
       h.button([h.Class('tbtn'), h.Type('button'), h.OnClick(Message.ClickedSettings())], ['Settings']),
+      h.button(
+        [h.Class(`tbtn session-btn ${model.session.status}`), h.Type('button'), h.AriaPressed(model.session.role === 'solo' ? 'false' : 'true'), h.OnClick(Message.ClickedSession())],
+        [model.session.role === 'solo' ? 'Session' : `${model.session.role === 'host' ? 'Hosting' : 'Joined'} ${model.session.room ?? ''} · ${model.session.peers.length}`],
+      ),
       h.div(
         [h.Class('clock')],
         [

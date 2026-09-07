@@ -9,6 +9,7 @@ import { HttpTextLive } from './services/http'
 import { MicrophoneBrowser } from './services/microphone'
 import { OpenRouterLive } from './services/openRouter'
 import { RecognitionBrowser } from './services/recognition'
+import { SessionTrystero } from './services/session'
 import { SettingsStoreBrowser } from './services/settings'
 import { SpeechBrowser } from './services/speech'
 import { VideoMapsLive } from './services/videoMaps'
@@ -22,6 +23,7 @@ const resources = Layer.mergeAll(
   SpeechBrowser.pipe(Layer.provide(OpenRouterLive)),
   MicrophoneBrowser,
   RecognitionBrowser,
+  SessionTrystero,
 )
 
 const application = Runtime.makeApplication({

@@ -148,6 +148,10 @@ aside { background: var(--panel); border-left: 1px solid var(--rule); display: f
 .dlg-f { display: flex; gap: 8px; justify-content: flex-end; align-items: center; padding: 12px 20px; border-top: 1px solid var(--rule); }
 .dlg-f .status { margin-right: auto; font-family: var(--f-m); font-size: 11px; color: var(--ink-3); }
 .dlg-f .status.ok { color: var(--green); }
+.dlg-b p.bad { color: var(--red); }
+.room-code { font-family: var(--f-m); font-size: 20px; letter-spacing: .2em; color: var(--accent); }
+.session-btn.connected[aria-pressed="true"] { background: var(--green); border-color: var(--green); color: #0b1a10; }
+.session-btn.connecting[aria-pressed="true"] { background: none; border-color: var(--accent); color: var(--accent); }
 .dlg-f .status.bad { color: var(--red); }
 .cmdbar .ptt.tx { background: var(--red); border-color: var(--red); color: #fff; }
 .cmdbar .ptt.busy { background: var(--violet); border-color: var(--violet); color: #141008; }

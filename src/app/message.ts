@@ -4,14 +4,15 @@ import { defineMessageUnion } from 'foldkit/message'
 import { AirportFile, CatalogIndex, Scenario } from '../domain/catalog'
 import { AtcCommand } from '../domain/commands'
 import { Translation } from '../domain/prompt'
+import { SessionEvent } from '../domain/session'
 import { BrowserVoice, ModelCatalogue } from './model'
 import { StarsMessage } from '../positions/local/stars'
 import { Settings } from '../services/settings'
 
 export const Message = defineMessageUnion({
   CompletedLoadSettings: { settings: Settings },
-  CompletedReadDeepLink: { airport: Schema.NullOr(Schema.String), scenario: Schema.NullOr(Schema.String) },
-  ChangedDeepLink: { airport: Schema.NullOr(Schema.String), scenario: Schema.NullOr(Schema.String) },
+  CompletedReadDeepLink: { airport: Schema.NullOr(Schema.String), scenario: Schema.NullOr(Schema.String), room: Schema.NullOr(Schema.String) },
+  ChangedDeepLink: { airport: Schema.NullOr(Schema.String), scenario: Schema.NullOr(Schema.String), room: Schema.NullOr(Schema.String) },
   CompletedLoadIndex: { index: CatalogIndex },
   FailedLoadIndex: { error: Schema.String },
   CompletedLoadAirport: { airport: AirportFile },
@@ -82,5 +83,20 @@ export const Message = defineMessageUnion({
   CompletedTestKey: { ok: Schema.Boolean, detail: Schema.String },
   ClickedTestVoice: {},
   CompletedTestVoice: { detail: Schema.String, ok: Schema.Boolean },
+  ClickedSession: {},
+  ClickedHostSession: {},
+  UpdatedRoomInput: { value: Schema.String },
+  ClickedJoinSession: {},
+  ClickedLeaveSession: {},
+  CompletedHostRoom: { room: Schema.String },
+  CompletedJoinRoom: { room: Schema.String },
+  FailedJoinRoom: { error: Schema.String },
+  CompletedLeaveRoom: {},
+  CompletedSendSession: {},
+  FailedSendSession: { error: Schema.String },
+  PeerJoined: { peerId: Schema.String },
+  PeerLeft: { peerId: Schema.String },
+  ReceivedSession: { peerId: Schema.String, event: SessionEvent },
+  FailedSession: { error: Schema.String },
 })
 export type Message = typeof Message.Type
