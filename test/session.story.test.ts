@@ -220,9 +220,12 @@ describe('joining', () => {
       message(Message.FailedSession({ error: 'could not connect to peer' })),
       Command.expectNone(),
       model((m) => {
-        expect(m.session).toMatchObject({ role: 'solo', status: 'failed' })
-        expect(m.log[0]?.text).toMatch(/^could not reach the host/)
+        expect(m.session).toMatchObject({ role: 'guest', room: 'ABC234', status: 'failed', error: 'could not connect to peer' })
+        expect(m.log[0]?.text).toMatch(/^still trying to reach the host/)
       }),
+      message(Message.PeerJoined({ peerId: 'host-1' })),
+      Command.expectNone(),
+      model((m) => expect(m.session).toMatchObject({ role: 'guest', status: 'connected', peers: ['host-1'] })),
     )
     story(
       update,

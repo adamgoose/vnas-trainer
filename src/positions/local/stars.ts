@@ -123,7 +123,10 @@ export const StarsSurface = Mount.defineStream('StarsSurface', {
         yield* Effect.addFinalizer(() => Effect.sync(() => observer.disconnect()))
       }),
     )
+    /** a wheel over the scrollable MAPS panel scrolls it; only the radar itself zooms */
+    const overRadar = (event: WheelEvent): boolean => !(event.target instanceof Element && event.target.closest('.smaps') !== null)
     const wheels = Stream.fromEventListener<WheelEvent>(element, 'wheel', { passive: false }).pipe(
+      Stream.filter(overRadar),
       Stream.map((event): ScopeMessage => {
         event.preventDefault()
         const rect = element.getBoundingClientRect()

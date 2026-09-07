@@ -12,6 +12,21 @@ import { type SessionEvent, decodeSessionEvent, encodeSessionEvent } from '../do
 
 export const APP_ID = 'vnas-trainer'
 
+/**
+ * Signaling relays. Trystero's built-in list has dead entries, and its pick is a
+ * deterministic shuffle by app id that landed on two of them (relay-rpi.edufeed.org,
+ * relay.agorist.space) plus a staging relay, so peers found each other slowly or
+ * not at all. These are large, long-lived public relays; every one is used.
+ */
+export const RELAY_URLS: ReadonlyArray<string> = [
+  'wss://relay.damus.io',
+  'wss://nos.lol',
+  'wss://relay.primal.net',
+  'wss://purplerelay.com',
+  'wss://offchain.pub',
+  'wss://nostr.mom',
+]
+
 export class SessionError extends Data.TaggedError('SessionError')<{ message: string }> {}
 
 export const TurnServer = Schema.Struct({ url: Schema.String, username: Schema.String, credential: Schema.String })
@@ -55,9 +70,10 @@ export const SessionTrystero = Layer.effect(Session)(
             room = joinRoom(
               {
                 appId: APP_ID,
-                // Candidates travel inside the SDP: fewer relay round trips, and a throttled tab still completes the handshake.
-                trickleIce: false,
-                relayConfig: { redundancy: 4 },
+                // Trickle: Chrome's ICE gathering here never reports "complete" (a STUN server that
+                // does not answer), so waiting for it cost the full 15 s timeout per offer.
+                trickleIce: true,
+                relayConfig: { urls: [...RELAY_URLS] },
                 ...(turn !== null && turn.url !== '' ? { turnConfig: [{ urls: turn.url, username: turn.username, credential: turn.credential }] } : {}),
               },
               code,

@@ -936,10 +936,15 @@ export const update = (model: Model, message: Message): Return =>
 
     ReceivedSession: ({ peerId, event }) => receiveSession(model, peerId, event),
 
+    /**
+     * Trystero reports an ICE failure once per peer but keeps announcing and retrying, and a
+     * late connection still lands (Chrome↔Firefox pairs were seen to fail once and connect on
+     * the next attempt), so a guest stays in the room; Leave in the Session dialog runs solo.
+     */
     FailedSession: ({ error }) => {
       const logged = pushLog(model, 'err', null, `session connection problem: ${error}`)
       return model.session.role === 'guest' && model.session.status !== 'connected'
-        ? { model: pushLog(withSession(logged, { role: 'solo', status: 'failed', error }), 'sys', null, 'could not reach the host — running solo; add a TURN server in Settings if your networks need a relay') }
+        ? { model: pushLog(withSession(logged, { status: 'failed', error }), 'sys', null, 'still trying to reach the host — leave the session to run solo, or add a TURN server in Settings if your networks need a relay') }
         : { model: withSession(logged, { status: 'failed', error }) }
     },
   })
