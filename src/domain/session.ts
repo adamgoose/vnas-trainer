@@ -10,7 +10,7 @@ import { defineTaggedUnion } from 'foldkit/schema'
 import { AtcCommand } from './commands'
 import { World } from './world'
 
-export const PositionMode = Schema.Literals(['ground', 'tower'])
+export const PositionMode = Schema.Literals(['ground', 'tower', 'tracon'])
 
 /** Session-wide state changes that are not aircraft commands. */
 export const SessionControl = defineTaggedUnion({

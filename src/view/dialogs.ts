@@ -64,7 +64,21 @@ export const helpView = (h: HtmlBuilder<Message>): Html =>
         ...cmdRow(h, 'CM {alt}', ['Climb (or descend) and maintain — feet, hundreds (', h.b([], ['CM 50']), ') or ', h.b([], ['FL230']), '.']),
         ...cmdRow(h, 'CD', ['Contact departure — the pilot switches to the departure frequency and drops off 20 seconds later.']),
       ]),
-      h.h3([], ['STARS (Local position)']),
+      h.h3([], ['Approach']),
+      h.div([h.Class('cmds')], [
+        ...cmdRow(h, 'DM {alt}', ['Descend (or climb) and maintain — the same as ', h.b([], ['CM']), '.']),
+        ...cmdRow(h, 'DCT {fix}', ['Proceed direct to a fix; the rest of the route after that fix is kept. Alias ', h.b([], ['PD']), '.']),
+        ...cmdRow(h, 'SPD {kt}', ['Assign a speed. ', h.b([], ['SPD']), ' alone resumes normal speed (250 below 10,000).']),
+        ...cmdRow(h, 'EXP {rw}', ['Expect a runway — sets the scratchpad and lets ', h.b([], ['CAPP']), ' omit the runway.']),
+        ...cmdRow(h, 'CAPP [rw]', ['Cleared for the ILS approach. The aircraft joins the final approach course when it is within about a mile of it and pointed toward the field, tracks it, descends on the 3° path once it meets it, slows to 170 and becomes a 10-mile final that lands itself. Alias ', h.b([], ['ILS']), '.']),
+        ...cmdRow(h, 'CT', ['Contact tower — the aircraft stays on the scope until it lands. Alias ', h.b([], ['HO']), '.']),
+        ...cmdRow(h, 'CD', ['As Approach, sends a departure to the centre.']),
+      ]),
+      h.p([], [
+        'Switch the brand dropdown to ', h.b([], ['Approach']), ' for the TRACON: scenario aircraft that start airborne fly their STAR or navigation path (fixes and procedures come from vNAS NavData, baked into the catalog), check in on frequency with their altitude, and are yours to descend, slow, vector and clear for the approach; aircraft that start on the field depart one after another and call departure through 1,000 feet. ',
+        'The arrival generator spawns aircraft at the entry of a random STAR at 11,000. Select an aircraft to see its remaining route on the scope. Not simulated: published STAR altitudes, holding, visual approaches, separation alerts.',
+      ]),
+      h.h3([], ['STARS (Local and Approach positions)']),
       h.div([h.Class('cmds')], [
         ...cmdRow(h, 'TRACK', ['Start a radar track: the limited data block (beacon + altitude) becomes a full one with callsign, altitude/speed and scratchpad. Alias ', h.b([], ['IC']), '.']),
         ...cmdRow(h, 'DROP', ['Drop the track. Alias ', h.b([], ['DT']), '.']),

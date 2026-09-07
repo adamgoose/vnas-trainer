@@ -51,8 +51,13 @@ const stripView = (model: Model, airportId: string, a: Aircraft, h: HtmlBuilder<
             : h.empty
   const altitude =
     a.state === 'AIRB' || a.state === 'FINAL'
-      ? h.b([], [`${Math.round(a.altitude / 100) * 100} ft${a.state === 'AIRB' && a.targetAltitude !== a.altitude ? ` ↑${a.targetAltitude}` : ''}`])
+      ? h.b([], [`${Math.round(a.altitude / 100) * 100} ft${a.state === 'AIRB' && Math.abs(a.targetAltitude - a.altitude) >= 100 ? ` ${a.targetAltitude > a.altitude ? '↑' : '↓'}${Math.round(a.targetAltitude / 100) * 100}` : ''}`])
       : h.empty
+  const navigation =
+    a.state === 'AIRB'
+      ? h.b([h.Class('accent')], [a.established ? `on final ${a.approach}` : a.approach !== null ? `app ${a.approach}` : a.fixes[0] !== undefined ? `→ ${a.fixes[0]}` : `hdg ${String(Math.round(a.targetHeading)).padStart(3, '0')}`])
+      : h.empty
+  const speed = a.state === 'AIRB' && a.assignedSpeed !== null ? h.b([], [`${a.assignedSpeed} kt`]) : h.empty
   const needsClearance = a.state === 'FINAL' && !a.clearedToLand && model.settings.mode === 'tower'
   return h.keyed('div')(
     a.callsign,
@@ -75,6 +80,8 @@ const stripView = (model: Model, airportId: string, a: Aircraft, h: HtmlBuilder<
           a.gate !== null ? h.b([], [a.gate]) : h.empty,
           a.runway !== null ? h.b([], [`rwy ${a.runway}`]) : h.empty,
           altitude,
+          navigation,
+          speed,
           needsClearance ? h.b([h.Style({ color: '#e0a63a' })], ['no CTL']) : h.empty,
           a.handoff ? h.b([h.Class('accent')], ['H/O']) : a.radar !== null && !a.tracked ? h.b([], ['untracked']) : h.empty,
           a.destination !== null ? h.span([], [`→ ${a.destination}`]) : h.empty,

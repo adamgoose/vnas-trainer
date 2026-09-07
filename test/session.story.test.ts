@@ -12,7 +12,8 @@ import { defaultSettings } from '../src/services/settings'
 import { DataSource } from '../src/services/vnasData'
 import { msp } from './helpers'
 
-const big = msp.scen.reduce((best, s) => (s.ac.length > best.ac.length ? s : best), msp.scen[0]!)
+const surfaceCount = (s: (typeof msp.scen)[number]) => s.ac.filter((a) => a.k !== 'A').length
+const big = msp.scen.reduce((best, s) => (surfaceCount(s) > surfaceCount(best) ? s : best), msp.scen[0]!)
 const index = { built: '', artccs: [{ id: 'ZMP', name: 'Minneapolis ARTCC', airports: [{ id: 'MSP', name: 'Minneapolis ATCT', n: 64, asdex: true, gates: 220, taxi: 106, stars: true }] }] }
 
 const ready = (): Model => {

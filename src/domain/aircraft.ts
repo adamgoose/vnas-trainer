@@ -78,6 +78,18 @@ export const Aircraft = Schema.Struct({
   tracked: Schema.Boolean,
   handoff: Schema.Boolean,
   handoffAt: Schema.Number,
+  /** who the aircraft was switched to; tower keeps it on the scope until it lands */
+  handoffTo: Schema.NullOr(Schema.Literals(['departure', 'center', 'tower'])),
+  /** fixes still to fly, next first; empty means fly the heading */
+  fixes: Schema.Array(Schema.String),
+  /** controller-assigned speed; null lets the pilot pick */
+  assignedSpeed: Schema.NullOr(Schema.Number),
+  /** runway the aircraft is cleared to approach */
+  approach: Schema.NullOr(Schema.String),
+  /** on the final approach course of `approach` */
+  established: Schema.Boolean,
+  /** has called the position (airborne check-in done) */
+  checkedIn: Schema.Boolean,
   clearedToLand: Schema.Boolean,
   landed: Schema.Boolean,
   goingAround: Schema.Boolean,
@@ -133,6 +145,12 @@ export const makeAircraft = (fields: Partial<Aircraft> & Pick<Aircraft, 'callsig
   tracked: false,
   handoff: false,
   handoffAt: 0,
+  handoffTo: null,
+  fixes: [],
+  assignedSpeed: null,
+  approach: null,
+  established: false,
+  checkedIn: false,
   clearedToLand: false,
   landed: false,
   goingAround: false,

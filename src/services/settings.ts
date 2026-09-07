@@ -15,7 +15,7 @@ export const Settings = Schema.Struct({
   ttsVoice: Schema.String,
   voice: Schema.String,
   radio: Schema.Boolean,
-  mode: Schema.Literals(['ground', 'tower']),
+  mode: Schema.Literals(['ground', 'tower', 'tracon']),
   view: Schema.Literals(['ground', 'both', 'stars']),
   /** shared sessions: an optional TURN relay for NATs that block direct connections */
   turnUrl: Schema.String,

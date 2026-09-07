@@ -106,10 +106,41 @@ const mapShapes = (model: StarsModel, field: Field, stars: Stars | null): Readon
   })
 }
 
+/** The selected aircraft's remaining route: a line through its fixes with their names, and its approach runway's final course. */
+const routeShapes = (model: StarsModel, world: World, selected: string | null): ReadonlyArray<Canvas.Shape> => {
+  const a = selected === null ? undefined : world.aircraft.find((x) => x.callsign === selected)
+  if (a === undefined || a.state !== 'AIRB') {
+    return []
+  }
+  const shapes: Array<Canvas.Shape> = []
+  const start = radarPoint(world, a.position)
+  const points = [toCanvas(model, start.x, start.y)]
+  for (const name of a.fixes) {
+    const c = world.nav.fixes[name]
+    if (c === undefined) {
+      continue
+    }
+    const p = radarPoint(world, c)
+    const q = toCanvas(model, p.x, p.y)
+    points.push(q)
+    shapes.push(Canvas.Text({ x: q.x + 5, y: q.y - 4, content: name, font: `10px ${MONO}`, fill: COLOURS.cyan, align: 'Left', baseline: 'Alphabetic' }))
+    shapes.push(Canvas.Circle({ x: q.x, y: q.y, radius: 2.5, stroke: COLOURS.cyan, lineWidth: 1 }))
+  }
+  if (points.length > 1) {
+    shapes.push(
+      Canvas.Group({
+        opacity: 0.6,
+        shapes: [Canvas.Path({ instructions: points.map((p, i) => (i === 0 ? Canvas.MoveTo({ x: p.x, y: p.y }) : Canvas.LineTo({ x: p.x, y: p.y }))), stroke: COLOURS.cyan, lineWidth: 1 })],
+      }),
+    )
+  }
+  return shapes
+}
+
 const targetShapes = (model: StarsModel, world: World, selected: string | null, accent: string): ReadonlyArray<Canvas.Shape> => {
   const size = 4
   const font = 11
-  const shapes: Array<Canvas.Shape> = []
+  const shapes: Array<Canvas.Shape> = [...routeShapes(model, world, selected)]
   for (const a of world.aircraft) {
     const r = a.radar
     if (r === null) {
@@ -148,7 +179,13 @@ const targetShapes = (model: StarsModel, world: World, selected: string | null, 
     )
     const alt3 = String(Math.max(0, Math.round(r.altitude / 100))).padStart(3, '0')
     const spd2 = String(Math.round(r.speed / 10)).padStart(2, '0')
-    const scratch = a.flightPlan.sid !== null ? a.flightPlan.sid.slice(0, 3) : a.state === 'FINAL' || a.goingAround ? (a.runway ?? '') : a.type
+    const departing = a.departure !== null && a.departure.endsWith(world.airport.id)
+    const scratch =
+      a.state === 'FINAL' || a.goingAround || (a.state === 'AIRB' && !departing && a.runway !== null)
+        ? (a.runway ?? '')
+        : a.flightPlan.sid !== null && departing
+          ? a.flightPlan.sid.slice(0, 3)
+          : a.type
     const lines = a.tracked ? [`${a.handoff ? 'H/' : ''}${a.callsign}`, `${alt3} ${spd2}`, scratch] : [a.squawk, alt3]
     lines.forEach((text, i) => {
       shapes.push(

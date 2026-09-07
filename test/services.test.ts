@@ -26,7 +26,7 @@ describe('VnasData, catalog source', () => {
         return { artccs: index.artccs.length, id: airport.id, scenarios: airport.scen.length, first: scenario.name }
       }),
     )
-    expect(out).toEqual({ artccs: 1, id: 'MSP', scenarios: 64, first: 'KMSP 12s/17 SLCL 5MIT' })
+    expect(out).toEqual({ artccs: 1, id: 'MSP', scenarios: 80, first: 'Ancient MSP APP North' })
   })
 
   test('reports missing files, bad shapes and unloaded airports as DataError', async () => {

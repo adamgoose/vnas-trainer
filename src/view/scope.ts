@@ -316,7 +316,7 @@ const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: bo
   return shapes
 }
 
-export const accentFor = (mode: 'ground' | 'tower'): string => (mode === 'tower' ? '#b388ff' : COLOURS.amber)
+export const accentFor = (mode: 'ground' | 'tower' | 'tracon'): string => (mode === 'tower' ? '#b388ff' : mode === 'tracon' ? '#2dd4bf' : COLOURS.amber)
 
 const scopeCanvas = (model: Model, h: HtmlBuilder<Message>): Html => {
   const world = worldOf(model)

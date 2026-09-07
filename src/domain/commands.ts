@@ -15,6 +15,7 @@ import {
   altitudeWords,
   callsign as callsignToken,
   digits,
+  fix as fixToken,
   frequency,
   gate as gateToken,
   phrase,
@@ -23,7 +24,17 @@ import {
 } from './phrase'
 import { autoExit, firstRunwayLeg, goAround, legRunway, withPath } from './physics'
 import { PUSHBACK_RUNWAY_PENALTY_FT, findPath, routeVia } from './route'
-import { SimEvent, type World, type WorldResult, findAircraft, matchCallsign, removeAircraft, replaceAircraft } from './world'
+import {
+  SimEvent,
+  type World,
+  type WorldResult,
+  findAircraft,
+  matchCallsign,
+  nextFacility,
+  removeAircraft,
+  replaceAircraft,
+  towerRadioName,
+} from './world'
 
 // COMMAND
 
@@ -48,6 +59,12 @@ export const AtcCommand = defineTaggedUnion({
   ContactDeparture: {},
   FlyHeading: { heading: Schema.Number, turn: Schema.NullOr(Schema.Literals(['L', 'R'])) },
   ClimbMaintain: { altitude: Schema.Number },
+  /** TRACON (Phase 8) */
+  Direct: { fix: Schema.String },
+  Speed: { knots: Schema.NullOr(Schema.Number) },
+  ExpectRunway: { runway: Schema.String },
+  ClearedApproach: { runway: Schema.NullOr(Schema.String) },
+  ContactTower: {},
   Squawk: { code: Schema.String },
   SquawkNormal: {},
   SquawkStandby: {},
@@ -73,8 +90,8 @@ export type ParseResult =
 
 const VERBS = new Set([
   'PUSH', 'TAXI', 'RWY', 'HS', 'CROSS', 'RES', 'HOLD', 'BREAK', 'GIVEWAY', 'GW', 'TAXIALL', 'LUAW', 'CTO', 'EXIT', 'GA',
-  'CTL', 'TRACK', 'IC', 'DROP', 'DT', 'CD', 'FH', 'TL', 'TR', 'CM', 'SQ', 'SN', 'SS', 'ID', 'SAY', 'DEL', 'PAUSE', 'UNPAUSE',
-  'SIMRATE',
+  'CTL', 'TRACK', 'IC', 'DROP', 'DT', 'CD', 'FH', 'TL', 'TR', 'CM', 'DM', 'DCT', 'PD', 'SPD', 'EXP', 'CAPP', 'ILS', 'CT', 'HO',
+  'SQ', 'SN', 'SS', 'ID', 'SAY', 'DEL', 'PAUSE', 'UNPAUSE', 'SIMRATE',
 ])
 
 export const isVerb = (token: string): boolean => VERBS.has(token.toUpperCase())
@@ -167,10 +184,29 @@ const parseVerb = (verb: string, args: ReadonlyArray<string>): Parsed => {
       }
       return AtcCommand.FlyHeading({ heading, turn: verb === 'TL' ? 'L' : verb === 'TR' ? 'R' : null })
     }
-    case 'CM': {
+    case 'CM':
+    case 'DM': {
       const altitude = parseAltitude(upper[0])
       return altitude === null ? { error: 'altitude?' } : AtcCommand.ClimbMaintain({ altitude })
     }
+    case 'DCT':
+    case 'PD':
+      return upper[0] === undefined ? { error: 'direct where?' } : AtcCommand.Direct({ fix: upper[0] })
+    case 'SPD': {
+      if (upper[0] === undefined) {
+        return AtcCommand.Speed({ knots: null })
+      }
+      const knots = parseInt(upper[0], 10)
+      return Number.isFinite(knots) && knots >= 100 && knots <= 400 ? AtcCommand.Speed({ knots }) : { error: 'speed?' }
+    }
+    case 'EXP':
+      return upper[0] === undefined ? { error: 'expect which runway?' } : AtcCommand.ExpectRunway({ runway: upper[0] })
+    case 'CAPP':
+    case 'ILS':
+      return AtcCommand.ClearedApproach({ runway: upper[0] ?? null })
+    case 'CT':
+    case 'HO':
+      return AtcCommand.ContactTower()
     case 'SQ':
       return upper[0] === undefined ? { error: 'squawk what?' } : AtcCommand.Squawk({ code: upper[0] })
     case 'SN':
@@ -557,14 +593,23 @@ const executeFor = (world: World, a: Aircraft, command: AtcCommand): Outcome => 
       if (a.handoff) {
         return fail('already switched')
       }
-      const d = world.airport.departure
+      const d = nextFacility(world)
+      const fallback = world.rules.handoffTo === 'center' ? 'contact center' : 'contact departure'
       const readback =
-        d === null
-          ? phrase('contact departure')
-          : d.freq !== null
-            ? phrase(`over to ${d.radio}`, frequency(d.freq))
-            : phrase(`over to ${d.radio}`)
-      return reply({ ...a, handoff: true, handoffAt: world.simTime }, readback)
+        d === null ? phrase(fallback) : d.freq !== null ? phrase(`over to ${d.radio}`, frequency(d.freq)) : phrase(`over to ${d.radio}`)
+      return reply({ ...a, handoff: true, handoffAt: world.simTime, handoffTo: world.rules.handoffTo }, readback)
+    },
+
+    ContactTower: () => {
+      if (a.state !== 'AIRB' && a.state !== 'FINAL') {
+        return fail('not airborne')
+      }
+      if (a.handoff) {
+        return fail('already switched')
+      }
+      const freq = world.airport.towerFreq
+      const readback = freq !== null ? phrase(`over to ${towerRadioName(world)}`, frequency(freq)) : phrase(`over to ${towerRadioName(world)}`)
+      return reply({ ...a, handoff: true, handoffAt: world.simTime, handoffTo: 'tower' }, readback)
     },
 
     FlyHeading: ({ heading, turn }) => {
@@ -572,7 +617,52 @@ const executeFor = (world: World, a: Aircraft, command: AtcCommand): Outcome => 
         return fail('not airborne')
       }
       const lead = turn === 'L' ? 'turn left heading' : turn === 'R' ? 'turn right heading' : 'heading'
-      return reply({ ...a, targetHeading: heading % 360, turn }, phrase(lead, digits(String(heading).padStart(3, '0'))))
+      return reply(
+        { ...a, targetHeading: heading % 360, turn, fixes: [], approach: null, established: false },
+        phrase(lead, digits(String(heading).padStart(3, '0'))),
+      )
+    },
+
+    Direct: ({ fix }) => {
+      if (a.state !== 'AIRB') {
+        return fail('not airborne')
+      }
+      if (world.nav.fixes[fix] === undefined) {
+        return fail(`unfamiliar with ${fix}`)
+      }
+      const at = a.fixes.indexOf(fix)
+      const fixes = at >= 0 ? a.fixes.slice(at) : [fix]
+      return reply({ ...a, fixes, turn: null, approach: null, established: false }, phrase('direct', fixToken(fix)))
+    },
+
+    Speed: ({ knots }) => {
+      if (a.state !== 'AIRB') {
+        return fail('not airborne')
+      }
+      return knots === null
+        ? reply({ ...a, assignedSpeed: null }, phrase('resume normal speed'))
+        : reply({ ...a, assignedSpeed: knots }, phrase(knots < a.speed ? 'reduce speed to' : 'increase speed to', digits(String(knots))))
+    },
+
+    ExpectRunway: ({ runway }) => {
+      if (graph.runwayEnds[runway] === undefined) {
+        return fail(`no runway ${runway}`)
+      }
+      return reply({ ...a, runway }, phrase('expect runway', runwayToken(runway)))
+    },
+
+    ClearedApproach: ({ runway: named }) => {
+      if (a.state !== 'AIRB') {
+        return fail('not airborne')
+      }
+      const runway = named ?? a.runway
+      if (runway === null) {
+        return fail('which runway?')
+      }
+      if (graph.runwayEnds[runway] === undefined) {
+        return fail(`no runway ${runway}`)
+      }
+      return reply({ ...a, runway, approach: runway, established: false }, phrase('cleared ILS runway', runwayToken(runway), 'approach'))
     },
 
     ClimbMaintain: ({ altitude }) => {
@@ -654,6 +744,11 @@ const executeGlobal = (world: World, command: AtcCommand): ExecResult =>
     ContactDeparture: () => ({ error: 'select an aircraft first' }),
     FlyHeading: () => ({ error: 'select an aircraft first' }),
     ClimbMaintain: () => ({ error: 'select an aircraft first' }),
+    Direct: () => ({ error: 'select an aircraft first' }),
+    Speed: () => ({ error: 'select an aircraft first' }),
+    ExpectRunway: () => ({ error: 'select an aircraft first' }),
+    ClearedApproach: () => ({ error: 'select an aircraft first' }),
+    ContactTower: () => ({ error: 'select an aircraft first' }),
     Squawk: () => ({ error: 'select an aircraft first' }),
     SquawkNormal: () => ({ error: 'select an aircraft first' }),
     SquawkStandby: () => ({ error: 'select an aircraft first' }),

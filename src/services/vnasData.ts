@@ -8,7 +8,8 @@ import { Context, Data, Effect, Layer, Ref, Schema } from 'effect'
 import { defineTaggedUnion } from 'foldkit/schema'
 
 import { AirportFile, CatalogIndex, type Scenario } from '../domain/catalog'
-import { API, type ArtccDocument, type VnasScenario, type VnasTrainingAirport, assembleAirport, compactMap, compactScenario, facilityIndex, parseLenientJSON, scenarioForAirport } from '../domain/vnas'
+import { NAV_MARGIN_NM, type NavData, decodeNavData, navForAirport } from '../domain/navdata'
+import { API, type ArtccDocument, FILES, type VnasScenario, type VnasTrainingAirport, assembleAirport, compactMap, compactScenario, facilityIndex, parseLenientJSON, scenarioForAirport } from '../domain/vnas'
 import { HttpError, HttpText } from './http'
 
 export class DataError extends Data.TaggedError('DataError')<{ message: string }> {}
@@ -70,6 +71,20 @@ export const VnasDataLive = Layer.effect(VnasData)(
       )
     const vnas = (proxy: string, path: string) => getJson(http, viaProxy(proxy, `${API}${path}`))
 
+    /** NavData.dat once per session; /Files has CORS so it needs no proxy. Missing nav degrades to no TRACON data. */
+    const navRef = yield* Ref.make<NavData | null>(null)
+    const navData: Effect.Effect<NavData | null> = Ref.get(navRef).pipe(
+      Effect.flatMap((cached) =>
+        cached !== null
+          ? Effect.succeed(cached)
+          : http.bytes(`${FILES}/NavData.dat`).pipe(
+              Effect.map(decodeNavData),
+              Effect.tap((nav) => Ref.set(navRef, nav)),
+              Effect.catch(() => Effect.succeed(null)),
+            ),
+      ),
+    )
+
     const catalogIndex = getJson(http, `${CATALOG_BASE}index.json`).pipe(Effect.flatMap(decode(CatalogIndex)))
     const catalogAirport = (id: string) => getJson(http, `${CATALOG_BASE}airports/${id}.json`).pipe(Effect.flatMap(decode(AirportFile)))
 
@@ -111,17 +126,31 @@ export const VnasDataLive = Layer.effect(VnasData)(
           .filter((s) => s.primaryAirportId === id)
           .map((s) => ({ id: s.id, name: s.name, stu: null, n: 0, air: 0, gen: [], ac: [] }))
           .sort((x, y) => x.name.localeCompare(y.name))
-        const assembled = assembleAirport({ id, artcc, updated: null, facilityIndex: facilityIndex(artccDoc), airport: apt, map: compactMap(mapDoc), scen })
-        return yield* decode(AirportFile)(assembled)
+        const nav = yield* navData
+        const assembled = assembleAirport({
+          id,
+          artcc,
+          updated: null,
+          facilityIndex: facilityIndex(artccDoc),
+          airport: apt,
+          map: compactMap(mapDoc),
+          scen,
+          elevation: nav?.airports.get(id)?.elevation ?? null,
+        })
+        const navCenter = assembled.stars?.center ?? assembled.tower ?? nav?.airports.get(id)?.c ?? null
+        const withNav: AirportFile =
+          nav === null || navCenter === null ? assembled : { ...assembled, nav: navForAirport(nav, navCenter, (assembled.stars?.range ?? 40) + NAV_MARGIN_NM) }
+        return yield* decode(AirportFile)(withNav)
       })
 
     const liveScenario = (proxy: string, airport: AirportFile, scenarioId: string) =>
       Effect.gen(function* () {
-        const [artccDoc, full] = yield* Effect.all([
+        const [artccDoc, full, nav] = yield* Effect.all([
           vnas(proxy, `/artccs/${airport.artcc}`) as Effect.Effect<ArtccDocument, HttpError | Error>,
           vnas(proxy, `/training/scenarios/${scenarioId}`) as Effect.Effect<VnasScenario, HttpError | Error>,
+          navData,
         ])
-        const compact = compactScenario(full, facilityIndex(artccDoc).positions)
+        const compact = compactScenario(full, facilityIndex(artccDoc).positions, nav?.fixes ?? {})
         return (
           scenarioForAirport(compact, airport.id) ?? {
             id: scenarioId,

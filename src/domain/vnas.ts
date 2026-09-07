@@ -3,7 +3,8 @@
  * (docs/REWRITE.md section 6). Used by the catalog builder (Bun) and by the
  * app's live mode (browser via a CORS proxy). Port of legacy/lib/vnas.mjs.
  */
-import type { AirportFile, AirportMap, FleetEntry, LonLat, ParkingSpot, Scenario, ScenarioAircraft, Stars } from './catalog'
+import type { AirportFile, AirportMap, AirportNav, FleetEntry, LonLat, ParkingSpot, Scenario, ScenarioAircraft, Stars } from './catalog'
+import { resolveFixOrFrd } from './navdata'
 
 export const API = 'https://data-api.vnas.vatsim.net/api'
 export const FILES = 'https://data-api.vnas.vatsim.net/Files'
@@ -272,6 +273,13 @@ export const starsForAirport = (fi: FacilityIndex, airportId: string): Stars | n
   const dep =
     all.find((p) => /_DEP\b/i.test(p.cs ?? '') || /departure/i.test(p.radio ?? '') || /departure/i.test(p.name ?? '')) ??
     all.find((p) => /_APP\b/i.test(p.cs ?? '') || /approach/i.test(p.radio ?? ''))
+  const app =
+    all.find((p) => /_APP\b/i.test(p.cs ?? '') || /approach/i.test(p.radio ?? '') || /approach/i.test(p.name ?? '')) ?? dep
+  let root: IndexedFacility = host
+  while (root.parent !== null && fi.facilities[root.parent] !== undefined) {
+    root = fi.facilities[root.parent]!
+  }
+  const ctr = root.positions.find((p) => /_CTR\b/i.test(p.cs ?? '') || /center/i.test(p.radio ?? ''))
   return {
     host: host.id,
     hostName: host.name,
@@ -282,6 +290,8 @@ export const starsForAirport = (fi: FacilityIndex, airportId: string): Stars | n
     def,
     ...(twr !== undefined ? { twr: positionRecord(twr) } : {}),
     dep: dep !== undefined ? positionRecord(dep) : null,
+    app: app !== undefined ? positionRecord(app) : null,
+    ctr: ctr !== undefined ? positionRecord(ctr) : null,
   }
 }
 
@@ -311,6 +321,12 @@ export type VnasScenarioAircraft = Readonly<{
     parking?: string | null
     runway?: string | null
     distanceFromRunway?: number | null
+    coordinates?: Readonly<{ lat: number; lon: number }> | null
+    fix?: string | null
+    altitude?: number | null
+    speed?: number | null
+    heading?: number | null
+    navigationPath?: string | null
   }> | null
   flightplan?: Readonly<{
     aircraftType?: string | null
@@ -343,10 +359,15 @@ export type CompactScenario = Readonly<{
 }>
 
 /**
- * Full scenario -> compact record with the surface aircraft grouped by airport.
- * Airborne aircraft (Coordinates / FixOrFrd starts) are counted in `air` only.
+ * Full scenario -> compact record with the aircraft grouped by airport. Airborne
+ * aircraft (Coordinates / FixOrFrd starts) are counted in `air` and become spawn
+ * kind A when they have an altitude and, for a fix start, the fix is in `fixes`.
  */
-export const compactScenario = (scn: VnasScenario, positions: Readonly<Record<string, string>> = {}): CompactScenario => {
+export const compactScenario = (
+  scn: VnasScenario,
+  positions: Readonly<Record<string, string>> = {},
+  fixes: ReadonlyMap<string, LonLat> | Readonly<Record<string, LonLat>> = {},
+): CompactScenario => {
   const byAirport: Record<string, Array<ScenarioAircraft>> = {}
   const queue: Record<string, number> = {}
   let air = 0
@@ -382,8 +403,25 @@ export const compactScenario = (scn: VnasScenario, positions: Readonly<Record<st
       rec = { ...withSid, k: 'R', at: rw, q }
     } else if (sc.type === 'OnFinal') {
       rec = { ...withSid, k: 'F', at: (sc.runway ?? '').toUpperCase(), nm: sc.distanceFromRunway ?? 5 }
-    } else {
+    } else if (sc.type === 'Coordinates' || sc.type === 'FixOrFrd') {
       air++
+      const c = sc.coordinates
+      const pos: LonLat | null =
+        sc.type === 'Coordinates' ? (c ? [r6(c.lon), r6(c.lat)] : null) : resolveFixOrFrd(fixes, sc.fix ?? '')
+      if (pos === null || !sc.altitude) {
+        continue
+      }
+      rec = {
+        ...withSid,
+        k: 'A',
+        at: (sc.fix ?? '').toUpperCase(),
+        pos,
+        fa: sc.altitude,
+        ias: sc.speed || 250,
+        ...(sc.heading !== null && sc.heading !== undefined ? { hdg: sc.heading } : {}),
+        ...(sc.navigationPath ? { nav: sc.navigationPath.trim().toUpperCase() } : {}),
+      }
+    } else {
       continue
     }
     if (apt === '') {
@@ -434,10 +472,14 @@ export const assembleAirport = (
     airport: VnasTrainingAirport | null
     map: AirportMap
     scen: ReadonlyArray<Scenario>
+    nav?: AirportNav | null
+    elevation?: number | null
   }>,
 ): AirportFile => {
   const fac = input.facilityIndex?.facilities[input.id]
   return {
+    ...(input.nav ? { nav: input.nav } : {}),
+    ...(input.elevation !== null && input.elevation !== undefined ? { elev: Math.round(input.elevation) } : {}),
     id: input.id,
     artcc: input.artcc,
     name: fac?.name ?? input.id,

@@ -20,7 +20,7 @@ export const IndexLoad = defineTaggedUnion({
 })
 export type IndexLoad = typeof IndexLoad.Type
 
-export const ScenarioSummary = Schema.Struct({ id: Schema.String, name: Schema.String, count: Schema.Number })
+export const ScenarioSummary = Schema.Struct({ id: Schema.String, name: Schema.String, count: Schema.Number, surface: Schema.Number, airborne: Schema.Number })
 export type ScenarioSummary = typeof ScenarioSummary.Type
 
 export const AirportInfo = Schema.Struct({

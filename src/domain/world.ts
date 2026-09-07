@@ -8,8 +8,9 @@ import { Schema } from 'effect'
 import { defineTaggedUnion } from 'foldkit/schema'
 
 import { Aircraft } from './aircraft'
-import { type AirportFile, FleetEntry, InitialAltitudes, LonLat } from './catalog'
+import { type AirportFile, AirportNav, type FacilityPosition, FleetEntry, InitialAltitudes, LonLat } from './catalog'
 import { Graph, buildGraph } from './graph'
+import { emptyNav } from './navdata'
 import { Phrase } from './phrase'
 import { Prng, seedPrng } from './prng'
 import { PositionRules } from './rules'
@@ -22,9 +23,14 @@ export const WorldAirport = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   init: InitialAltitudes,
+  /** field elevation, feet; 0 when the catalog does not know */
+  elevation: Schema.Number,
   radarCenter: Schema.NullOr(LonLat),
   towerRadio: Schema.NullOr(Schema.String),
+  towerFreq: Schema.NullOr(Schema.String),
   departure: Schema.NullOr(RadioPosition),
+  approach: Schema.NullOr(RadioPosition),
+  center: Schema.NullOr(RadioPosition),
   fleet: Schema.Array(FleetEntry),
 })
 export type WorldAirport = typeof WorldAirport.Type
@@ -50,6 +56,8 @@ export const World = Schema.Struct({
   arrivalsEnabled: Schema.Boolean,
   nextArrivalAt: Schema.Number,
   scenario: Schema.NullOr(ScenarioInfo),
+  /** fixes and procedures around the airport (Phase 8); empty for a catalog built without them */
+  nav: AirportNav,
 })
 export type World = typeof World.Type
 
@@ -80,15 +88,20 @@ export const makeWorld = (airport: AirportFile, rules: PositionRules, seed: numb
     (graph.bounds.lon0 + graph.bounds.lon1) / 2,
     (graph.bounds.lat0 + graph.bounds.lat1) / 2,
   ]
-  const dep = airport.stars?.dep ?? null
+  const radio = (p: FacilityPosition | null | undefined): RadioPosition | null =>
+    p === null || p === undefined ? null : { radio: p.radio, freq: p.freq === '' ? null : p.freq }
   return {
     airport: {
       id: airport.id,
       name: airport.name,
       init: airport.init,
+      elevation: airport.elev ?? 0,
       radarCenter: center,
       towerRadio: airport.stars?.twr?.radio ?? null,
-      departure: dep === null ? null : { radio: dep.radio, freq: dep.freq },
+      towerFreq: airport.stars?.twr?.freq || null,
+      departure: radio(airport.stars?.dep),
+      approach: radio(airport.stars?.app),
+      center: radio(airport.stars?.ctr),
       fleet: airport.fleet,
     },
     graph,
@@ -100,6 +113,7 @@ export const makeWorld = (airport: AirportFile, rules: PositionRules, seed: numb
     arrivalsEnabled: false,
     nextArrivalAt: 0,
     scenario: null,
+    nav: airport.nav ?? emptyNav,
   }
 }
 
@@ -127,5 +141,14 @@ export const removeAircraft = (world: World, callsign: string): World => ({
   aircraft: world.aircraft.filter((a) => a.callsign !== callsign),
 })
 
-export const towerRadioName = (world: World): string =>
-  world.airport.towerRadio ?? `${world.airport.name.replace(/\s+(ATCT|Tower).*$/i, '')} Tower`
+const cityOf = (world: World): string => world.airport.name.replace(/\s+(ATCT|Tower|TRACON|FCT).*$/i, '')
+
+export const towerRadioName = (world: World): string => world.airport.towerRadio ?? `${cityOf(world)} Tower`
+
+export const approachRadioName = (world: World): string => world.airport.approach?.radio ?? `${cityOf(world)} Approach`
+
+export const departureRadioName = (world: World): string => world.airport.departure?.radio ?? `${cityOf(world)} Departure`
+
+/** The facility a departure is switched to under the position's rules. */
+export const nextFacility = (world: World): RadioPosition | null =>
+  world.rules.handoffTo === 'center' ? world.airport.center : world.airport.departure

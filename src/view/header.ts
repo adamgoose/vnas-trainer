@@ -28,8 +28,12 @@ export const headerView = (model: Model, h: HtmlBuilder<Message>): Html => {
         [
           'vNAS ',
           h.select(
-            [h.Class('mode'), h.AriaLabel('Position'), h.Title('Switch position'), h.OnChange((v) => Message.ChangedPosition({ mode: v === 'tower' ? 'tower' : 'ground' }))],
-            [option(h, 'ground', 'Ground', model.settings.mode === 'ground'), option(h, 'tower', 'Local', model.settings.mode === 'tower')],
+            [h.Class('mode'), h.AriaLabel('Position'), h.Title('Switch position'), h.OnChange((v) => Message.ChangedPosition({ mode: v === 'tower' ? 'tower' : v === 'tracon' ? 'tracon' : 'ground' }))],
+            [
+              option(h, 'ground', 'Ground', model.settings.mode === 'ground'),
+              option(h, 'tower', 'Local', model.settings.mode === 'tower'),
+              option(h, 'tracon', 'Approach', model.settings.mode === 'tracon'),
+            ],
           ),
           ' Trainer',
           h.small([], ['ATCTrainer command set']),
@@ -63,7 +67,7 @@ export const headerView = (model: Model, h: HtmlBuilder<Message>): Html => {
           h.button([h.Class('tbtn'), h.Type('button'), h.AriaPressed(model.running ? 'true' : 'false'), h.OnClick(Message.ClickedTogglePlay())], [model.running ? 'Running' : 'Paused']),
           h.button([h.Class('tbtn'), h.Type('button'), h.OnClick(Message.ClickedRate())], [`${model.rate}×`]),
           h.button([h.Class('tbtn'), h.Type('button'), h.AriaPressed(world?.arrivalsEnabled ? 'true' : 'false'), h.OnClick(Message.ClickedArrivals())], ['Arrivals']),
-          positionFor(model.settings.mode).hasRadar
+          positionFor(model.settings.mode).hasRadar && positionFor(model.settings.mode).groundScope
             ? h.div(
                 [h.Class('viewbar'), h.Role('group'), h.AriaLabel('Panes')],
                 (['ground', 'both', 'stars'] as const).map((view) =>

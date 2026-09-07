@@ -18,10 +18,20 @@ import {
   turnDelta,
 } from './geo'
 import { type Graph, edgeName, gateNames, isRunwayName, nearestNode, runwayCourse } from './graph'
-import { type Phrase, callsign as callsignToken, gate as gateToken, numberWords, phrase, runway as runwayToken, taxiways } from './phrase'
-import { nextBetween, nextInt, pick, pickWeighted } from './prng'
+import { type Phrase, altitudeWords, callsign as callsignToken, gate as gateToken, numberWords, phrase, runway as runwayToken, taxiways } from './phrase'
+import { type Prng, nextBetween, nextInt, pick, pickWeighted } from './prng'
 import { findPath } from './route'
-import { SimEvent, type World, type WorldResult, findAircraft, removeAircraft, replaceAircraft, towerRadioName } from './world'
+import {
+  SimEvent,
+  type World,
+  type WorldResult,
+  approachRadioName,
+  departureRadioName,
+  findAircraft,
+  removeAircraft,
+  replaceAircraft,
+  towerRadioName,
+} from './world'
 
 export const SIM_STEP_S = 0.1
 export const MAX_STEPS_PER_TICK = 40
@@ -40,8 +50,22 @@ export const FINAL_KT = 140
 export const GLIDE_FT_PER_NM = 318
 export const GO_AROUND_KT = 160
 export const HANDOFF_REMOVE_S = 20
-export const RADAR_LIMIT_NM = 16
 export const IDENT_S = 4
+/** a fix is sequenced this close to it */
+export const NAV_LEAD_NM = 0.8
+/** cleared for an approach, the aircraft joins the final course from within this cross-track distance … */
+export const APPROACH_INTERCEPT_NM = 1.2
+/** … and this far out, once heading roughly toward the field */
+export const APPROACH_MAX_NM = 30
+export const APPROACH_INTERCEPT_MAX_DEG = 100
+/** established this close in, the aircraft becomes a FINAL arrival */
+export const FINAL_HANDOVER_NM = 10
+export const APPROACH_KT = 170
+export const SPEED_LIMIT_ALT = 10000
+export const SPEED_LIMIT_KT = 250
+export const STAR_ARRIVAL_ALT = 11000
+export const STAR_ARRIVAL_KT = 280
+export const DEPARTURE_CHECK_IN_AGL_FT = 1000
 export const ARRIVAL_GAP_MIN_S = 70
 export const ARRIVAL_GAP_MAX_S = 110
 export const FALLBACK_FLEET = [{ a: 'N', w: 1, t: ['C172', 'BE36', 'C56X', 'PC12'] }]
@@ -180,11 +204,112 @@ export const goAround = (world: World, a: Aircraft, why: string | null): StepOut
     clearedToLand: false,
     destinationGate: null,
     goingAround: true,
+    approach: null,
+    established: false,
+    fixes: [],
   }
   return keep(next, [said(next, phrase(why !== null ? `going around, ${why}` : 'going around'))])
 }
 
-const stepAir = (world: World, a: Aircraft, dt: number): StepOut => {
+// NAVIGATION
+
+const nmBetween = (world: World, a: LonLat, b: LonLat): number => distanceFt(world.graph.projection, a, b) / FT_PER_NM
+
+/** Steer at the next fix; sequence it inside the lead distance; an unknown fix is dropped. */
+const followFixes = (world: World, a: Aircraft): Aircraft => {
+  const name = a.fixes[0]
+  if (name === undefined || a.established) {
+    return a
+  }
+  const fix = world.nav.fixes[name]
+  if (fix === undefined) {
+    return followFixes(world, { ...a, fixes: a.fixes.slice(1) })
+  }
+  if (nmBetween(world, a.position, fix) < NAV_LEAD_NM) {
+    const rest = a.fixes.slice(1)
+    return rest.length === 0 ? { ...a, fixes: rest, targetHeading: a.heading, turn: null } : followFixes(world, { ...a, fixes: rest })
+  }
+  return { ...a, targetHeading: bearingDeg(world.graph.projection, a.position, fix), turn: null }
+}
+
+type FinalCourse = Readonly<{ threshold: LonLat; course: number }>
+
+export const finalCourse = (graph: Graph, runway: string): FinalCourse | null => {
+  const end = graph.runwayEnds[runway]
+  if (end === undefined || end.chain.length < 2) {
+    return null
+  }
+  const threshold = graph.nodes[end.chain[0]!]!
+  return { threshold, course: bearingDeg(graph.projection, threshold, graph.nodes[end.chain[1]!]!) }
+}
+
+/** Distance to run to the threshold along the final course (positive on the approach side) and signed cross-track, both nm. */
+export const finalOffsets = (world: World, fc: FinalCourse, position: LonLat): Readonly<{ along: number; cross: number }> => {
+  const d = nmBetween(world, fc.threshold, position)
+  const rel = (turnDelta(reciprocal(fc.course), bearingDeg(world.graph.projection, fc.threshold, position)) * Math.PI) / 180
+  return { along: d * Math.cos(rel), cross: d * Math.sin(rel) }
+}
+
+/**
+ * Cleared for an approach: join the final course when close and pointed at it,
+ * then track it, hold altitude until the 3° path and descend on it, slow, and
+ * inside FINAL_HANDOVER_NM become the FINAL arrival the tower automation lands.
+ */
+const flyApproach = (world: World, a: Aircraft): StepOut => {
+  if (a.approach === null) {
+    return keep(a)
+  }
+  const fc = finalCourse(world.graph, a.approach)
+  if (fc === null) {
+    return keep({ ...a, approach: null, established: false })
+  }
+  const { along, cross } = finalOffsets(world, fc, a.position)
+  if (!a.established) {
+    const joining =
+      along > 1.5 && along < APPROACH_MAX_NM && Math.abs(cross) < APPROACH_INTERCEPT_NM && headingDiff(a.heading, fc.course) < APPROACH_INTERCEPT_MAX_DEG
+    if (!joining) {
+      return keep(a)
+    }
+    return keep({ ...a, established: true, fixes: [], turn: null }, [note(`${a.callsign} established on the final approach course runway ${a.approach}, ${Math.round(along)} miles`)])
+  }
+  if (along <= FINAL_HANDOVER_NM) {
+    const onFinal: Aircraft = {
+      ...placeOnFinal(world.graph, a, a.approach, Math.max(along, 1)),
+      altitude: a.altitude,
+      speed: a.speed,
+      clearedToLand: !world.rules.requireLandingClearance,
+      approach: null,
+      established: false,
+    }
+    return keep(onFinal, [note(`${a.callsign} ${Math.round(along)} mile final runway ${a.approach}`)])
+  }
+  const aim = movePoint(world.graph.projection, fc.threshold, reciprocal(fc.course), Math.max(along - 2, 0.5) * FT_PER_NM)
+  const glide = along * GLIDE_FT_PER_NM
+  return keep({
+    ...a,
+    targetHeading: bearingDeg(world.graph.projection, a.position, aim),
+    turn: null,
+    targetAltitude: a.altitude > glide ? glide : Math.min(a.targetAltitude, a.altitude),
+  })
+}
+
+/** The speed the pilot flies: assigned, else 250 below 10,000, else the aircraft's own; slower once on the approach. */
+const speedWanted = (a: Aircraft): number => {
+  const own = a.altitude < SPEED_LIMIT_ALT ? Math.min(a.targetSpeed, SPEED_LIMIT_KT) : a.targetSpeed
+  const wanted = a.assignedSpeed ?? own
+  return a.established ? Math.min(wanted, APPROACH_KT) : wanted
+}
+
+const handoffName = (world: World, a: Aircraft): string =>
+  a.handoffTo === 'center' ? (world.airport.center?.radio ?? 'center') : a.handoffTo === 'tower' ? towerRadioName(world) : departureRadioName(world)
+
+const stepAir = (world: World, input: Aircraft, dt: number): StepOut => {
+  const navigated = followFixes(world, input)
+  const approached = flyApproach(world, navigated)
+  if (approached.aircraft === null || approached.aircraft.state !== 'AIRB') {
+    return approached
+  }
+  const a = approached.aircraft
   let delta = turnDelta(a.heading, a.targetHeading)
   if (a.turn === 'L' && delta > 0) {
     delta -= 360
@@ -196,8 +321,8 @@ const stepAir = (world: World, a: Aircraft, dt: number): StepOut => {
   const reached = Math.abs(delta) <= rate
   const heading = reached ? a.targetHeading : (a.heading + Math.sign(delta) * rate + 360) % 360
   const turn = reached ? null : a.turn
-  const speed =
-    a.speed < a.targetSpeed ? Math.min(a.targetSpeed, a.speed + 3 * dt) : Math.max(a.targetSpeed, a.speed - 2 * dt)
+  const wanted = speedWanted(a)
+  const speed = a.speed < wanted ? Math.min(wanted, a.speed + 3 * dt) : Math.max(wanted, a.speed - 2 * dt)
   const climb = ((a.verticalSpeed || 2000) / 60) * dt
   const altitude =
     a.altitude < a.targetAltitude
@@ -207,21 +332,19 @@ const stepAir = (world: World, a: Aircraft, dt: number): StepOut => {
         : a.altitude
   const position = movePoint(world.graph.projection, a.position, heading, speed * KT_TO_FT_PER_S * dt)
   const history = world.tick % 10 === 0 ? [...a.history, position].slice(-6) : a.history
-  const next: Aircraft = { ...a, heading, turn, speed, altitude, position, history }
-  if (next.handoff && world.simTime - next.handoffAt > HANDOFF_REMOVE_S) {
+  const moved: Aircraft = { ...a, heading, turn, speed, altitude, position, history }
+  /** a departure calls once it is through 1,000 ft above the field */
+  const calling = world.rules.checkInAirborne && !moved.checkedIn && moved.altitude >= world.airport.elevation + DEPARTURE_CHECK_IN_AGL_FT
+  const next: Aircraft = calling ? { ...moved, checkedIn: true } : moved
+  if (next.handoff && next.handoffTo !== 'tower' && world.simTime - next.handoffAt > HANDOFF_REMOVE_S) {
     return {
       aircraft: null,
-      events: [
-        SimEvent.Removed({
-          callsign: a.callsign,
-          text: `${a.callsign} with ${world.airport.departure?.radio ?? 'departure'}`,
-        }),
-      ],
+      events: [SimEvent.Removed({ callsign: a.callsign, text: `${a.callsign} with ${handoffName(world, next)}` })],
     }
   }
   const center = world.airport.radarCenter
   const distanceNm = center === null ? 0 : nmFromCenter(radarProjectionAt(center[1]), center, position)
-  if (distanceNm > RADAR_LIMIT_NM) {
+  if (distanceNm > world.rules.radarRangeNm) {
     return {
       aircraft: null,
       events: [
@@ -232,7 +355,7 @@ const stepAir = (world: World, a: Aircraft, dt: number): StepOut => {
       ],
     }
   }
-  return keep(next)
+  return keep(next, calling ? [...approached.events, checkInAirborne(world, next)] : approached.events)
 }
 
 // GROUND
@@ -384,7 +507,31 @@ const stepGround = (world: World, a: Aircraft, dt: number): StepOut => {
 // ONE AIRCRAFT
 
 const onFrequencyNote = (a: Aircraft): string =>
-  `${a.callsign} ${a.type} on frequency — ${a.gate !== null ? `at ${a.gate}` : a.runway !== null ? `holding short ${a.runway}` : 'ready'}`
+  `${a.callsign} ${a.type} on frequency — ${
+    a.state === 'AIRB'
+      ? `${Math.round(a.altitude / 100) * 100} ft${a.fixes[0] !== undefined ? ` to ${a.fixes[0]}` : ''}${a.runway !== null ? `, expecting ${a.runway}` : ''}`
+      : a.state === 'TKOF'
+        ? `departing runway ${a.runway ?? ''}`
+        : a.gate !== null
+        ? `at ${a.gate}`
+        : a.runway !== null
+          ? `holding short ${a.runway}`
+          : 'ready'
+  }`
+
+/** "Minneapolis Approach, Delta ten forty-seven, one one thousand" (departures call the departure position). */
+export const checkInAirborne = (world: World, a: Aircraft): SimEvent => {
+  const departing = a.departure !== null && a.departure.endsWith(world.airport.id)
+  const facility = departing ? departureRadioName(world) : approachRadioName(world)
+  const level = Math.round(a.altitude / 100) * 100
+  const trend =
+    a.targetAltitude > a.altitude + 200
+      ? `climbing ${altitudeWords(level)} for ${altitudeWords(a.targetAltitude)}`
+      : a.targetAltitude < a.altitude - 200
+        ? `descending ${altitudeWords(level)} for ${altitudeWords(a.targetAltitude)}`
+        : altitudeWords(level)
+  return said(a, phrase(`${facility},`, callsignToken(a.callsign), `, ${trend}`))
+}
 
 export const stepAircraft = (world: World, input: Aircraft, dt: number): StepOut => {
   const a: Aircraft =
@@ -392,7 +539,14 @@ export const stepAircraft = (world: World, input: Aircraft, dt: number): StepOut
   if (a.delay > 0) {
     const delay = a.delay - dt
     const next: Aircraft = { ...a, delay }
-    return keep(next, delay <= 0 ? [note(onFrequencyNote(next))] : [])
+    if (delay > 0) {
+      return keep(next)
+    }
+    if (next.state === 'AIRB' && world.rules.checkInAirborne) {
+      const calling: Aircraft = { ...next, checkedIn: true }
+      return keep(calling, [note(onFrequencyNote(calling)), checkInAirborne(world, calling)])
+    }
+    return keep(next, [note(onFrequencyNote(next))])
   }
   const graph = world.graph
   if (a.state === 'PARKED') {
@@ -424,7 +578,12 @@ export const stepAircraft = (world: World, input: Aircraft, dt: number): StepOut
   }
   if (a.state === 'ROLLOUT') {
     const rolled = advance(graph, world.tick, { ...a, speed: Math.max(18, a.speed - 9 * dt) }, dt)
-    return rolled.speed <= 19 ? autoExit(world, rolled) : keep(rolled)
+    if (rolled.speed > 19) {
+      return keep(rolled)
+    }
+    return world.rules.landingRemoves
+      ? { aircraft: null, events: [SimEvent.Removed({ callsign: a.callsign, text: `${a.callsign} landed runway ${a.runway ?? ''}` })] }
+      : autoExit(world, rolled)
   }
   if (a.state === 'HOLD' || a.state === 'LUAW' || a.state === 'PUSHED' || a.state === 'SHORT') {
     return keep({ ...a, speed: Math.max(0, a.speed - 14 * dt) })
@@ -471,6 +630,46 @@ export const checkIn = (world: World, a: Aircraft, nm: number): SimEvent =>
     ),
   )
 
+type StarEntry = Readonly<{ star: string; fixes: ReadonlyArray<string> }>
+
+/** A STAR and branch with at least two known fixes, or null when the nav data has none. */
+const pickStarEntry = (world: World, prng: Prng): readonly [StarEntry | null, Prng] => {
+  const stars = Object.values(world.nav.stars)
+  if (stars.length === 0) {
+    return [null, prng]
+  }
+  const [star, p1] = pick(prng, stars)
+  if (star === undefined) {
+    return [null, p1]
+  }
+  const branches = star.transitions.length > 0 ? star.transitions : [[]]
+  const [branch, p2] = pick(p1, branches)
+  const fixes = [...(branch ?? []), ...star.common].filter((f, i, all) => world.nav.fixes[f] !== undefined && all[i - 1] !== f)
+  return [fixes.length >= 2 ? { star: star.id, fixes } : null, p2]
+}
+
+/** Airborne at the first fix of a STAR branch, heading for the second, at the arrival altitude and speed. */
+export const placeOnStar = (world: World, a: Aircraft, entry: StarEntry): Aircraft => {
+  const position = world.nav.fixes[entry.fixes[0]!]!
+  const heading = bearingDeg(world.graph.projection, position, world.nav.fixes[entry.fixes[1]!]!)
+  return {
+    ...a,
+    state: 'AIRB',
+    position,
+    heading,
+    targetHeading: heading,
+    turn: null,
+    speed: STAR_ARRIVAL_KT,
+    targetSpeed: STAR_ARRIVAL_KT,
+    altitude: STAR_ARRIVAL_ALT,
+    targetAltitude: STAR_ARRIVAL_ALT,
+    verticalSpeed: performance(a.type, world.airport.init).verticalSpeed,
+    fixes: entry.fixes.slice(1),
+    flightPlan: { ...a.flightPlan, star: entry.star },
+    airborneAt: world.simTime,
+  }
+}
+
 export const maybeArrival = (world: World): WorldResult => {
   if (!world.arrivalsEnabled || world.simTime < world.nextArrivalAt) {
     return { world, events: [] }
@@ -489,10 +688,29 @@ export const maybeArrival = (world: World): WorldResult => {
   const [type, p5] = pick(p4, entry?.t ?? [])
   const [squawk, p6] = nextInt(p5, 6000)
   const [destinationGate, p7] = pick(p6, gateNames(world.graph))
+  const [starEntry, p8] = world.rules.arrivalsFrom === 'star' ? pickStarEntry(world, p7) : [null, p7]
   const callsign = `${entry?.a ?? 'N'}${100 + number}`
-  const next: World = { ...scheduled, prng: p7 }
+  const next: World = { ...scheduled, prng: p8 }
   if (runway === undefined || findAircraft(world, callsign) !== undefined) {
     return { world: next, events: [] }
+  }
+  if (starEntry !== null) {
+    const arrival: Aircraft = {
+      ...placeOnStar(
+        world,
+        makeAircraft({ callsign, type: type ?? 'C172', destination: world.airport.id, transponder: 'N', squawk: String(1000 + squawk) }),
+        starEntry,
+      ),
+      tracked: true,
+      runway,
+    }
+    return {
+      world: { ...next, aircraft: [...next.aircraft, arrival] },
+      events: [
+        note(`${arrival.callsign} ${arrival.type} on the ${starEntry.star} at ${starEntry.fixes[0]}, expecting runway ${runway}`),
+        ...(world.rules.checkInAirborne ? [checkInAirborne(world, arrival)] : []),
+      ],
+    }
   }
   const nm = world.rules.arrivalFinalNm
   const arrival: Aircraft = {

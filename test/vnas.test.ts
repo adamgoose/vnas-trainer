@@ -157,4 +157,67 @@ describe('vNAS transforms', () => {
     expect(doc.stars?.host).toBe('M98')
     expect(assembleAirport({ id: 'X', artcc: 'Z', updated: '2024', facilityIndex: null, airport: null, map: { taxi: [], rwy: [], park: {}, spot: {} }, scen: [] })).toMatchObject({ name: 'X', stars: null, init: { jet: 5000, prop: 5000, pattern: 0 } })
   })
+
+  test('compactScenario turns Coordinates and FixOrFrd starts into airborne records when it can place them', () => {
+    const fixes = new Map([['MUSCL', [-91.78, 45.03] as const]])
+    const compact = compactScenario(
+      {
+        id: 's',
+        name: 'Air',
+        primaryAirportId: 'MSP',
+        aircraft: [
+          { aircraftId: 'A1', aircraftType: 'E45X/L', startingConditions: { type: 'Coordinates', coordinates: { lat: 45.140323, lon: -91.74174 }, altitude: 11000, speed: 280, heading: 260, navigationPath: 'muscl3.30r' }, flightplan: { route: 'IDIOM MUSCL4', departure: 'KEWR', destination: 'KMSP' } },
+          { aircraftId: 'A2', aircraftType: 'B738', startingConditions: { type: 'FixOrFrd', fix: 'MUSCL', altitude: 9000, speed: 250 } },
+          { aircraftId: 'A3', aircraftType: 'B738', startingConditions: { type: 'FixOrFrd', fix: 'MUSCL090010', altitude: 9000 } },
+          { aircraftId: 'A4', aircraftType: 'B738', startingConditions: { type: 'FixOrFrd', fix: 'NOPE', altitude: 9000 } },
+          { aircraftId: 'A5', aircraftType: 'B738', startingConditions: { type: 'Coordinates', coordinates: { lat: 45, lon: -93 } } },
+        ],
+      },
+      {},
+      fixes,
+    )
+    expect(compact.air).toBe(5)
+    const ac = compact.byAirport['MSP']!
+    expect(ac.map((a) => a.cs)).toEqual(['A1', 'A2', 'A3'])
+    expect(ac[0]).toMatchObject({ k: 'A', at: '', pos: [-91.74174, 45.140323], fa: 11000, ias: 280, hdg: 260, nav: 'MUSCL3.30R', star: 'MUSCL4' })
+    expect(ac[1]).toMatchObject({ k: 'A', at: 'MUSCL', pos: [-91.78, 45.03], fa: 9000, ias: 250 })
+    expect(ac[1]).not.toHaveProperty('hdg')
+    expect(ac[2]!.pos![0]).toBeGreaterThan(-91.78 + 0.2)
+    expect(ac[2]).toMatchObject({ ias: 250 })
+  })
+
+  test('starsForAirport finds the approach position and the centre position of the ARTCC', () => {
+    const artcc = {
+      facility: {
+        id: 'ZMP',
+        name: 'Minneapolis ARTCC',
+        positions: [{ id: 'p-ctr', callsign: 'MSP_05_CTR', name: '05 ODI LO', radioName: 'Minneapolis Center', frequency: 125300000 }],
+        childFacilities: [
+          {
+            id: 'M98',
+            name: 'Minneapolis TRACON',
+            starsConfiguration: { videoMapIds: [], areas: [{ name: 'MSP', visibilityCenter: { lon: -93.23, lat: 44.89 }, surveillanceRange: 60 }] },
+            positions: [
+              { id: 'p-dep', callsign: 'MSP_R_DEP', name: 'South Departure', radioName: 'Minneapolis Departure', frequency: 124700000 },
+              { id: 'p-app', callsign: 'MSP_E_APP', name: 'Midnight', radioName: 'Minneapolis Approach', frequency: 124700000 },
+            ],
+            childFacilities: [{ id: 'MSP', name: 'Minneapolis ATCT', positions: [] }],
+          },
+        ],
+      },
+      videoMaps: [],
+    }
+    const stars = starsForAirport(facilityIndex(artcc), 'MSP')!
+    expect(stars.app).toEqual({ cs: 'MSP_E_APP', name: 'Midnight', radio: 'Minneapolis Approach', freq: '124.700' })
+    expect(stars.ctr).toEqual({ cs: 'MSP_05_CTR', name: '05 ODI LO', radio: 'Minneapolis Center', freq: '125.300' })
+    expect(stars.dep?.cs).toBe('MSP_R_DEP')
+  })
+
+  test('assembleAirport carries the nav block and the field elevation when given', () => {
+    const nav = { fixes: { MUSCL: [-91.78, 45.03] as const }, stars: {}, sids: {} }
+    const doc = assembleAirport({ id: 'X', artcc: 'Z', updated: null, facilityIndex: null, airport: null, map: { taxi: [], rwy: [], park: {}, spot: {} }, scen: [], nav, elevation: 841.6 })
+    expect(doc.nav).toEqual(nav)
+    expect(doc.elev).toBe(842)
+    expect(assembleAirport({ id: 'X', artcc: 'Z', updated: null, facilityIndex: null, airport: null, map: { taxi: [], rwy: [], park: {}, spot: {} }, scen: [] })).not.toHaveProperty('nav')
+  })
 })

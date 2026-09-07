@@ -26,7 +26,7 @@ export const Message = defineMessageUnion({
   CompletedBlurCommand: {},
   CompletedReplaceDeepLink: {},
   Ticked: { now: Schema.Number },
-  ChangedPosition: { mode: Schema.Literals(['ground', 'tower']) },
+  ChangedPosition: { mode: Schema.Literals(['ground', 'tower', 'tracon']) },
   ChangedArtcc: { id: Schema.String },
   ChangedAirport: { id: Schema.String },
   ChangedScenario: { id: Schema.String },

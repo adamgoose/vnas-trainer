@@ -67,8 +67,27 @@ export const Stars = Schema.Struct({
   /** The builder omits the key when the airport has no tower position. */
   twr: Schema.optionalKey(Schema.NullOr(FacilityPosition)),
   dep: Schema.NullOr(FacilityPosition),
+  /** approach and centre positions (Phase 8); older catalog files omit them */
+  app: Schema.optionalKey(Schema.NullOr(FacilityPosition)),
+  ctr: Schema.optionalKey(Schema.NullOr(FacilityPosition)),
 })
 export type Stars = typeof Stars.Type
+
+/** A SID or STAR from NavData: transitions are the branches, common the shared part. */
+export const Procedure = Schema.Struct({
+  id: Schema.String,
+  transitions: Schema.Array(Schema.Array(Schema.String)),
+  common: Schema.Array(Schema.String),
+})
+export type Procedure = typeof Procedure.Type
+
+/** The fixes and procedures around an airport, keyed by name (procedures without the revision digit). */
+export const AirportNav = Schema.Struct({
+  fixes: Schema.Record(Schema.String, LonLat),
+  stars: Schema.Record(Schema.String, Procedure),
+  sids: Schema.Record(Schema.String, Procedure),
+})
+export type AirportNav = typeof AirportNav.Type
 
 export const InitialAltitudes = Schema.Struct({
   jet: Schema.Number,
@@ -77,14 +96,22 @@ export const InitialAltitudes = Schema.Struct({
 })
 export type InitialAltitudes = typeof InitialAltitudes.Type
 
-export const SpawnKind = Schema.Literals(['P', 'R', 'F'])
+/** Parking, on the Runway, on Final, Airborne */
+export const SpawnKind = Schema.Literals(['P', 'R', 'F', 'A'])
 export type SpawnKind = typeof SpawnKind.Type
 
 export const ScenarioAircraft = Schema.Struct({
   cs: Schema.String,
   ty: Schema.String,
   k: SpawnKind,
+  /** gate, runway, or the fix an airborne start was given as */
   at: Schema.String,
+  /** airborne starts: position, altitude (ft), speed (kt), heading, raw navigation path */
+  pos: Schema.optionalKey(LonLat),
+  fa: Schema.optionalKey(Schema.Number),
+  ias: Schema.optionalKey(Schema.Number),
+  hdg: Schema.optionalKey(Schema.Number),
+  nav: Schema.optionalKey(Schema.String),
   d: Schema.Number,
   dep: Schema.NullOr(Schema.String),
   dst: Schema.NullOr(Schema.String),
@@ -126,6 +153,10 @@ export const AirportFile = Schema.Struct({
   fleet: Schema.Array(FleetEntry),
   map: AirportMap,
   scen: Schema.Array(Scenario),
+  /** Phase 8; a catalog built before it has no nav block or field elevation */
+  nav: Schema.optionalKey(AirportNav),
+  /** field elevation, feet (from NavData) */
+  elev: Schema.optionalKey(Schema.Number),
 })
 export type AirportFile = typeof AirportFile.Type
 

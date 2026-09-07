@@ -10,7 +10,8 @@ import { SimEvent } from '../src/domain/world'
 import { defaultSettings } from '../src/services/settings'
 import { msp } from './helpers'
 
-const big = msp.scen.reduce((best, s) => (s.ac.length > best.ac.length ? s : best), msp.scen[0]!)
+const surfaceCount = (s: (typeof msp.scen)[number]) => s.ac.filter((a) => a.k !== 'A').length
+const big = msp.scen.reduce((best, s) => (surfaceCount(s) > surfaceCount(best) ? s : best), msp.scen[0]!)
 const keyed = { ...defaultSettings, key: 'sk-test', model: 'test/model', audioModel: 'test/audio' }
 
 const ready = (settings = defaultSettings): Model => {

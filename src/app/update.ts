@@ -51,7 +51,7 @@ import { loadScenario } from '../domain/scenario'
 import { SessionControl, SessionEvent, type Snapshot, isRoomCode, normaliseRoomCode } from '../domain/session'
 import { SimEvent, type World, makeWorld, matchCallsign } from '../domain/world'
 import { type PositionMode, positionFor } from '../positions'
-import { StarsOut, starsInit, starsUpdate } from '../positions/local/stars'
+import { StarsOut, rangeView, starsInit, starsUpdate } from '../positions/local/stars'
 import { type TurnServer } from '../services/session'
 import { type Settings, defaultSettings } from '../services/settings'
 import { sourceForProxy } from '../services/vnasData'
@@ -203,7 +203,8 @@ const applyControl = (model: Model, control: SessionControl): Return =>
       const world = worldOf(model)
       const switched = evo(model, { settings: () => settings, draft: () => settings })
       const withRules = world === null ? switched : withWorld(switched, { ...world, rules: rulesFor(mode) })
-      const logged = world === null ? withRules : pushLog(withRules, 'sys', null, `${positionLabel(mode)} position — try: ${positionTips(mode, world)}`)
+      const ranged = evo(withRules, { stars: (stars) => ({ ...stars, view: rangeView(positionFor(mode).scopeRangeNm) }) })
+      const logged = world === null ? ranged : pushLog(ranged, 'sys', null, `${positionLabel(mode)} position — try: ${positionTips(mode, world)}`)
       return { model: logged, commands: [SaveSettings({ settings })] }
     },
   })
@@ -284,8 +285,15 @@ const airportInfo = (airport: AirportFile): AirportInfo => ({
   asdex: airport.asdex,
   twrmap: airport.twrmap,
   stars: airport.stars,
-  scenarios: airport.scen.map((s) => ({ id: s.id, name: s.name, count: s.ac.length })),
+  scenarios: airport.scen.map((s) => ({ id: s.id, name: s.name, count: s.ac.length, surface: s.ac.filter((a) => a.k !== 'A').length, airborne: s.ac.filter((a) => a.k === 'A').length })),
 })
+
+/** The scenario an airport opens on: the first one with aircraft the position can load. */
+export const defaultScenario = (info: AirportInfo, mode: PositionMode): string | null => {
+  const loadsAirborne = positionFor(mode).rules.loadsAirborne
+  const usable = info.scenarios.find((s) => (loadsAirborne ? s.count > 0 : s.surface > 0))
+  return usable?.id ?? info.scenarios[0]?.id ?? null
+}
 
 const findArtcc = (index: CatalogIndex, airportId: string) => index.artccs.find((a) => a.airports.some((p) => p.id === airportId))
 
@@ -483,7 +491,7 @@ export const update = (model: Model, message: Message): Return =>
       const world = makeWorld(airport, rulesFor(model.settings.mode), WORLD_SEED)
       const info = airportInfo(airport)
       const pavementId = airport.asdex ?? airport.twrmap
-      const radar = starsInit(model.stars, airport.artcc, airport.stars)
+      const radar = starsInit(model.stars, airport.artcc, airport.stars, positionFor(model.settings.mode).scopeRangeNm)
       const fitted: Model = {
         ...model,
         airport: { _tag: 'Ready', info, world },
@@ -493,7 +501,7 @@ export const update = (model: Model, message: Message): Return =>
       }
       const pending = model.session.pendingSnapshot
       const wanted = model.deepLink.airport === airport.id ? model.deepLink.scenario : null
-      const scenarioId = wanted !== null && info.scenarios.some((s) => s.id === wanted) ? wanted : (info.scenarios[0]?.id ?? null)
+      const scenarioId = wanted !== null && info.scenarios.some((s) => s.id === wanted) ? wanted : defaultScenario(info, model.settings.mode)
       const next =
         isGuest(model) && pending !== null && pending.airportId === airport.id && model.session.hostId !== null
           ? applySnapshot(fitted, pending, model.session.hostId)

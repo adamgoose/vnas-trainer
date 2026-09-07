@@ -13,6 +13,8 @@ export const PhraseToken = defineTaggedUnion({
   Frequency: { value: Schema.String },
   Digits: { value: Schema.String },
   Callsign: { callsign: Schema.String },
+  /** a fix or navaid: five-letter names are said as words, shorter ones spelled */
+  Fix: { name: Schema.String },
 })
 export type PhraseToken = typeof PhraseToken.Type
 
@@ -31,6 +33,7 @@ export const gate = (name: string) => PhraseToken.Gate({ name })
 export const frequency = (value: string) => PhraseToken.Frequency({ value })
 export const digits = (value: string) => PhraseToken.Digits({ value })
 export const callsign = (value: string) => PhraseToken.Callsign({ callsign: value })
+export const fix = (name: string) => PhraseToken.Fix({ name })
 
 // WORDS
 
@@ -139,6 +142,7 @@ const writtenToken = (token: PhraseToken): string =>
     Frequency: ({ value }) => value,
     Digits: ({ value }) => value,
     Callsign: ({ callsign }) => callsign,
+    Fix: ({ name }) => name,
   })
 
 const spokenToken = (token: PhraseToken): string =>
@@ -150,7 +154,17 @@ const spokenToken = (token: PhraseToken): string =>
     Frequency: ({ value }) => spokenFrequency(value),
     Digits: ({ value }) => digitWords(value),
     Callsign: ({ callsign }) => spokenCallsign(callsign),
+    Fix: ({ name }) => spokenFix(name),
   })
+
+/** MUSCL -> "Muscl" (a pronounceable name), GEP -> "golf echo papa", TORGY252018 spelled by parts. */
+export const spokenFix = (name: string): string => {
+  const m = /^([A-Z]{2,5})(\d{3})(\d{3})$/.exec(name)
+  if (m !== null) {
+    return `the ${spokenFix(m[1]!)} ${digitWords(m[2]!)} radial, ${numberWords(parseInt(m[3]!, 10))} mile fix`
+  }
+  return /^[A-Z]{5}$/.test(name) ? name[0]! + name.slice(1).toLowerCase() : spell(name)
+}
 
 export const written = (p: Phrase): string => joinParts(p.map(writtenToken))
 export const spoken = (p: Phrase): string => joinParts(p.map(spokenToken))

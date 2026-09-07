@@ -13,7 +13,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { Schema } from 'effect'
 
 import { AirportFile, type CatalogIndex, decodeCatalogIndex } from '../src/domain/catalog'
-import { API, type ArtccDocument, type CompactScenario, type FacilityIndex, type GeoJson, type VnasScenario, type VnasTrainingAirport, assembleAirport, compactMap, compactScenario, facilityIndex, parseLenientJSON, scenarioForAirport } from '../src/domain/vnas'
+import { NAV_MARGIN_NM, decodeNavData, navForAirport } from '../src/domain/navdata'
+import { API, FILES, type ArtccDocument, type CompactScenario, type FacilityIndex, type GeoJson, type VnasScenario, type VnasTrainingAirport, assembleAirport, compactMap, compactScenario, facilityIndex, parseLenientJSON, scenarioForAirport } from '../src/domain/vnas'
 
 const OUT = new URL('../catalog/', import.meta.url)
 const wanted = process.argv.slice(2).filter((a) => !a.startsWith('--')).map((s) => s.toUpperCase())
@@ -69,6 +70,14 @@ if (!artccSummaries || !airportSummaries || !scenarioSummaries) {
 }
 const artccName = Object.fromEntries(artccSummaries.map((s) => [s.id, s.name ?? s.id]))
 
+/** NavData.dat: fixes for fix-radial-distance starts and the per-airport nav blocks (Phase 8). */
+const navResponse = await fetch(`${FILES}/NavData.dat`)
+if (!navResponse.ok) {
+  throw new Error(`NavData.dat: HTTP ${navResponse.status}`)
+}
+const nav = decodeNavData(new Uint8Array(await navResponse.arrayBuffer()))
+console.log(`NavData: ${nav.fixes.size} fixes, ${nav.airports.size} airports, ${nav.stars.length} STARs, ${nav.sids.length} SIDs`)
+
 const airports = wanted.length > 0 ? airportSummaries.filter((a) => wanted.includes(a.artccId)) : airportSummaries
 const artccIds = [...new Set(airports.map((a) => a.artccId))].sort()
 console.log(`${airports.length} training airports across ${artccIds.length} ARTCC(s)`)
@@ -88,7 +97,7 @@ const compact = await pool(scenList, CONCURRENCY, async (s): Promise<CompactScen
   if (++done % 200 === 0) {
     console.log(`  ${done}/${scenList.length}`)
   }
-  return doc ? compactScenario(doc, facIndex[s.artccId!]?.positions ?? {}) : null
+  return doc ? compactScenario(doc, facIndex[s.artccId!]?.positions ?? {}, nav.fixes) : null
 })
 
 const index: Record<string, Array<CatalogIndex['artccs'][number]['airports'][number]>> = {}
@@ -115,7 +124,19 @@ await pool(airports, CONCURRENCY, async (a) => {
     .flatMap((c) => (c === null ? [] : [scenarioForAirport(c, a.id)]))
     .flatMap((s) => (s === null ? [] : [s]))
     .sort((x, y) => x.name.localeCompare(y.name))
-  const doc = assembleAirport({ id: a.id, artcc: a.artccId, updated: a.lastUpdatedAt ?? null, facilityIndex: facIndex[a.artccId] ?? null, airport: apt, map, scen })
+  const assembled = assembleAirport({
+    id: a.id,
+    artcc: a.artccId,
+    updated: a.lastUpdatedAt ?? null,
+    facilityIndex: facIndex[a.artccId] ?? null,
+    airport: apt,
+    map,
+    scen,
+    elevation: nav.airports.get(a.id)?.elevation ?? null,
+  })
+  const navCenter = assembled.stars?.center ?? assembled.tower ?? nav.airports.get(a.id)?.c ?? null
+  const doc: AirportFile =
+    navCenter === null ? assembled : { ...assembled, nav: navForAirport(nav, navCenter, (assembled.stars?.range ?? 40) + NAV_MARGIN_NM) }
   try {
     validate(doc)
   } catch (e) {
@@ -127,7 +148,7 @@ await pool(airports, CONCURRENCY, async (a) => {
   console.log(
     `  ${a.id.padEnd(4)} ${doc.name.padEnd(34)} ${String(scen.length).padStart(3)} scenarios  ${String(map.taxi.length).padStart(3)} taxiways  ${String(Object.keys(map.park).length).padStart(3)} gates${doc.asdex ? '  ASDE-X' : ''}${
       doc.stars ? `  STARS ${doc.stars.host} ${doc.stars.def.length} maps${doc.stars.dep ? ' dep ' + doc.stars.dep.freq : ''}` : ''
-    }`,
+    }${doc.nav ? `  nav ${Object.keys(doc.nav.fixes).length} fixes ${Object.keys(doc.nav.stars).length} STARs` : ''}`,
   )
 })
 

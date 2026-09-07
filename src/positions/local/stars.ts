@@ -39,9 +39,9 @@ export type StarsModel = typeof StarsModel.Type
 
 export const DEFAULT_RANGE_NM = 15
 export const MIN_VIEW_NM = 6
-export const MAX_VIEW_NM = 160
+export const MAX_VIEW_NM = 320
 export const MIN_RANGE_NM = 3
-export const MAX_RANGE_NM = 80
+export const MAX_RANGE_NM = 160
 export const DEFAULT_MAP_COUNT = 4
 export const HIT_FRACTION = 0.04
 
@@ -178,10 +178,10 @@ export type StarsInput = Readonly<{ message: StarsMessage; world: World | null }
 export type StarsReturn = Update.ReturnWithOutMessage<StarsModel, StarsMessage, StarsOut, VideoMaps>
 
 /** Fresh pane for an airport: default range and the default maps loading. */
-export const starsInit = (model: StarsModel, artcc: string, stars: Stars | null): Update.Return<StarsModel, StarsMessage, VideoMaps> => {
+export const starsInit = (model: StarsModel, artcc: string, stars: Stars | null, range: number = DEFAULT_RANGE_NM): Update.Return<StarsModel, StarsMessage, VideoMaps> => {
   const shown = defaultMaps(stars)
   return {
-    model: { ...model, view: rangeView(DEFAULT_RANGE_NM), drag: null, mapsOpen: false, shown, loaded: model.loaded },
+    model: { ...model, view: rangeView(range), drag: null, mapsOpen: false, shown, loaded: model.loaded },
     commands: shown.filter((id) => !model.loaded.includes(id)).map((id) => LoadStarsMap({ artcc, id })),
   }
 }

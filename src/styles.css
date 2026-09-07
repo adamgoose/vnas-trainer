@@ -11,6 +11,7 @@
   --f-m: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
 }
 .app.tower { --accent: #b388ff; --accent-ink: #160c24; }
+.app.tracon { --accent: #2dd4bf; --accent-ink: #062a25; }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--f-s); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; overflow: hidden; }

@@ -12,7 +12,9 @@ export const COMMAND_REFERENCE = `PUSH [taxiway] | TAXI <taxiways...> [HS <pt>] 
 HS <pt> | CROSS | RES | HOLD | BREAK | GIVEWAY <callsign> | LUAW | CTO | EXIT |
 CTL (cleared to land) | GA (go around) | CD (contact departure / frequency change) |
 FH <hdg> (fly heading) | TL <hdg> | TR <hdg> (turn left/right heading) | CM <alt> (climb/descend and maintain, feet or FL) |
-TRACK (start radar track) | DROP | SQ <code> | SN | SS | ID | SAY <gate|type|rwy> | DEL | TAXIALL`
+TRACK (start radar track) | DROP | SQ <code> | SN | SS | ID | SAY <gate|type|rwy> | DEL | TAXIALL |
+DM <alt> (descend and maintain) | DCT <fix> (direct a fix) | SPD <kt> (assign speed; SPD alone resumes normal speed) | EXP <rwy> (expect runway) |
+CAPP <rwy> (cleared ILS/approach) | CT (contact tower)`
 
 export type Prompt = Readonly<{ system: string; user: string }>
 
@@ -44,6 +46,8 @@ export const buildPrompt = ({ world, airportName, positionLabel, selected, audio
     .map(([prefix, name]) => `${name} = ${prefix}`)
     .join(', ')
   const dep = world.airport.departure
+  const fixesInUse = [...new Set(onFrequency.flatMap((a) => a.fixes))]
+  const stars = Object.values(world.nav.stars).map((s) => s.id)
   const system = `You are the pilot side of an air traffic control simulator at ${airportName} (${world.airport.id}).
 The controller is working the ${positionLabel} position. Translate one controller transmission into ATCTrainer commands and produce the pilot's readback.
 
@@ -54,12 +58,14 @@ Runways: ${runwayList}
 Taxiways: ${taxiwayList}
 Gates and spots (${gates.length}): ${gates.slice(0, GATE_LIMIT).join(' ')}${gates.length > GATE_LIMIT ? ' …' : ''}
 ${dep !== null ? `Departure frequency: ${dep.freq ?? ''} (${dep.radio})` : ''}
+${fixesInUse.length > 0 ? `Fixes on aircraft routes: ${fixesInUse.join(' ')}` : ''}${stars.length > 0 ? `\nArrivals (STARs): ${stars.join(' ')}` : ''}
 
 PHRASEOLOGY — how the controller talks, and what it maps to
 - Letters are the ICAO alphabet (alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey x-ray yankee zulu). Numbers are spoken digit by digit: "niner" = 9, "tree" = 3, "fife" = 5.
 - Runways: "runway one two left" = 12L, "runway three zero right" = 30R, "runway four" = 4. Taxiways: "alpha" = A, "alpha one" = A1, "kilo ten" = K10 — resolve against the taxiway list above; a taxiway name that is a word (ALLEY) is said as a word.
 - Callsigns: airline telephony plus the flight number in COMBINED group form, never digit by digit — "Delta ten forty-seven" = DAL1047, "FedEx nineteen ninety-two" = FDX1992, "American eight ninety-four" = AAL894, "SkyWest thirty-five twenty-one" = SKW3521, "Southwest twelve hundred" = SWA1200, "Delta ten" = DAL10. GA aircraft are spelled: "November four two sierra tango" = N42ST, often shortened to the last three ("four two sierra tango" or "two sierra tango"). Always pick the matching callsign from the roster, never invent one.${telephony ? `\n  Telephony on frequency now: ${telephony}.` : ''}
 - Ground: "push back approved" → PUSH; "push back approved, tail east onto alpha" → PUSH A; "runway three zero left, taxi via quebec, charlie" → RWY 30L TAXI Q C; "taxi to gate echo one six via bravo" → TAXI B E16; "hold short of runway one two right" as part of a taxi → append HS 12R to that taxi command, on its own → HS 12R; "cross runway one two right" → CROSS; "continue taxi" / "resume" → RES; "hold position" / "stop" → HOLD; "give way to the Delta seven thirty-seven" → GIVEWAY <that callsign>; "expedite" → BREAK; "monitor tower" / "contact ground" → no command, readback only.
+- Approach: "descend and maintain four thousand" → DM 4000; "descend via" or "cross ... at" → DM to that altitude; "proceed direct MUSCL" / "direct muscle" → DCT MUSCL (five-letter fixes are said as words, navaids spelled; match against the fix list above); "reduce speed to two one zero" / "slow to two ten" → SPD 210; "resume normal speed" → SPD; "expect runway three zero right" / "expect the ILS three zero right" → EXP 30R; "cleared ILS runway three zero right approach" / "cleared approach" → CAPP 30R (or CAPP alone when the runway was given with EXP); "turn left heading two four zero, intercept the localizer" → TL 240 then nothing more unless "cleared" was said; "contact tower" / "contact Minneapolis tower one two six point seven" → CT; "contact center" → CD.
 - Tower: "line up and wait" → LUAW; "cleared for takeoff" → CTO; "cleared to land" → CTL; "go around" → GA; "fly heading zero niner zero" → FH 090; "turn left/right heading two seven zero" → TL 270 / TR 270; "climb and maintain five thousand" → CM 5000; "climb and maintain flight level two three zero" → CM FL230; "contact departure" → CD; "exit at alpha five" → EXIT A5.
 - Transponder: "squawk four five two one" → SQ 4521; "ident" → ID; "squawk standby" → SS; "squawk normal" → SN.
 - Several instructions in one transmission are several commands, in the order spoken. A transmission that is only a callsign check-in, an acknowledgement, or addressed to nobody in the roster produces no commands.

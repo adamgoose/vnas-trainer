@@ -15,7 +15,10 @@ const index = {
   built: '',
   artccs: [{ id: 'ZMP', name: 'Minneapolis ARTCC', airports: [{ id: 'MSP', name: 'Minneapolis ATCT', n: 64, asdex: true, gates: 220, taxi: 106, stars: true }, { id: 'FCM', name: 'Flying Cloud', n: 2, asdex: false, gates: 8, taxi: 14, stars: true }] }],
 }
-const big = msp.scen.reduce((best, s) => (s.ac.length > best.ac.length ? s : best), msp.scen[0]!)
+const surfaceCount = (s: (typeof msp.scen)[number]) => s.ac.filter((a) => a.k !== 'A').length
+const big = msp.scen.reduce((best, s) => (surfaceCount(s) > surfaceCount(best) ? s : best), msp.scen[0]!)
+/** the scenario MSP opens on as Ground: the first with surface aircraft (scen[0] is an airborne-only TRACON scenario) */
+const first = msp.scen.find((s) => s.ac.some((a) => a.k !== 'A'))!
 
 /** The model after the whole load chain, with the biggest scenario applied. */
 const ready = (): Model => {
@@ -49,21 +52,21 @@ describe('boot chain', () => {
       }),
       Command.resolve(LoadAirport, Message.CompletedLoadAirport({ airport: msp })),
       Command.expectHas(
-        LoadScenario({ source: DataSource.Catalog(), airportId: 'MSP', scenarioId: msp.scen[0]!.id }),
+        LoadScenario({ source: DataSource.Catalog(), airportId: 'MSP', scenarioId: first.id }),
         LoadPavement({ artcc: 'ZMP', id: msp.asdex!, asdex: true }),
       ),
       model((m) => {
         expect(m.airport._tag).toBe('Ready')
         expect(m.pavement).toEqual({ _tag: 'Loading', id: msp.asdex! })
-        expect(m.scenarioLoading).toBe(msp.scen[0]!.id)
+        expect(m.scenarioLoading).toBe(first.id)
         expect(m.stars.shown).toEqual(defaultMaps(msp.stars))
       }),
       ...defaultMaps(msp.stars).map((id) => Command.resolve(LoadStarsMap({ artcc: 'ZMP', id }), StarsMessage.CompletedLoadMap({ id }))),
-      Command.resolve(LoadScenario, Message.CompletedLoadScenario({ airportId: 'MSP', scenario: msp.scen[0]! })),
-      Command.expectExact(LoadPavement({ artcc: 'ZMP', id: msp.asdex!, asdex: true }), ReplaceDeepLink({ airport: 'MSP', scenario: msp.scen[0]!.id })),
+      Command.resolve(LoadScenario, Message.CompletedLoadScenario({ airportId: 'MSP', scenario: first })),
+      Command.expectExact(LoadPavement({ artcc: 'ZMP', id: msp.asdex!, asdex: true }), ReplaceDeepLink({ airport: 'MSP', scenario: first.id })),
       Command.resolve(ReplaceDeepLink, Message.CompletedReplaceDeepLink()),
       model((m) => {
-        expect(worldOf(m)?.aircraft.length).toBe(msp.scen[0]!.ac.filter((a) => a.k === 'P').length)
+        expect(worldOf(m)?.aircraft.length).toBe(first.ac.filter((a) => a.k === 'P').length)
         expect(m.log.at(-1)?.text).toMatch(/surface aircraft/)
         expect(m.log[0]?.text).toMatch(/^Ground position\. Select an aircraft, then try: PUSH · RWY/)
       }),
@@ -144,6 +147,16 @@ describe('boot chain', () => {
       model((m) => {
         expect(worldOf(m)?.rules.requireLandingClearance).toBe(true)
         expect(m.log[0]?.text).toMatch(/^Local position — try: LUAW/)
+        expect(m.stars.view.w).toBe(30)
+      }),
+      message(Message.ChangedPosition({ mode: 'tracon' })),
+      Command.expectExact(SaveSettings({ settings: { ...defaultSettings, mode: 'tracon' } })),
+      Command.resolve(SaveSettings, Message.CompletedSaveSettings()),
+      model((m) => {
+        expect(worldOf(m)?.rules.loadsAirborne).toBe(true)
+        expect(worldOf(m)?.rules.radarRangeNm).toBe(150)
+        expect(m.log[0]?.text).toMatch(/^Approach position — try: DM 4000 · SPD 210 · DCT [A-Z0-9]+ · FH 240 · CAPP/)
+        expect(m.stars.view.w).toBe(80)
       }),
     )
   })

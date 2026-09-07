@@ -14,7 +14,8 @@ import { stripsView } from './strips'
 export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
   const info = infoOf(model)
   const label = positionLabel(model.settings.mode)
-  const pane = positionFor(model.settings.mode).hasRadar ? model.settings.view : 'ground'
+  const position = positionFor(model.settings.mode)
+  const pane = !position.hasRadar ? 'ground' : !position.groundScope ? 'stars' : model.settings.view
   const radar = h.submodel({
     slotId: 'stars',
     model: model.stars,

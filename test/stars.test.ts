@@ -23,7 +23,7 @@ describe('STARS pane', () => {
     expect(again.commands).toEqual([])
   })
 
-  test('the radar plane is letterboxed and zooms about the cursor within 6 to 160 nm', () => {
+  test('the radar plane is letterboxed and zooms about the cursor within 6 to 320 nm', () => {
     const model = { ...initialStars, width: 800, height: 400 }
     expect(toCanvas(model, 0, 0)).toEqual({ x: 400, y: 200 })
     expect(toCanvas(model, 15, 0).x).toBeCloseTo(600, 6)
@@ -34,10 +34,10 @@ describe('STARS pane', () => {
     expect(zoomed.w).toBe(15)
     expect(canvasToNm({ ...model, view: zoomed }, 600, 200).x).toBeCloseTo(15, 6)
     expect(zoomAt(model, 400, 200, 0.01).w).toBe(6)
-    expect(zoomAt(model, 400, 200, 100).w).toBe(160)
+    expect(zoomAt(model, 400, 200, 100).w).toBe(320)
   })
 
-  test('range buttons step by 1.5 within 3 to 80 nm and CTR restores 15', () => {
+  test('range buttons step by 1.5 within 3 to 160 nm and CTR restores 15', () => {
     const run = (m: typeof initialStars, message: StarsMessage) => starsUpdate(m, 'ZMP', { message, world: null }).model
     let m = initialStars
     m = run(m, StarsMessage.ClickedRangeOut())
@@ -51,7 +51,7 @@ describe('STARS pane', () => {
     for (let i = 0; i < 20; i++) {
       m = run(m, StarsMessage.ClickedRangeOut())
     }
-    expect(m.view.w / 2).toBe(80)
+    expect(m.view.w / 2).toBe(160)
     expect(run(m, StarsMessage.ClickedCentre()).view).toEqual(rangeView(15))
   })
 
