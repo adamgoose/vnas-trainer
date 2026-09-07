@@ -236,7 +236,9 @@ const trackOrDrop = (a: Aircraft): ReadonlyArray<RadialItem> =>
   a.radar === null ? [] : a.tracked ? [leaf('drop', 'DROP', 'DROP')] : [leaf('track', 'TRACK', 'TRACK')]
 
 const runwayItem = (graph: Graph, a: Aircraft) => menu('rwy', 'RWY', () => runwayMenu(graph, a))
-const taxiItem = (graph: Graph, a: Aircraft) => menu('taxi', 'TAXI', () => taxiMenu(graph, a))
+/** TAXI only continues a clearance: to the assigned runway, or an arrival to its gate. */
+const taxiItem = (graph: Graph, a: Aircraft): ReadonlyArray<RadialItem> =>
+  a.runway === null && a.destinationGate === null ? [] : [menu('taxi', 'TAXI', () => taxiMenu(graph, a))]
 const holdShortItem = (graph: Graph, a: Aircraft): ReadonlyArray<RadialItem> => {
   const points = pointsAhead(graph, a)
   return points.length === 0 ? [] : [menu('hs', 'HS', () => paged('HS', points.map((p) => leaf(`p:${p}`, p, `HS ${p}`))))]
@@ -313,15 +315,15 @@ export const radialRoot = (world: World, mode: PositionMode, a: Aircraft): Radia
             paged('PUSH', [leaf('go', 'PUSH', 'PUSH'), ...taxiwaysNear(graph, positionOf(graph, a)).map((t) => leaf(`t:${t}`, t, `PUSH ${t}`))]),
           ),
           runwayItem(graph, a),
-          taxiItem(graph, a),
+          ...taxiItem(graph, a),
         ]
       case 'PUSH':
       case 'PUSHED':
-        return [runwayItem(graph, a), taxiItem(graph, a), ...(a.state === 'PUSHED' ? [leaf('res', 'RES', 'RES')] : []), leaf('hold', 'HOLD', 'HOLD')]
+        return [runwayItem(graph, a), ...taxiItem(graph, a), ...(a.state === 'PUSHED' ? [leaf('res', 'RES', 'RES')] : []), leaf('hold', 'HOLD', 'HOLD')]
       case 'TAXI':
         return [
           runwayItem(graph, a),
-          taxiItem(graph, a),
+          ...taxiItem(graph, a),
           ...holdShortItem(graph, a),
           ...crossItem(graph, a),
           leaf('hold', 'HOLD', 'HOLD'),
@@ -334,7 +336,7 @@ export const radialRoot = (world: World, mode: PositionMode, a: Aircraft): Radia
           ...crossItem(graph, a),
           leaf('res', 'RES', 'RES'),
           runwayItem(graph, a),
-          taxiItem(graph, a),
+          ...taxiItem(graph, a),
           ...holdShortItem(graph, a),
           ...giveWayItem(world, a),
           ...departureItems(a),
@@ -343,7 +345,7 @@ export const radialRoot = (world: World, mode: PositionMode, a: Aircraft): Radia
         return [
           leaf('res', 'RES', 'RES'),
           runwayItem(graph, a),
-          taxiItem(graph, a),
+          ...taxiItem(graph, a),
           ...crossItem(graph, a),
           ...holdShortItem(graph, a),
           leaf('break', 'BREAK', 'BREAK'),
@@ -352,7 +354,7 @@ export const radialRoot = (world: World, mode: PositionMode, a: Aircraft): Radia
           leaf('exit', 'EXIT', 'EXIT'),
         ]
       case 'ROLLOUT':
-        return [leaf('exit', 'EXIT', 'EXIT'), taxiItem(graph, a), leaf('hold', 'HOLD', 'HOLD')]
+        return [leaf('exit', 'EXIT', 'EXIT'), ...taxiItem(graph, a), leaf('hold', 'HOLD', 'HOLD')]
       case 'LUAW':
         return departureItems(a).filter((i) => i.key === 'cto')
       case 'TKOF':

@@ -47,7 +47,7 @@ export const helpView = (h: HtmlBuilder<Message>): Html =>
       h.h3([], ['Ground']),
       h.div([h.Class('cmds')], [
         ...cmdRow(h, 'PUSH [taxiway]', ['Push back off the gate onto a taxiway, or straight back.']),
-        ...cmdRow(h, 'TAXI {path} [CROSS {rw}] [HS {pt}]', ['Taxi via a list of taxiways, e.g. ', h.b([], ['TAXI B A']), '. A gate or spot name may end the path. Aircraft hold short of every runway on the route until cleared across; ', h.b([], ['CROSS 4 12R']), ' in the clearance clears those crossings up front.']),
+        ...cmdRow(h, 'TAXI {path} [CROSS {rw}] [HS {pt}]', ['Continue a taxi via a list of taxiways, e.g. ', h.b([], ['TAXI B A']), ', to the runway already assigned with RWY (or an arrival to its gate). A gate or spot name may end the path. Aircraft hold short of every runway on the route until cleared across; ', h.b([], ['CROSS 4 12R']), ' in the clearance clears those crossings up front.']),
         ...cmdRow(h, 'RWY {rw} TAXI {path}', ['Taxi to a departure runway, e.g. ', h.b([], ['RWY 30L TAXI A A1 CROSS 12R']), '. The word TAXI is optional.']),
         ...cmdRow(h, 'HS {taxiway/runway}', ['Hold short of a point already on the route.']),
         ...cmdRow(h, 'CROSS [runway]', ['Cross the runway being held short of, or clear a named runway further along the route.']),

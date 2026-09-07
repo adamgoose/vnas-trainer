@@ -54,8 +54,9 @@ describe('radial menu rings', () => {
   const world = groundWorld()
   const parked = aircraftNamed(world, 'AAL894')
 
-  test('a parked aircraft is offered pushback, a runway, a taxi route and the transponder ring', () => {
-    expect(keys(radialRoot(world, 'ground', parked))).toEqual(['push', 'rwy', 'taxi', 'more'])
+  test('a parked aircraft is offered pushback, a runway and the transponder ring; TAXI only once a runway is assigned', () => {
+    expect(keys(radialRoot(world, 'ground', parked))).toEqual(['push', 'rwy', 'more'])
+    expect(keys(radialRoot(world, 'ground', { ...parked, runway: '30L' }))).toEqual(['push', 'rwy', 'taxi', 'more'])
     expect(lineAt(world, 'ground', parked, ['push', 'go'])).toBe('PUSH')
     const push = radialAt(world, 'ground', parked, ['push'])!
     const first = keys(push)[1]!

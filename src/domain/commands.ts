@@ -531,7 +531,13 @@ const executeFor = (world: World, a: Aircraft, command: AtcCommand): Outcome => 
       if ('error' in crossings) {
         return fail(crossings.error)
       }
-      const taxied = beginTaxi(world, a, tokens.names, tokens.gate, null, [...tokens.runways, ...crossings])
+      // TAXI continues to what the aircraft was already given: a named gate, the
+      // assigned runway's hold point, or an arrival's gate. It never assigns a runway.
+      const gate = tokens.gate ?? (a.runway === null ? a.destinationGate : null)
+      if (gate === null && a.runway === null) {
+        return fail('no runway assigned — use RWY')
+      }
+      const taxied = beginTaxi(world, a, tokens.names, gate, a.runway, [...tokens.runways, ...crossings])
       if ('error' in taxied) {
         return fail(taxied.error)
       }
