@@ -96,7 +96,7 @@ export const pan = (view: ScopeView, originX: number, originY: number, dx: numbe
   originY: originY - dy / view.scale,
 })
 
-/** The nearest candidate within 3.5 % of the view width, or null. */
+/** The nearest candidate within `fraction` (3.5 % by default) of the view width, or null. */
 export const hitTest = <A>(
   graph: Graph,
   view: ScopeView,
@@ -104,9 +104,10 @@ export const hitTest = <A>(
   y: number,
   candidates: ReadonlyArray<A>,
   positionOf: (a: A) => LonLat,
+  fraction: number = HIT_FRACTION,
 ): A | null => {
   const target = canvasToWorld(view, x, y)
-  const limit = viewWidthFt(view) * HIT_FRACTION
+  const limit = viewWidthFt(view) * fraction
   let best: A | null = null
   let bestDistance = Infinity
   for (const a of candidates) {

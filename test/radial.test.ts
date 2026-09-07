@@ -8,7 +8,8 @@ import { Command, given, message, model, story } from 'foldkit/story'
 import { FocusCommand, LoadPavement, SaveSettings } from '../src/app/commands'
 import { Message } from '../src/app/message'
 import { type Model, initialModel, worldOf } from '../src/app/model'
-import { MAX_ITEMS, type RadialNode, radialAt, radialRoot } from '../src/app/radial'
+import { intersections, newPlan, planPreview } from '../src/app/plan'
+import { MAX_ITEMS, type RadialNode, openPlan, radialAt, radialRoot } from '../src/app/radial'
 import { pavementFor, update } from '../src/app/update'
 import type { Aircraft } from '../src/domain/aircraft'
 import { parseCommandLine } from '../src/domain/commands'
@@ -20,7 +21,7 @@ import { MAX_SPLIT, MAX_TAG_SIZE, MIN_SPLIT, MIN_TAG_SIZE, defaultSettings, merg
 import { toCanvas, toWorld } from '../src/view/viewport'
 import { aircraftNamed, command, groundWorld, msp, runUntil, scenarioNamed, stateOf } from './helpers'
 
-const keys = (node: RadialNode | null): ReadonlyArray<string> => (node !== null && node._tag === 'Menu' ? node.items.map((i) => i.key) : [])
+const keys = (node: RadialNode | null): ReadonlyArray<string> => (node !== null && (node._tag === 'Menu' || node._tag === 'Plan') ? node.items.map((i) => i.key) : [])
 const lineAt = (world: World, mode: PositionMode, a: Aircraft, trail: ReadonlyArray<string>): string => {
   const node = radialAt(world, mode, a, trail)
   if (node === null || node._tag !== 'Line') {
@@ -35,6 +36,9 @@ const leaves = (world: World, mode: PositionMode, a: Aircraft, depth: number): R
   const walk = (node: RadialNode, trail: ReadonlyArray<string>) => {
     if (node._tag === 'Line') {
       out.push({ trail, line: node.line })
+      return
+    }
+    if (node._tag === 'Close') {
       return
     }
     expect(node.items.length).toBeLessThanOrEqual(MAX_ITEMS)
@@ -66,24 +70,44 @@ describe('radial menu rings', () => {
     expect(lineAt(world, 'ground', parked, ['more', 'del'])).toBe('DEL')
   })
 
-  test('a runway clearance is built a clause at a time: taxiways that join the last one, crossings, then a hold-short point', () => {
+  test('a runway pick proposes a route: GO issues it, intersections reroute it, crossings toggle hold short and cross', () => {
     const runways = keys(radialAt(world, 'ground', parked, ['rwy']))
     expect(runways).toEqual(Object.keys(world.graph.runwayEnds).map((d) => `r:${d}`))
-    const builder = radialAt(world, 'ground', parked, ['rwy', 'r:30L'])!
-    expect(builder._tag === 'Menu' && builder.title).toBe('RWY 30L')
-    expect(keys(builder).slice(0, 3)).toEqual(['go', 'x', 'hs'])
-    expect(lineAt(world, 'ground', parked, ['rwy', 'r:30L', 'go'])).toBe('RWY 30L')
-    const taxiway = keys(builder).find((k) => k.startsWith('t:'))!.slice(2)
-    const via = radialAt(world, 'ground', parked, ['rwy', 'r:30L', `t:${taxiway}`])!
-    expect(via._tag === 'Menu' && via.title).toBe(`RWY 30L TAXI ${taxiway}`)
-    const joining = keys(via).filter((k) => k.startsWith('t:'))
-    expect(joining).not.toContain(`t:${taxiway}`)
-    for (const other of joining) {
-      const shared = world.graph.taxiways[other.slice(2)]!.some((n) => world.graph.nodeTaxiways[n]!.includes(taxiway))
-      expect(shared).toBe(true)
-    }
-    expect(lineAt(world, 'ground', parked, ['rwy', 'r:30L', `t:${taxiway}`, 'x', 'r:12R', 'hs', 'p:4'])).toBe(`RWY 30L TAXI ${taxiway} CROSS 12R HS 4`)
-    expect(lineAt(world, 'ground', parked, ['rwy', 'r:30L', `t:${taxiway}`, 'hs', `p:${taxiway}`])).toBe(`RWY 30L TAXI ${taxiway} HS ${taxiway}`)
+    const ring = radialAt(world, 'ground', parked, ['rwy'])!
+    expect(ring._tag === 'Menu' && ring.pick).toBe('runway')
+    const plan = radialAt(world, 'ground', parked, ['rwy', 'r:17'])!
+    expect(plan._tag).toBe('Plan')
+    expect(plan._tag === 'Plan' && plan.title).toBe('RWY 17')
+    expect(keys(plan)).toEqual(['go', 'cancel'])
+    expect(lineAt(world, 'ground', parked, ['rwy', 'r:17', 'go'])).toBe('RWY 17')
+    expect(radialAt(world, 'ground', parked, ['rwy', 'r:17', 'cancel'])?._tag).toBe('Close')
+    // the preview is the line executed: E16 to 17 crosses 4-22 then 12R-30L and holds at both
+    const planOf = (node: RadialNode) => (node._tag === 'Plan' ? node.plan : newPlan('17'))
+    const preview = planPreview(world, parked, planOf(plan))
+    expect(preview.error).toBeNull()
+    expect(preview.path).toEqual(aircraftNamed(command(world, 'AAL894 RWY 17').world, 'AAL894').path)
+    expect(preview.crossings.map((c) => [c.runway, c.cleared])).toEqual([
+      ['4-22', false],
+      ['12R-30L', false],
+    ])
+    // a click on the first crossing clears it with the clearance; a second click holds again
+    const crossed = radialAt(world, 'ground', parked, ['rwy', 'r:17', 'x:4-22'])!
+    expect(crossed._tag === 'Plan' && crossed.title).toBe('RWY 17 CROSS 4-22')
+    expect(planPreview(world, parked, planOf(crossed)).crossings.map((c) => c.cleared)).toEqual([true, false])
+    expect(lineAt(world, 'ground', parked, ['rwy', 'r:17', 'x:4-22', 'x:12R-30L', 'go'])).toBe('RWY 17 CROSS 4-22 12R-30L')
+    expect(lineAt(world, 'ground', parked, ['rwy', 'r:17', 'x:4-22', 'x:4-22', 'go'])).toBe('RWY 17')
+    // a click on an intersection off the route sends the route through it: the line names the taxiways that route uses
+    const offRoute = intersections(world.graph).find((n) => !preview.path!.includes(n) && world.graph.nodeTaxiways[n]!.includes('C'))!
+    const via = radialAt(world, 'ground', parked, ['rwy', 'r:17', `n:${offRoute}`])!
+    expect(via._tag === 'Plan' && via.plan.waypoints).toEqual([offRoute])
+    expect(via._tag === 'Plan' && via.title.startsWith('RWY 17 TAXI ')).toBe(true)
+    expect(via._tag === 'Plan' && via.title.split(' ')).toContain('C')
+    const rerouted = planPreview(world, parked, planOf(via))
+    expect(rerouted.error).toBeNull()
+    expect(rerouted.path).not.toEqual(preview.path)
+    expect(radialAt(world, 'ground', parked, ['rwy', 'r:17', `n:${offRoute}`, `n:${offRoute}`])).toMatchObject({ _tag: 'Plan', title: 'RWY 17' })
+    expect(radialAt(world, 'ground', parked, ['rwy', 'r:17', 'n:x'])).toBeNull()
+    expect(intersections(world.graph).every((n) => world.graph.nodeTaxiways[n]!.length >= 2 && world.graph.nodeRunways[n]!.length === 0)).toBe(true)
   })
 
   test('a taxiing aircraft can hold short of, or cross, what lies ahead on its route; an arrival is offered its gate', () => {
@@ -223,6 +247,39 @@ describe('radial menu in the app', () => {
         expect(n.commandLog.at(-1)?.command._tag).toBe('Runway')
       }),
     )
+  })
+
+  test('runway buttons pick a runway from the root or the runway ring; scope clicks edit the proposed route; ✕ rejects it', () => {
+    const m = ready()
+    const world = worldOf(m)!
+    const graph = world.graph
+    const at = (n: number) => toCanvas(m.scope, toWorld(graph, graph.nodes[n]!))
+    const p = toCanvas(m.scope, toWorld(graph, aircraftNamed(world, 'AAL894').position))
+    const opened = update(m, Message.ContextScope({ x: p.x, y: p.y })).model
+    expect(update(opened, Message.PickedRunwayButton({ designator: '30L' })).model.radial?.trail).toEqual(['rwy', 'r:30L'])
+    expect(update(opened, Message.PickedRunwayButton({ designator: '99' })).model.radial?.trail).toEqual([])
+    const ring = update(opened, Message.PickedRadial({ key: 'rwy' })).model
+    const planned = update(ring, Message.PickedRunwayButton({ designator: '17' })).model
+    expect(planned.radial?.trail).toEqual(['rwy', 'r:17'])
+    const open = openPlan(world, 'ground', planned.radial)!
+    expect(open.preview.line).toBe('RWY 17')
+    const click = (model: Model, x: number, y: number): Model => update(update(model, Message.PressedScope({ x, y })).model, Message.ReleasedScope({ x, y })).model
+    const first = open.preview.crossings[0]!
+    const crossed = click(planned, at(first.node).x, at(first.node).y)
+    expect(crossed.radial?.trail).toEqual(['rwy', 'r:17', 'x:4-22'])
+    expect(openPlan(world, 'ground', crossed.radial)?.preview.line).toBe('RWY 17 CROSS 4-22')
+    const farFromCrossings = (n: number) => open.preview.crossings.every((c) => Math.hypot(at(c.node).x - at(n).x, at(c.node).y - at(n).y) > 60)
+    const node = intersections(graph).find((n) => !open.preview.path!.includes(n) && farFromCrossings(n))!
+    const rerouted = click(crossed, at(node).x, at(node).y)
+    expect(rerouted.radial?.trail).toEqual(['rwy', 'r:17', 'x:4-22', `n:${node}`])
+    expect(openPlan(world, 'ground', rerouted.radial)?.preview.line.startsWith('RWY 17 TAXI ')).toBe(true)
+    expect(click(rerouted, 2, 2).radial).toEqual(rerouted.radial)
+    expect(update(rerouted, Message.ClickedRadialBack()).model.radial?.trail).toEqual(['rwy', 'r:17', 'x:4-22'])
+    expect(update(rerouted, Message.PickedRadial({ key: 'cancel' })).model.radial).toBeNull()
+    const issued = update(rerouted, Message.PickedRadial({ key: 'go' })).model
+    expect(issued.radial).toBeNull()
+    expect(issued.history[0]).toBe(`AAL894 ${openPlan(world, 'ground', rerouted.radial)!.preview.line}`)
+    expect(aircraftNamed(worldOf(issued)!, 'AAL894').cleared).toEqual(['4-22'])
   })
 
   test('a plain click only selects; the pane split is clamped, saved on release, and merged from storage', () => {

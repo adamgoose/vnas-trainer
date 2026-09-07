@@ -11,6 +11,7 @@ import { type Graph, edgeName, isRunwayName, runwaysEntered } from '../domain/gr
 import { holdTarget } from '../domain/physics'
 import type { World } from '../domain/world'
 import type { PositionMode } from '../positions'
+import { type PlanPreview, type RoutePlan, newPlan, planLine, planPreview, toggleCross, toggleWaypoint } from './plan'
 
 export type RadialItem = Readonly<{
   key: string
@@ -22,8 +23,11 @@ export type RadialItem = Readonly<{
 }>
 
 export type RadialNode =
-  | Readonly<{ _tag: 'Menu'; title: string; items: ReadonlyArray<RadialItem> }>
+  | Readonly<{ _tag: 'Menu'; title: string; items: ReadonlyArray<RadialItem>; pick?: 'runway' }>
+  /** a taxi clearance proposed on the scope (src/app/plan.ts): GO issues its line, the scope edits it */
+  | Readonly<{ _tag: 'Plan'; title: string; plan: RoutePlan; items: ReadonlyArray<RadialItem> }>
   | Readonly<{ _tag: 'Line'; line: string }>
+  | Readonly<{ _tag: 'Close' }>
 
 export const MAX_ITEMS = 12
 
@@ -33,11 +37,33 @@ const leaf = (key: string, label: string, text: string): RadialItem => ({ key, l
 
 const menu = (key: string, label: string, next: () => RadialNode): RadialItem => ({ key, label, opens: true, next })
 
-/** A ring of at most MAX_ITEMS entries; the rest follow a "more" entry. */
-const paged = (title: string, items: ReadonlyArray<RadialItem>): RadialNode =>
-  items.length <= MAX_ITEMS
-    ? { _tag: 'Menu', title, items }
-    : { _tag: 'Menu', title, items: [...items.slice(0, MAX_ITEMS - 1), menu('more', '…', () => paged(title, items.slice(MAX_ITEMS - 1)))] }
+/** A ring of at most MAX_ITEMS entries; the rest follow a "more" entry. `pick` marks every page of a runway ring. */
+const paged = (title: string, items: ReadonlyArray<RadialItem>, pick?: 'runway'): RadialNode => {
+  const flag = pick === undefined ? {} : { pick }
+  return items.length <= MAX_ITEMS
+    ? { _tag: 'Menu', title, items, ...flag }
+    : { _tag: 'Menu', title, items: [...items.slice(0, MAX_ITEMS - 1), menu('more', '…', () => paged(title, items.slice(MAX_ITEMS - 1), pick))], ...flag }
+}
+
+/** Keys from a ring to the entry `key`, following "more" pages; null when the ring has no such entry. */
+export const trailTo = (node: RadialNode, key: string): ReadonlyArray<string> | null => {
+  const trail: Array<string> = []
+  let at = node
+  for (;;) {
+    if (at._tag !== 'Menu') {
+      return null
+    }
+    if (at.items.some((i) => i.key === key)) {
+      return [...trail, key]
+    }
+    const more = at.items.find((i) => i.key === 'more')
+    if (more === undefined) {
+      return null
+    }
+    trail.push('more')
+    at = more.next()
+  }
+}
 
 const pad3 = (heading: number): string => String(heading === 0 ? 360 : heading).padStart(3, '0')
 
@@ -148,8 +174,28 @@ const routeBuilder = (graph: Graph, a: Aircraft, r: Route, page = 0): RadialNode
   return { _tag: 'Menu', title, items: [...fixed, ...shown.map((t) => menu(`t:${t}`, t, () => withVia(t))), ...more] }
 }
 
-const runwayMenu = (graph: Graph, a: Aircraft): RadialNode =>
-  paged('RWY', runwayDesignators(graph).map((d) => menu(`r:${d}`, d, () => routeBuilder(graph, a, { runway: d, via: [], cross: [], holdShort: null }))))
+// RUNWAY PLAN
+
+const closeItem: RadialItem = { key: 'cancel', label: '✕', opens: false, next: () => ({ _tag: 'Close' }) }
+
+/** The ring over a proposed clearance: accept it, or reject it. Its title is the line GO issues. */
+const planNode = (world: World, a: Aircraft, plan: RoutePlan): RadialNode => {
+  const line = planLine(world.graph, a, plan)
+  return { _tag: 'Plan', title: line, plan, items: [leaf('go', 'GO', line), closeItem] }
+}
+
+/** A scope click on the plan: `n:<node>` sends the route through an intersection, `x:<runway>` toggles a crossing. */
+const editPlan = (plan: RoutePlan, key: string): RoutePlan | null => {
+  if (key.startsWith('n:')) {
+    const node = Number(key.slice(2))
+    return Number.isInteger(node) ? toggleWaypoint(plan, node) : null
+  }
+  return key.startsWith('x:') ? toggleCross(plan, key.slice(2)) : null
+}
+
+/** Runway ends; each opens a plan for the route to it. The scope offers the same picks as buttons on the runway numbers. */
+const runwayMenu = (world: World, a: Aircraft): RadialNode =>
+  paged('RWY', runwayDesignators(world.graph).map((d) => menu(`r:${d}`, d, () => planNode(world, a, newPlan(d)))), 'runway')
 
 const taxiMenu = (graph: Graph, a: Aircraft): RadialNode => routeBuilder(graph, a, { runway: null, via: [], cross: [], holdShort: null })
 
@@ -235,7 +281,7 @@ const contactNext = (world: World): RadialItem => leaf('cd', 'CD', 'CD')
 const trackOrDrop = (a: Aircraft): ReadonlyArray<RadialItem> =>
   a.radar === null ? [] : a.tracked ? [leaf('drop', 'DROP', 'DROP')] : [leaf('track', 'TRACK', 'TRACK')]
 
-const runwayItem = (graph: Graph, a: Aircraft) => menu('rwy', 'RWY', () => runwayMenu(graph, a))
+const runwayItem = (world: World, a: Aircraft) => menu('rwy', 'RWY', () => runwayMenu(world, a))
 /** TAXI only continues a clearance: to the assigned runway, or an arrival to its gate. */
 const taxiItem = (graph: Graph, a: Aircraft): ReadonlyArray<RadialItem> =>
   a.runway === null && a.destinationGate === null ? [] : [menu('taxi', 'TAXI', () => taxiMenu(graph, a))]
@@ -314,15 +360,15 @@ export const radialRoot = (world: World, mode: PositionMode, a: Aircraft): Radia
           menu('push', 'PUSH', () =>
             paged('PUSH', [leaf('go', 'PUSH', 'PUSH'), ...taxiwaysNear(graph, positionOf(graph, a)).map((t) => leaf(`t:${t}`, t, `PUSH ${t}`))]),
           ),
-          runwayItem(graph, a),
+          runwayItem(world, a),
           ...taxiItem(graph, a),
         ]
       case 'PUSH':
       case 'PUSHED':
-        return [runwayItem(graph, a), ...taxiItem(graph, a), ...(a.state === 'PUSHED' ? [leaf('res', 'RES', 'RES')] : []), leaf('hold', 'HOLD', 'HOLD')]
+        return [runwayItem(world, a), ...taxiItem(graph, a), ...(a.state === 'PUSHED' ? [leaf('res', 'RES', 'RES')] : []), leaf('hold', 'HOLD', 'HOLD')]
       case 'TAXI':
         return [
-          runwayItem(graph, a),
+          runwayItem(world, a),
           ...taxiItem(graph, a),
           ...holdShortItem(graph, a),
           ...crossItem(graph, a),
@@ -335,7 +381,7 @@ export const radialRoot = (world: World, mode: PositionMode, a: Aircraft): Radia
         return [
           ...crossItem(graph, a),
           leaf('res', 'RES', 'RES'),
-          runwayItem(graph, a),
+          runwayItem(world, a),
           ...taxiItem(graph, a),
           ...holdShortItem(graph, a),
           ...giveWayItem(world, a),
@@ -344,7 +390,7 @@ export const radialRoot = (world: World, mode: PositionMode, a: Aircraft): Radia
       case 'HOLD':
         return [
           leaf('res', 'RES', 'RES'),
-          runwayItem(graph, a),
+          runwayItem(world, a),
           ...taxiItem(graph, a),
           ...crossItem(graph, a),
           ...holdShortItem(graph, a),
@@ -373,11 +419,54 @@ export const radialRoot = (world: World, mode: PositionMode, a: Aircraft): Radia
   return paged(a.callsign, [...items, moreItem])
 }
 
+export const INTERSECTION_HIT_FRACTION = 0.018
+
+export type OpenPlan = Readonly<{ aircraft: Aircraft; plan: RoutePlan; trail: ReadonlyArray<string>; preview: PlanPreview }>
+
+/** The plan open on the ring, if the ring is at one, with its preview on the world. */
+export const openPlan = (world: World, mode: PositionMode, radial: Readonly<{ callsign: string; trail: ReadonlyArray<string> }> | null): OpenPlan | null => {
+  if (radial === null) {
+    return null
+  }
+  const aircraft = world.aircraft.find((a) => a.callsign === radial.callsign)
+  if (aircraft === undefined || aircraft.delay > 0) {
+    return null
+  }
+  const node = radialAt(world, mode, aircraft, radial.trail)
+  return node === null || node._tag !== 'Plan' ? null : { aircraft, plan: node.plan, trail: radial.trail, preview: planPreview(world, aircraft, node.plan) }
+}
+
+/** Whether the ring at `node` is choosing a runway: the runway ring itself, or a root that offers one. */
+export const offersRunways = (node: RadialNode): boolean => node._tag === 'Menu' && (node.pick === 'runway' || node.items.some((i) => i.key === 'rwy'))
+
+/** The keys that pick runway end `designator` from the ring at `node`, or null when it offers none. */
+export const runwayPickTrail = (node: RadialNode, designator: string): ReadonlyArray<string> | null => {
+  if (node._tag !== 'Menu') {
+    return null
+  }
+  if (node.pick === 'runway') {
+    return trailTo(node, `r:${designator}`)
+  }
+  const rwy = node.items.find((i) => i.key === 'rwy')
+  if (rwy === undefined) {
+    return null
+  }
+  const rest = trailTo(rwy.next(), `r:${designator}`)
+  return rest === null ? null : ['rwy', ...rest]
+}
+
 /** The ring (or the command line) reached by following `trail` from the root; null when a key is stale. */
 export const radialAt = (world: World, mode: PositionMode, a: Aircraft, trail: ReadonlyArray<string>): RadialNode | null => {
   let node = radialRoot(world, mode, a)
   for (const key of trail) {
-    if (node._tag !== 'Menu') {
+    if (node._tag === 'Plan') {
+      const edited = editPlan(node.plan, key)
+      if (edited !== null) {
+        node = planNode(world, a, edited)
+        continue
+      }
+    }
+    if (node._tag !== 'Menu' && node._tag !== 'Plan') {
       return null
     }
     const item = node.items.find((i) => i.key === key)

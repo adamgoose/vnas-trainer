@@ -51,7 +51,8 @@ import { loadScenario } from '../domain/scenario'
 import { SessionControl, SessionEvent, type Snapshot, isRoomCode, normaliseRoomCode } from '../domain/session'
 import { SimEvent, type World, findAircraft, makeWorld, matchCallsign } from '../domain/world'
 import { type PositionMode, positionFor } from '../positions'
-import { radialAt } from './radial'
+import { INTERSECTION_HIT_FRACTION, openPlan, radialAt, runwayPickTrail } from './radial'
+import { intersections } from './plan'
 import { StarsOut, rangeView, starsInit, starsUpdate } from '../positions/local/stars'
 import { type TurnServer } from '../services/session'
 import { MAX_SPLIT, MAX_TAG_SIZE, MIN_SPLIT, MIN_TAG_SIZE, type Settings, defaultSettings } from '../services/settings'
@@ -197,6 +198,27 @@ const submitLine = (model: Model, text: string): Return => {
   }
   const ran = dispatchCommand(isGuest(selected) ? selected : pushLog(selected, 'atc', null, text), parsed.callsign, parsed.command, text)
   return { model: ran.model, commands: ran.commands }
+}
+
+/** A pick on the open ring: descend, edit the plan, close, or issue the command line reached. */
+const pickRadial = (model: Model, key: string): Return => {
+  const radial = model.radial
+  const world = worldOf(model)
+  const aircraft = radial === null || world === null ? undefined : findAircraft(world, radial.callsign)
+  if (radial === null || world === null || aircraft === undefined) {
+    return { model: evo(model, { radial: () => null }) }
+  }
+  const trail = [...radial.trail, key]
+  const next = radialAt(world, model.settings.mode, aircraft, trail)
+  if (next === null) {
+    return { model }
+  }
+  if (next._tag === 'Close') {
+    return { model: evo(model, { radial: () => null }) }
+  }
+  return next._tag === 'Line'
+    ? submitLine(evo(model, { radial: () => null }), `${radial.callsign} ${next.line}`)
+    : { model: evo(model, { radial: () => ({ ...radial, trail }) }) }
 }
 
 /** A setting changed outside the dialog: apply it, keep the dialog's draft in step, persist. */
@@ -666,6 +688,7 @@ export const update = (model: Model, message: Message): Return =>
       }
     },
 
+    /** A click: on a proposed route, a runway crossing toggles hold short / cross and an intersection reroutes; else an aircraft selects, and empty pavement closes the ring. */
     ReleasedScope: ({ x, y }) => {
       const drag = model.drag
       const world = worldOf(model)
@@ -673,9 +696,21 @@ export const update = (model: Model, message: Message): Return =>
       if (drag === null || drag.moved || world === null) {
         return { model: released }
       }
-      const hit = hitTest(world.graph, model.scope, x, y, world.aircraft.filter((a) => a.delay <= 0), (a) => a.position)
+      const graph = world.graph
+      const open = model.selected === model.radial?.callsign ? openPlan(world, model.settings.mode, model.radial) : null
+      if (open !== null) {
+        const crossing = hitTest(graph, model.scope, x, y, open.preview.crossings, (c) => graph.nodes[c.node]!)
+        if (crossing !== null) {
+          return pickRadial(released, `x:${crossing.runway}`)
+        }
+        const node = hitTest(graph, model.scope, x, y, intersections(graph), (n) => graph.nodes[n]!, INTERSECTION_HIT_FRACTION)
+        if (node !== null) {
+          return pickRadial(released, `n:${node}`)
+        }
+      }
+      const hit = hitTest(graph, model.scope, x, y, world.aircraft.filter((a) => a.delay <= 0), (a) => a.position)
       return hit === null
-        ? { model: evo(released, { radial: () => null }) }
+        ? { model: open === null ? evo(released, { radial: () => null }) : released }
         : {
             model: evo(released, { selected: () => hit.callsign, radial: () => null }),
             commands: [FocusCommand()],
@@ -695,21 +730,18 @@ export const update = (model: Model, message: Message): Return =>
         : { model: evo(released, { selected: () => hit.callsign, radial: () => ({ callsign: hit.callsign, trail: [] }) }), commands: [FocusCommand()] }
     },
 
-    PickedRadial: ({ key }) => {
+    PickedRadial: ({ key }) => pickRadial(model, key),
+
+    PickedRunwayButton: ({ designator }) => {
       const radial = model.radial
       const world = worldOf(model)
       const aircraft = radial === null || world === null ? undefined : findAircraft(world, radial.callsign)
       if (radial === null || world === null || aircraft === undefined) {
-        return { model: evo(model, { radial: () => null }) }
-      }
-      const trail = [...radial.trail, key]
-      const next = radialAt(world, model.settings.mode, aircraft, trail)
-      if (next === null) {
         return { model }
       }
-      return next._tag === 'Line'
-        ? submitLine(evo(model, { radial: () => null }), `${radial.callsign} ${next.line}`)
-        : { model: evo(model, { radial: () => ({ ...radial, trail }) }) }
+      const node = radialAt(world, model.settings.mode, aircraft, radial.trail)
+      const keys = node === null ? null : runwayPickTrail(node, designator)
+      return keys === null ? { model } : { model: evo(model, { radial: () => ({ ...radial, trail: [...radial.trail, ...keys] }) }) }
     },
 
     ClickedRadialBack: () => ({

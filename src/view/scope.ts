@@ -15,7 +15,9 @@ import type { Aircraft, AircraftState } from '../domain/aircraft'
 import type { Graph } from '../domain/graph'
 import { type Ring, type VideoMap, type VideoMapFeature, cabLayerKey, cabLayers } from '../domain/videomap'
 import { departureProcedure } from '../domain/vnas'
-import { radialView } from './radial'
+import { intersections } from '../app/plan'
+import { type OpenPlan, openPlan } from '../app/radial'
+import { radialView, runwayButtonsView } from './radial'
 import { toCanvas, toWorld, viewWidthFt, worldSize } from './viewport'
 
 export const COLOURS = {
@@ -326,6 +328,65 @@ const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: bo
 
 export const accentFor = (mode: 'ground' | 'tower' | 'tracon'): string => (mode === 'tower' ? '#b388ff' : mode === 'tracon' ? '#2dd4bf' : COLOURS.amber)
 
+/**
+ * A proposed taxi clearance: the intersections a click can send the route through
+ * (brighter on the route, ringed when chosen), the route itself, and a marker at
+ * every runway it enters: amber where the aircraft will hold short, green where the
+ * clearance lets it cross. A click on a marker toggles it (see `ReleasedScope`).
+ */
+const planShapes = (graph: Graph, view: ScopeView, open: OpenPlan): ReadonlyArray<Canvas.Shape> => {
+  const { preview, plan } = open
+  const at = (n: number) => toCanvas(view, toWorld(graph, graph.nodes[n]!))
+  const onRoute = new Set(preview.path ?? [])
+  const dots = intersections(graph).flatMap((n) => {
+    const p = at(n)
+    if (p.x < -8 || p.y < -8 || p.x > view.width + 8 || p.y > view.height + 8) {
+      return []
+    }
+    return [Canvas.Circle({ x: p.x, y: p.y, radius: onRoute.has(n) ? 4 : 3, fill: onRoute.has(n) ? COLOURS.ink : COLOURS.ink3, stroke: COLOURS.bg, lineWidth: 1 })]
+  })
+  const shapes: Array<Canvas.Shape> = [Canvas.Group({ opacity: 0.8, shapes: dots })]
+  if (preview.path !== null) {
+    const points = preview.path.map(at)
+    shapes.push(
+      Canvas.Group({
+        opacity: 0.9,
+        shapes: [
+          Canvas.Path({
+            instructions: points.map((p, i) => (i === 0 ? Canvas.MoveTo({ x: p.x, y: p.y }) : Canvas.LineTo({ x: p.x, y: p.y }))),
+            stroke: COLOURS.amber,
+            lineWidth: 3,
+            lineCap: 'Round',
+          }),
+        ],
+      }),
+    )
+    const end = points[points.length - 1]!
+    shapes.push(Canvas.Circle({ x: end.x, y: end.y, radius: 5, stroke: COLOURS.amber, lineWidth: 2 }))
+  }
+  for (const n of plan.waypoints) {
+    const p = at(n)
+    shapes.push(Canvas.Circle({ x: p.x, y: p.y, radius: 6.5, stroke: COLOURS.cyan, lineWidth: 2 }))
+  }
+  for (const c of preview.crossings) {
+    const p = at(c.node)
+    const colour = c.cleared ? COLOURS.green : COLOURS.amber
+    shapes.push(
+      Canvas.Circle({ x: p.x, y: p.y, radius: 7, fill: colour, stroke: COLOURS.bg, lineWidth: 1.5 }),
+      Canvas.Text({
+        x: p.x + 11,
+        y: p.y + 4,
+        content: `${c.cleared ? 'CROSS' : 'HOLD SHORT'} ${c.runway}`,
+        font: `600 11px ${MONO}`,
+        fill: colour,
+        align: 'Left',
+        baseline: 'Alphabetic',
+      }),
+    )
+  }
+  return shapes
+}
+
 const scopeCanvas = (model: Model, h: HtmlBuilder<Message>): Html => {
   const world = worldOf(model)
   const view = model.scope
@@ -335,12 +396,16 @@ const scopeCanvas = (model: Model, h: HtmlBuilder<Message>): Html => {
   }
   const graph = world.graph
   const { asdexParkedTags, asdexTagSize } = model.settings
+  const open = model.selected === model.radial?.callsign ? openPlan(world, model.settings.mode, model.radial) : null
   const shapes: ReadonlyArray<Canvas.Shape> = [
     Canvas.Group({
       scale: { x: dpr, y: dpr },
-      shapes: world.aircraft
-        .filter((a) => a.delay <= 0)
-        .flatMap((a) => aircraftShapes(graph, view, a, a.callsign === model.selected, asdexParkedTags, asdexTagSize, accentFor(model.settings.mode))),
+      shapes: [
+        ...(open === null ? [] : planShapes(graph, view, open)),
+        ...world.aircraft
+          .filter((a) => a.delay <= 0)
+          .flatMap((a) => aircraftShapes(graph, view, a, a.callsign === model.selected, asdexParkedTags, asdexTagSize, accentFor(model.settings.mode))),
+      ],
     }),
   ]
   return Canvas.view(
@@ -472,6 +537,7 @@ export const scopeView = (model: Model, h: HtmlBuilder<Message>, inset: Html = h
     [
       staticScope(model, h),
       scopeCanvas(model, h),
+      ...runwayButtonsView(model, h),
       radialView(model, h),
       inset,
       h.div(

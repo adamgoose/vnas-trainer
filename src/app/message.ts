@@ -45,6 +45,8 @@ export const Message = defineMessageUnion({
   ClickedFit: {},
   ClickedStrip: { callsign: Schema.String },
   PickedRadial: { key: Schema.String },
+  /** a runway-number button on the scope while the ring offers runways */
+  PickedRunwayButton: { designator: Schema.String },
   ClickedRadialBack: {},
   ClosedRadial: {},
   ClickedAsdexPanel: {},

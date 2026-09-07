@@ -94,6 +94,9 @@ main { flex: 1 1 auto; display: grid; grid-template-columns: 1fr 296px; min-heig
 .radial-wedge:hover .mark { stroke: var(--cyan); }
 .radial-hole { fill: transparent; pointer-events: all; cursor: pointer; }
 .radial-title { position: absolute; left: 0; transform: translateX(-50%); white-space: nowrap; font-size: 10px; letter-spacing: .08em; color: var(--cyan); background: rgba(11, 14, 16, .92); border: 1px solid var(--rule); border-radius: 2px; padding: 2px 8px; pointer-events: none; }
+.radial-title.err { color: var(--red); }
+.rwy-btn { position: absolute; z-index: 3; transform: translate(-50%, -50%); min-width: 48px; height: 32px; padding: 0 12px; border-radius: 16px; background: rgba(11, 14, 16, .92); border: 2px solid var(--amber); color: var(--ink); font-family: var(--f-m); font-size: 14px; font-weight: 700; letter-spacing: .08em; cursor: pointer; }
+.rwy-btn:hover { border-color: var(--cyan); color: var(--cyan); background: #132a33; }
 
 /* ---------- ASDE-X display panel ---------- */
 .zoombar button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }

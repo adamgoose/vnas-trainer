@@ -8,7 +8,8 @@ import type { Html, HtmlBuilder } from 'foldkit/html'
 
 import { Message } from '../app/message'
 import { type Model, worldOf } from '../app/model'
-import { radialAt } from '../app/radial'
+import { planPreview } from '../app/plan'
+import { offersRunways, radialAt } from '../app/radial'
 import { toCanvas, toWorld } from './viewport'
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v))
@@ -50,9 +51,10 @@ export const radialView = (model: Model, h: HtmlBuilder<Message>): Html => {
     return h.empty
   }
   const node = radialAt(world, model.settings.mode, aircraft, radial.trail)
-  if (node === null || node._tag !== 'Menu') {
+  if (node === null || (node._tag !== 'Menu' && node._tag !== 'Plan')) {
     return h.empty
   }
+  const error = node._tag === 'Plan' ? planPreview(world, aircraft, node.plan).error : null
   const n = node.items.length
   const r0 = INNER_RADIUS
   const r1 = outerRadius(n)
@@ -103,7 +105,46 @@ export const radialView = (model: Model, h: HtmlBuilder<Message>): Html => {
           h.circle([h.Class('radial-hole'), h.Cx('0'), h.Cy('0'), h.R(String(r0 - 2)), h.OnClick(Message.ClickedRadialBack(), { propagation: 'Stop' })], []),
         ],
       ),
-      root ? h.empty : h.div([h.Class('radial-title'), h.Style({ top: `${extent + 4}px` })], [node.title]),
+      root ? h.empty : h.div([h.Class(`radial-title${error !== null ? ' err' : ''}`), h.Style({ top: `${extent + 4}px` })], [error !== null ? `${node.title} — ${error}` : node.title]),
     ],
   )
+}
+
+/**
+ * While the ring offers runways, a button on every runway number picks that end
+ * for the selected aircraft: the same pick as the ring's wedge, without the hunt.
+ */
+export const runwayButtonsView = (model: Model, h: HtmlBuilder<Message>): ReadonlyArray<Html> => {
+  const world = worldOf(model)
+  const radial = model.radial
+  if (world === null || radial === null || model.selected !== radial.callsign) {
+    return []
+  }
+  const aircraft = world.aircraft.find((a) => a.callsign === radial.callsign)
+  if (aircraft === undefined || aircraft.delay > 0) {
+    return []
+  }
+  const node = radialAt(world, model.settings.mode, aircraft, radial.trail)
+  if (node === null || !offersRunways(node)) {
+    return []
+  }
+  const graph = world.graph
+  return Object.entries(graph.runwayEnds).flatMap(([designator, end]) => {
+    const at = toCanvas(model.scope, toWorld(graph, graph.nodes[end.chain[0]!]!))
+    if (at.x < 0 || at.y < 0 || at.x > model.scope.width || at.y > model.scope.height) {
+      return []
+    }
+    return [
+      h.button(
+        [
+          h.Type('button'),
+          h.Class('rwy-btn'),
+          h.Style({ left: `${at.x.toFixed(1)}px`, top: `${at.y.toFixed(1)}px` }),
+          h.Title(`runway ${designator}`),
+          h.OnClick(Message.PickedRunwayButton({ designator }), { propagation: 'Stop' }),
+        ],
+        [designator],
+      ),
+    ]
+  })
 }
