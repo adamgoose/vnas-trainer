@@ -15,6 +15,7 @@ import type { Aircraft, AircraftState } from '../domain/aircraft'
 import type { Graph } from '../domain/graph'
 import type { Ring, VideoMap, VideoMapFeature } from '../domain/videomap'
 import { departureProcedure } from '../domain/vnas'
+import { radialView } from './radial'
 import { toCanvas, toWorld, viewWidthFt, worldSize } from './viewport'
 
 export const COLOURS = {
@@ -263,11 +264,11 @@ const staticCanvas = (graph: Graph, view: ScopeView, pavementId: string | null, 
 
 const lazyStatic = createLazy()
 
-const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: boolean, showTags: boolean, accent: string): ReadonlyArray<Canvas.Shape> => {
+/** `font` is the data block size in CSS px: a display setting, not a function of the zoom. */
+const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: boolean, showTags: boolean, font: number, accent: string): ReadonlyArray<Canvas.Shape> => {
   const { w } = worldSize(graph)
   const s = viewWidthFt(view) / w
   const size = (7.5 * view.width) / 1000 * (Math.max(0.55, Math.min(1.6, s)) / s)
-  const font = Math.max((8 * w) / 1000, (11 * w) / 1000 * Math.max(0.6, Math.min(1.5, s))) * view.scale
   const c = toCanvas(view, toWorld(graph, a.position))
   const colour = STATE_COLOUR[a.state]
   const shapes: Array<Canvas.Shape> = []
@@ -331,11 +332,13 @@ const scopeCanvas = (model: Model, h: HtmlBuilder<Message>): Html => {
     return h.empty
   }
   const graph = world.graph
-  const showTags = viewWidthFt(view) < worldSize(graph).w * 0.62
+  const { asdexParkedTags, asdexTagSize } = model.settings
   const shapes: ReadonlyArray<Canvas.Shape> = [
     Canvas.Group({
       scale: { x: dpr, y: dpr },
-      shapes: world.aircraft.filter((a) => a.delay <= 0).flatMap((a) => aircraftShapes(graph, view, a, a.callsign === model.selected, showTags, accentFor(model.settings.mode))),
+      shapes: world.aircraft
+        .filter((a) => a.delay <= 0)
+        .flatMap((a) => aircraftShapes(graph, view, a, a.callsign === model.selected, asdexParkedTags, asdexTagSize, accentFor(model.settings.mode))),
     }),
   ]
   return Canvas.view(
@@ -396,6 +399,31 @@ const LEGEND: ReadonlyArray<readonly [string, string]> = [
   [COLOURS.cyan, 'runway / airborne'],
 ]
 
+/** The DISP panel: what the scope draws and how a click behaves; each change is saved with the settings. */
+const displayPanel = (model: Model, h: HtmlBuilder<Message>): Html => {
+  if (!model.asdexPanelOpen) {
+    return h.empty
+  }
+  const s = model.settings
+  return h.div(
+    [h.Class('adisp')],
+    [
+      h.div([h.Class('grp')], ['ASDE-X display']),
+      h.label([], [h.input([h.Type('checkbox'), h.Checked(s.asdexParkedTags), h.OnChange(() => Message.ToggledParkedTags())]), 'data blocks on parked aircraft']),
+      h.div(
+        [h.Class('row')],
+        [
+          h.span([], ['data block size']),
+          h.button([h.Type('button'), h.AriaLabel('Smaller'), h.OnClick(Message.ChangedTagSize({ delta: -1 }))], ['−']),
+          h.b([], [`${s.asdexTagSize} px`]),
+          h.button([h.Type('button'), h.AriaLabel('Larger'), h.OnClick(Message.ChangedTagSize({ delta: 1 }))], ['+']),
+        ],
+      ),
+      h.label([], [h.input([h.Type('checkbox'), h.Checked(s.radialMenu), h.OnChange(() => Message.ToggledRadialMenu())]), 'command ring on click']),
+    ],
+  )
+}
+
 /** `inset` is drawn in the top-left corner: the selected aircraft's strip (see `selectedStripView`). */
 export const scopeView = (model: Model, h: HtmlBuilder<Message>, inset: Html = h.empty): Html => {
   const world = worldOf(model)
@@ -408,6 +436,7 @@ export const scopeView = (model: Model, h: HtmlBuilder<Message>, inset: Html = h
     [
       staticScope(model, h),
       scopeCanvas(model, h),
+      radialView(model, h),
       inset,
       h.div(
         [h.Class('scope-keys')],
@@ -425,8 +454,13 @@ export const scopeView = (model: Model, h: HtmlBuilder<Message>, inset: Html = h
           h.button([h.Type('button'), h.OnClick(Message.ClickedZoomIn()), h.AriaLabel('Zoom in')], ['+']),
           h.button([h.Type('button'), h.OnClick(Message.ClickedZoomOut()), h.AriaLabel('Zoom out')], ['−']),
           h.button([h.Type('button'), h.Class('fit'), h.OnClick(Message.ClickedFit()), h.AriaLabel('Fit airport')], ['FIT']),
+          h.button(
+            [h.Type('button'), h.Class('fit adisp-btn'), h.AriaPressed(model.asdexPanelOpen ? 'true' : 'false'), h.OnClick(Message.ClickedAsdexPanel()), h.AriaLabel('Display settings')],
+            ['DISP'],
+          ),
         ],
       ),
+      displayPanel(model, h),
       overlay === null ? h.empty : h.div([h.Class(`overlay${overlay.error ? ' err' : ''}`)], [h.div([], [overlay.text])]),
     ],
   )

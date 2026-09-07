@@ -4,6 +4,9 @@
  */
 import { Context, Effect, Layer, Schema } from 'effect'
 
+export const MIN_TAG_SIZE = 8
+export const MAX_TAG_SIZE = 18
+
 export const Settings = Schema.Struct({
   key: Schema.String,
   model: Schema.String,
@@ -21,6 +24,10 @@ export const Settings = Schema.Struct({
   turnUrl: Schema.String,
   turnUsername: Schema.String,
   turnCredential: Schema.String,
+  /** ASDE-X display: data blocks on parked aircraft, data block font size in CSS px, the command ring on a click */
+  asdexParkedTags: Schema.Boolean,
+  asdexTagSize: Schema.Number.pipe(Schema.check(Schema.isBetween({ minimum: MIN_TAG_SIZE, maximum: MAX_TAG_SIZE }))),
+  radialMenu: Schema.Boolean,
 })
 export type Settings = typeof Settings.Type
 
@@ -42,6 +49,9 @@ export const defaultSettings: Settings = {
   turnUrl: '',
   turnUsername: '',
   turnCredential: '',
+  asdexParkedTags: false,
+  asdexTagSize: 11,
+  radialMenu: true,
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)

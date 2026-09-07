@@ -49,11 +49,12 @@ import { MAX_STEPS_PER_TICK, stepWorldTimes } from '../domain/physics'
 import { type Translation, buildPrompt } from '../domain/prompt'
 import { loadScenario } from '../domain/scenario'
 import { SessionControl, SessionEvent, type Snapshot, isRoomCode, normaliseRoomCode } from '../domain/session'
-import { SimEvent, type World, makeWorld, matchCallsign } from '../domain/world'
+import { SimEvent, type World, findAircraft, makeWorld, matchCallsign } from '../domain/world'
 import { type PositionMode, positionFor } from '../positions'
+import { radialAt } from './radial'
 import { StarsOut, rangeView, starsInit, starsUpdate } from '../positions/local/stars'
 import { type TurnServer } from '../services/session'
-import { type Settings, defaultSettings } from '../services/settings'
+import { MAX_TAG_SIZE, MIN_TAG_SIZE, type Settings, defaultSettings } from '../services/settings'
 import { sourceForProxy } from '../services/vnasData'
 import { BUTTON_IN, BUTTON_OUT, WHEEL_IN, WHEEL_OUT, fit, hitTest, pan, resize, zoomAt, zoomCentre } from '../view/viewport'
 
@@ -164,6 +165,45 @@ const dispatchCommand = (model: Model, callsign: string | null, command: AtcComm
   isGuest(model)
     ? { model, commands: [SendSession({ event: SessionEvent.RequestedCommand({ callsign, command, said }), target: model.session.hostId })], ok: true }
     : runCommand(model, callsign, command, quiet, said)
+
+/**
+ * A command line, typed or picked from the radial menu: into the history, parsed
+ * (a leading callsign selects), logged as the controller's line, then dispatched;
+ * text that is not a command goes to the AI translator when a key is set.
+ */
+const submitLine = (model: Model, text: string): Return => {
+  const world = worldOf(model)
+  if (world === null || text === '') {
+    return { model }
+  }
+  const entered = evo(model, { history: (h) => [text, ...h].slice(0, 50), historyIndex: () => -1 })
+  const parsed = parseCommandLine(world, model.selected, text)
+  if (parsed._tag === 'Empty') {
+    return { model: entered }
+  }
+  if (parsed._tag === 'Unknown') {
+    if (!aiEnabled(model.settings)) {
+      return { model: pushLog(entered, 'err', null, 'unrecognised command — see Commands, or add an OpenRouter key in Settings for plain English') }
+    }
+    const prompt = promptFor(model, world, false)
+    return {
+      model: evo(entered, { pendingAi: () => 'translating…' }),
+      commands: [TranslateText({ key: model.settings.key, model: model.settings.model, system: prompt.system, user: prompt.user, said: text })],
+    }
+  }
+  const selected = evo(entered, { selected: (s) => parsed.callsign ?? s })
+  if (parsed._tag === 'Invalid') {
+    return { model: pushLog(pushLog(selected, 'atc', null, text), 'err', parsed.callsign, `unable — ${parsed.error}`) }
+  }
+  const ran = dispatchCommand(isGuest(selected) ? selected : pushLog(selected, 'atc', null, text), parsed.callsign, parsed.command, text)
+  return { model: ran.model, commands: ran.commands }
+}
+
+/** A setting changed outside the dialog: apply it, keep the dialog's draft in step, persist. */
+const saveSettings = (model: Model, settings: Settings): Return => ({
+  model: evo(model, { settings: () => settings, draft: () => settings }),
+  commands: [SaveSettings({ settings })],
+})
 
 // SESSION HELPERS
 
@@ -369,7 +409,7 @@ const foldStars = (artcc: string) =>
     toParentMessage: (message) => Message.GotStars({ message }),
     foldOutMessage: (out: StarsOut) => (model: Model) =>
       StarsOut.match<Return>(out, {
-        SelectedTarget: ({ callsign }) => ({ model: evo(model, { selected: () => callsign }), commands: [FocusCommand()] }),
+        SelectedTarget: ({ callsign }) => ({ model: evo(model, { selected: () => callsign, radial: () => null }), commands: [FocusCommand()] }),
         Noted: ({ text }) => ({ model: pushLog(model, 'sys', null, text) }),
       }),
   })
@@ -626,8 +666,43 @@ export const update = (model: Model, message: Message): Return =>
         return { model: released }
       }
       const hit = hitTest(world.graph, model.scope, x, y, world.aircraft.filter((a) => a.delay <= 0), (a) => a.position)
-      return hit === null ? { model: released } : { model: evo(released, { selected: () => hit.callsign }), commands: [FocusCommand()] }
+      return hit === null
+        ? { model: evo(released, { radial: () => null }) }
+        : {
+            model: evo(released, { selected: () => hit.callsign, radial: () => (model.settings.radialMenu ? { callsign: hit.callsign, trail: [] } : null) }),
+            commands: [FocusCommand()],
+          }
     },
+
+    PickedRadial: ({ key }) => {
+      const radial = model.radial
+      const world = worldOf(model)
+      const aircraft = radial === null || world === null ? undefined : findAircraft(world, radial.callsign)
+      if (radial === null || world === null || aircraft === undefined) {
+        return { model: evo(model, { radial: () => null }) }
+      }
+      const trail = [...radial.trail, key]
+      const next = radialAt(world, model.settings.mode, aircraft, trail)
+      if (next === null) {
+        return { model }
+      }
+      return next._tag === 'Line'
+        ? submitLine(evo(model, { radial: () => null }), `${radial.callsign} ${next.line}`)
+        : { model: evo(model, { radial: () => ({ ...radial, trail }) }) }
+    },
+
+    ClickedRadialBack: () => ({
+      model: evo(model, { radial: (r) => (r === null || r.trail.length === 0 ? null : { ...r, trail: r.trail.slice(0, -1) }) }),
+    }),
+
+    ClosedRadial: () => ({ model: evo(model, { radial: () => null }) }),
+
+    ClickedAsdexPanel: () => ({ model: evo(model, { asdexPanelOpen: (open) => !open }) }),
+    PressedOutsideAsdexPanel: () => ({ model: evo(model, { asdexPanelOpen: () => false }) }),
+    ToggledParkedTags: () => saveSettings(model, { ...model.settings, asdexParkedTags: !model.settings.asdexParkedTags }),
+    ChangedTagSize: ({ delta }) =>
+      saveSettings(model, { ...model.settings, asdexTagSize: Math.max(MIN_TAG_SIZE, Math.min(MAX_TAG_SIZE, model.settings.asdexTagSize + delta)) }),
+    ToggledRadialMenu: () => saveSettings(evo(model, { radial: () => null }), { ...model.settings, radialMenu: !model.settings.radialMenu }),
 
     ClickedZoomIn: () => {
       const world = worldOf(model)
@@ -644,38 +719,11 @@ export const update = (model: Model, message: Message): Return =>
       return { model: world === null ? model : evo(model, { scope: (scope) => fit(world.graph, scope) }) }
     },
 
-    ClickedStrip: ({ callsign }) => ({ model: evo(model, { selected: () => callsign }), commands: [FocusCommand()] }),
+    ClickedStrip: ({ callsign }) => ({ model: evo(model, { selected: () => callsign, radial: () => null }), commands: [FocusCommand()] }),
 
     UpdatedCommandText: ({ value }) => ({ model: evo(model, { commandText: () => value }) }),
 
-    SubmittedCommand: () => {
-      const world = worldOf(model)
-      const text = model.commandText.trim()
-      if (world === null || text === '') {
-        return { model: evo(model, { commandText: () => '' }) }
-      }
-      const entered = evo(model, { commandText: () => '', history: (h) => [text, ...h].slice(0, 50), historyIndex: () => -1 })
-      const parsed = parseCommandLine(world, model.selected, text)
-      if (parsed._tag === 'Empty') {
-        return { model: entered }
-      }
-      if (parsed._tag === 'Unknown') {
-        if (!aiEnabled(model.settings)) {
-          return { model: pushLog(entered, 'err', null, 'unrecognised command — see Commands, or add an OpenRouter key in Settings for plain English') }
-        }
-        const prompt = promptFor(model, world, false)
-        return {
-          model: evo(entered, { pendingAi: () => 'translating…' }),
-          commands: [TranslateText({ key: model.settings.key, model: model.settings.model, system: prompt.system, user: prompt.user, said: text })],
-        }
-      }
-      const selected = evo(entered, { selected: (s) => parsed.callsign ?? s })
-      if (parsed._tag === 'Invalid') {
-        return { model: pushLog(pushLog(selected, 'atc', null, text), 'err', parsed.callsign, `unable — ${parsed.error}`) }
-      }
-      const ran = dispatchCommand(isGuest(selected) ? selected : pushLog(selected, 'atc', null, text), parsed.callsign, parsed.command, text)
-      return { model: ran.model, commands: ran.commands }
-    },
+    SubmittedCommand: () => submitLine(evo(model, { commandText: () => '' }), model.commandText.trim()),
 
     PressedHistoryUp: () => {
       const i = model.historyIndex + 1
@@ -742,10 +790,7 @@ export const update = (model: Model, message: Message): Return =>
       }
     },
 
-    ClickedPane: ({ view }) => {
-      const settings = { ...model.settings, view }
-      return { model: evo(model, { settings: () => settings, draft: () => settings }), commands: [SaveSettings({ settings })] }
-    },
+    ClickedPane: ({ view }) => saveSettings(model, { ...model.settings, view }),
 
     GotStars: ({ message }) => {
       const info = infoOf(model)

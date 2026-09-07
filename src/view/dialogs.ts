@@ -40,6 +40,10 @@ export const helpView = (h: HtmlBuilder<Message>): Html =>
         '. With an OpenRouter key in Settings, plain English works too: anything that isn\'t a recognised command is sent to your chosen model, translated into these commands, and read back by the pilot. Hold ',
         h.b([], ['PTT']), ' (or ', h.b([], ['Space']), ' outside the command box) to say it instead of typing it.',
       ]),
+      h.p([], [
+        'Or click an aircraft on the ground scope for a ring of the commands that fit its state; a marked wedge opens a further ring for the details. The centre goes back, ',
+        h.b([], ['Esc']), ' closes. A pick is logged and dispatched as if typed. ', h.b([], ['DISP']), ' on the scope turns the ring off and sets data block size and visibility.',
+      ]),
       h.h3([], ['Ground']),
       h.div([h.Class('cmds')], [
         ...cmdRow(h, 'PUSH [taxiway]', ['Push back off the gate onto a taxiway, or straight back.']),

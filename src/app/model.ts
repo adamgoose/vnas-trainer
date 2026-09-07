@@ -86,6 +86,10 @@ export const CommandRecord = Schema.Struct({
 })
 export type CommandRecord = typeof CommandRecord.Type
 
+/** The radial command menu open on the ground scope: which aircraft, and the keys picked so far. */
+export const Radial = Schema.Struct({ callsign: Schema.String, trail: Schema.Array(Schema.String) })
+export type Radial = typeof Radial.Type
+
 export const Dialog = Schema.Literals(['none', 'help', 'settings', 'session'])
 export type Dialog = typeof Dialog.Type
 
@@ -142,6 +146,9 @@ export const Model = Schema.Struct({
   pavement: Pavement,
   scope: ScopeView,
   drag: Schema.NullOr(Drag),
+  radial: Schema.NullOr(Radial),
+  /** the ASDE-X display panel (DISP) is open */
+  asdexPanelOpen: Schema.Boolean,
   stars: StarsModel,
   devicePixelRatio: Schema.Number,
   running: Schema.Boolean,
@@ -178,6 +185,8 @@ export const initialModel: Model = {
   pavement: Pavement.None(),
   scope: { width: 800, height: 600, scale: 0.05, originX: 0, originY: 0, fitted: false },
   drag: null,
+  radial: null,
+  asdexPanelOpen: false,
   stars: initialStars,
   devicePixelRatio: 1,
   running: true,

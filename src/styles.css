@@ -79,6 +79,31 @@ main { flex: 1 1 auto; display: grid; grid-template-columns: 1fr 296px; min-heig
 .overlay.err { color: var(--red); }
 .overlay div { max-width: 52ch; line-height: 1.7; }
 
+/* ---------- radial command menu ---------- */
+.radial { position: absolute; z-index: 3; width: 0; height: 0; font-family: var(--f-m); }
+.radial svg { position: absolute; overflow: visible; }
+.radial-wedge { cursor: pointer; }
+.radial-wedge path { fill: #0f1417; stroke: var(--bg); stroke-width: 2; }
+.radial-wedge text { fill: var(--ink); font-size: 10.5px; font-weight: 600; letter-spacing: .04em; pointer-events: none; user-select: none; }
+.radial-wedge .mark { fill: none; stroke: var(--ink-3); stroke-width: 2; }
+.radial-wedge:hover path { fill: #132a33; stroke: var(--cyan); }
+.radial-wedge:hover text { fill: var(--cyan); }
+.radial-wedge:hover .mark { stroke: var(--cyan); }
+.radial-hole { fill: transparent; pointer-events: all; cursor: pointer; }
+.radial-title { position: absolute; left: 0; transform: translateX(-50%); white-space: nowrap; font-size: 10px; letter-spacing: .08em; color: var(--cyan); background: rgba(11, 14, 16, .92); border: 1px solid var(--rule); border-radius: 2px; padding: 2px 8px; pointer-events: none; }
+
+/* ---------- ASDE-X display panel ---------- */
+.zoombar button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.adisp { position: absolute; right: 12px; bottom: 44px; z-index: 2; background: rgba(11, 14, 16, .94); border: 1px solid var(--rule); border-radius: 2px; padding: 8px 10px; font-family: var(--f-m); font-size: 10.5px; min-width: 220px; }
+.adisp .grp { margin: 0 0 6px; color: var(--accent); letter-spacing: .12em; font-size: 9.5px; text-transform: uppercase; }
+.adisp label { display: flex; gap: 7px; align-items: center; padding: 3px 0; color: var(--ink-2); cursor: pointer; white-space: nowrap; }
+.adisp input { margin: 0; }
+.adisp .row { display: flex; gap: 6px; align-items: center; padding: 3px 0; color: var(--ink-2); }
+.adisp .row span { flex: 1 1 auto; }
+.adisp .row b { color: var(--ink); font-weight: 500; min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; }
+.adisp .row button { width: 22px; height: 20px; border: 1px solid var(--rule-2); border-radius: 2px; font-family: var(--f-m); font-size: 12px; color: var(--ink-2); line-height: 1; }
+.adisp .row button:hover { color: var(--ink); }
+
 /* ---------- strips ---------- */
 aside { background: var(--panel); border-left: 1px solid var(--rule); display: flex; flex-direction: column; min-height: 0; }
 .aside-h { padding: 9px 13px; border-bottom: 1px solid var(--rule); font-family: var(--f-m); font-size: 10px; letter-spacing: .13em; text-transform: uppercase; color: var(--ink-3); display: flex; gap: 8px; align-items: center; }

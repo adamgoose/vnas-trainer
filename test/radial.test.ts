@@ -1,0 +1,271 @@
+/**
+ * The radial command menu: the rings a click on an aircraft offers, and the app
+ * flow from a scope click through a pick to a dispatched, logged command.
+ */
+import { describe, expect, test } from 'bun:test'
+import { Command, given, message, model, story } from 'foldkit/story'
+
+import { FocusCommand, SaveSettings } from '../src/app/commands'
+import { Message } from '../src/app/message'
+import { type Model, initialModel, worldOf } from '../src/app/model'
+import { MAX_ITEMS, type RadialNode, radialAt, radialRoot } from '../src/app/radial'
+import { update } from '../src/app/update'
+import type { Aircraft } from '../src/domain/aircraft'
+import { parseCommandLine } from '../src/domain/commands'
+import { TRACON_RULES } from '../src/domain/rules'
+import { loadScenario } from '../src/domain/scenario'
+import { type World, makeWorld } from '../src/domain/world'
+import type { PositionMode } from '../src/positions'
+import { MAX_TAG_SIZE, MIN_TAG_SIZE, defaultSettings, mergeSettings } from '../src/services/settings'
+import { toCanvas, toWorld } from '../src/view/viewport'
+import { aircraftNamed, command, groundWorld, msp, runUntil, scenarioNamed, stateOf } from './helpers'
+
+const keys = (node: RadialNode | null): ReadonlyArray<string> => (node !== null && node._tag === 'Menu' ? node.items.map((i) => i.key) : [])
+const lineAt = (world: World, mode: PositionMode, a: Aircraft, trail: ReadonlyArray<string>): string => {
+  const node = radialAt(world, mode, a, trail)
+  if (node === null || node._tag !== 'Line') {
+    throw new Error(`${trail.join(' > ')} is not a command: ${JSON.stringify(node === null ? null : keys(node))}`)
+  }
+  return node.line
+}
+
+/** Every command line reachable within `depth` rings, with the rings that led there. */
+const leaves = (world: World, mode: PositionMode, a: Aircraft, depth: number): ReadonlyArray<Readonly<{ trail: ReadonlyArray<string>; line: string }>> => {
+  const out: Array<Readonly<{ trail: ReadonlyArray<string>; line: string }>> = []
+  const walk = (node: RadialNode, trail: ReadonlyArray<string>) => {
+    if (node._tag === 'Line') {
+      out.push({ trail, line: node.line })
+      return
+    }
+    expect(node.items.length).toBeLessThanOrEqual(MAX_ITEMS)
+    expect(new Set(node.items.map((i) => i.key)).size).toBe(node.items.length)
+    if (trail.length >= depth) {
+      return
+    }
+    for (const item of node.items) {
+      walk(item.next(), [...trail, item.key])
+    }
+  }
+  walk(radialRoot(world, mode, a), [])
+  return out
+}
+
+describe('radial menu rings', () => {
+  const world = groundWorld()
+  const parked = aircraftNamed(world, 'AAL894')
+
+  test('a parked aircraft is offered pushback, a runway, a taxi route and the transponder ring', () => {
+    expect(keys(radialRoot(world, 'ground', parked))).toEqual(['push', 'rwy', 'taxi', 'more'])
+    expect(lineAt(world, 'ground', parked, ['push', 'go'])).toBe('PUSH')
+    const push = radialAt(world, 'ground', parked, ['push'])!
+    const first = keys(push)[1]!
+    expect(push._tag === 'Menu' && push.items[1]!.label).toBe(first.slice(2))
+    expect(lineAt(world, 'ground', parked, ['push', first])).toBe(`PUSH ${first.slice(2)}`)
+    expect(lineAt(world, 'ground', parked, ['more', 'sq', 'd:1', 'd:2', 'd:3', 'd:4'])).toBe('SQ 1234')
+    expect(lineAt(world, 'ground', parked, ['more', 'del'])).toBe('DEL')
+  })
+
+  test('a runway clearance is built a clause at a time: taxiways that join the last one, crossings, then a hold-short point', () => {
+    const runways = keys(radialAt(world, 'ground', parked, ['rwy']))
+    expect(runways).toEqual(Object.keys(world.graph.runwayEnds).map((d) => `r:${d}`))
+    const builder = radialAt(world, 'ground', parked, ['rwy', 'r:30L'])!
+    expect(builder._tag === 'Menu' && builder.title).toBe('RWY 30L')
+    expect(keys(builder).slice(0, 3)).toEqual(['go', 'x', 'hs'])
+    expect(lineAt(world, 'ground', parked, ['rwy', 'r:30L', 'go'])).toBe('RWY 30L')
+    const taxiway = keys(builder).find((k) => k.startsWith('t:'))!.slice(2)
+    const via = radialAt(world, 'ground', parked, ['rwy', 'r:30L', `t:${taxiway}`])!
+    expect(via._tag === 'Menu' && via.title).toBe(`RWY 30L TAXI ${taxiway}`)
+    const joining = keys(via).filter((k) => k.startsWith('t:'))
+    expect(joining).not.toContain(`t:${taxiway}`)
+    for (const other of joining) {
+      const shared = world.graph.taxiways[other.slice(2)]!.some((n) => world.graph.nodeTaxiways[n]!.includes(taxiway))
+      expect(shared).toBe(true)
+    }
+    expect(lineAt(world, 'ground', parked, ['rwy', 'r:30L', `t:${taxiway}`, 'x', 'r:12R', 'hs', 'p:4'])).toBe(`RWY 30L TAXI ${taxiway} CROSS 12R HS 4`)
+    expect(lineAt(world, 'ground', parked, ['rwy', 'r:30L', `t:${taxiway}`, 'hs', `p:${taxiway}`])).toBe(`RWY 30L TAXI ${taxiway} HS ${taxiway}`)
+  })
+
+  test('a taxiing aircraft can hold short of, or cross, what lies ahead on its route; an arrival is offered its gate', () => {
+    // E16 to 30L goes around every runway; to 17 via A it crosses 4-22 and 12R-30L
+    const around = aircraftNamed(command(world, 'AAL894 RWY 30L').world, 'AAL894')
+    expect(keys(radialRoot(world, 'ground', around))).toEqual(['rwy', 'taxi', 'hs', 'hold', 'break', 'gw', 'luaw', 'cto', 'more'])
+    const taxiing = aircraftNamed(command(world, 'AAL894 RWY 17 TAXI A').world, 'AAL894')
+    const root = keys(radialRoot(world, 'ground', taxiing))
+    expect(root).toEqual(['rwy', 'taxi', 'hs', 'x', 'hold', 'break', 'gw', 'luaw', 'cto', 'more'])
+    const points = keys(radialAt(world, 'ground', taxiing, ['hs']))
+    expect(points.slice(0, 2)).toEqual(['p:D', 'p:C6'])
+    expect(points).toContain('p:12R-30L')
+    expect(lineAt(world, 'ground', taxiing, ['hs', 'p:12R-30L'])).toBe('HS 12R-30L')
+    expect(keys(radialAt(world, 'ground', taxiing, ['x']))).toEqual(['x', 'r:12R-30L'])
+    expect(lineAt(world, 'ground', taxiing, ['x', 'x'])).toBe('CROSS')
+    expect(lineAt(world, 'ground', taxiing, ['x', 'r:12R-30L'])).toBe('CROSS 12R-30L')
+    expect(lineAt(world, 'ground', taxiing, ['cto', 'go'])).toBe('CTO')
+    expect(lineAt(world, 'ground', taxiing, ['cto', 'tl', 'h:240', 'h:250'])).toBe('CTO L 250')
+    const arriving: Aircraft = { ...taxiing, runway: null, destinationGate: 'G12' }
+    expect(lineAt(world, 'ground', arriving, ['taxi', 'g:G12'])).toBe('TAXI G12')
+    const first = keys(radialAt(world, 'ground', arriving, ['taxi'])).find((k) => k.startsWith('t:'))!
+    expect(lineAt(world, 'ground', arriving, ['taxi', first, 'g:G12'])).toBe(`TAXI ${first.slice(2)} G12`)
+  })
+
+  test('holding short, the first entries are the crossing and continuing', () => {
+    const { world: rolled } = runUntil(command(world, 'AAL894 RWY 17 TAXI A').world, stateOf('AAL894', 'SHORT'), 600)
+    const short = aircraftNamed(rolled, 'AAL894')
+    expect(keys(radialRoot(rolled, 'ground', short)).slice(0, 2)).toEqual(['x', 'res'])
+    const crossing = radialAt(rolled, 'ground', short, ['x'])!
+    expect(crossing._tag === 'Menu' && crossing.items[0]!.label).toBe('4-22')
+    expect(lineAt(rolled, 'ground', short, ['x', 'x'])).toBe('CROSS')
+    expect(lineAt(rolled, 'ground', short, ['x', 'r:12R-30L'])).toBe('CROSS 12R-30L')
+    expect(lineAt(rolled, 'ground', short, ['res'])).toBe('RES')
+    const others = keys(radialAt(rolled, 'ground', short, ['gw']))
+    expect(others.length).toBeGreaterThan(0)
+    expect(others).not.toContain('c:AAL894')
+  })
+
+  test('airborne rings: headings by compass sector, altitudes, speeds, fixes from the route, and the approach set', () => {
+    const { world: app } = loadScenario(makeWorld(msp, TRACON_RULES, 1), scenarioNamed('Ancient MSP APP North'))
+    const a = app.aircraft.find((x) => x.state === 'AIRB' && x.delay <= 0 && x.fixes.length > 0)!
+    expect(a.radar).toBeNull()
+    expect(keys(radialRoot(app, 'tracon', a))).toEqual(['alt', 'spd', 'dct', 'hdg', 'exp', 'capp', 'ct', 'cd', 'more'])
+    const painted = { ...a, radar: { position: a.position, altitude: a.altitude, speed: a.speed, history: [] } }
+    expect(keys(radialRoot(app, 'tracon', { ...painted, tracked: false }))).toContain('track')
+    expect(keys(radialRoot(app, 'tracon', { ...painted, tracked: true }))).toContain('drop')
+    const sectors = keys(radialAt(app, 'tracon', a, ['hdg', 'fh']))
+    expect(sectors).toHaveLength(12)
+    expect(sectors[0]).toBe('h:0')
+    const fine = radialAt(app, 'tracon', a, ['hdg', 'fh', 'h:0'])!
+    expect(fine._tag === 'Menu' && fine.items.map((i) => i.label)).toEqual(['360', '005', '010', '015', '020', '025'])
+    expect(lineAt(app, 'tracon', a, ['hdg', 'fh', 'h:0', 'h:0'])).toBe('FH 360')
+    expect(lineAt(app, 'tracon', a, ['hdg', 'tr', 'h:90', 'h:95'])).toBe('TR 095')
+    expect(lineAt(app, 'tracon', a, ['alt', 'a:4000'])).toBe('DM 4000')
+    expect(lineAt(app, 'tracon', a, ['alt', 'a:13000'])).toBe(a.altitude < 13000 ? 'CM 13000' : 'DM 13000')
+    expect(lineAt(app, 'tracon', a, ['spd', 'resume'])).toBe('SPD')
+    expect(lineAt(app, 'tracon', a, ['spd', 's:210'])).toBe('SPD 210')
+    expect(lineAt(app, 'tracon', a, ['dct', `f:${a.fixes[0]}`])).toBe(`DCT ${a.fixes[0]}`)
+    expect(lineAt(app, 'tracon', a, ['exp', 'r:30L'])).toBe('EXP 30L')
+    expect(lineAt(app, 'tracon', a, ['capp', 'go'])).toBe('CAPP')
+    expect(lineAt(app, 'tracon', a, ['ct'])).toBe('CT')
+    expect(keys(radialRoot(app, 'tower', a))).toEqual(['cd', 'alt', 'spd', 'dct', 'hdg', 'more'])
+  })
+
+  test('every reachable entry is a line the parser accepts', () => {
+    const { world: app } = loadScenario(makeWorld(msp, TRACON_RULES, 1), scenarioNamed('Ancient MSP APP North'))
+    const airborne = app.aircraft.find((x) => x.state === 'AIRB' && x.delay <= 0)!
+    const taxiing = aircraftNamed(command(world, 'AAL894 RWY 30L').world, 'AAL894')
+    const cases: ReadonlyArray<readonly [World, PositionMode, Aircraft]> = [
+      [world, 'ground', parked],
+      [world, 'ground', taxiing],
+      [app, 'tracon', airborne],
+      [app, 'tower', airborne],
+    ]
+    let count = 0
+    for (const [w, mode, a] of cases) {
+      for (const { trail, line } of leaves(w, mode, a, 4)) {
+        const parsed = parseCommandLine(w, null, `${a.callsign} ${line}`)
+        expect(parsed._tag === 'Parsed' ? parsed.callsign : `${trail.join(' > ')}: ${JSON.stringify(parsed)}`).toBe(a.callsign)
+        count++
+      }
+    }
+    expect(count).toBeGreaterThan(500)
+    expect(radialAt(world, 'ground', parked, ['nope'])).toBeNull()
+    expect(radialAt(world, 'ground', parked, ['push', 'go', 'go'])).toBeNull()
+  })
+})
+
+describe('radial menu in the app', () => {
+  const index = {
+    built: '',
+    artccs: [{ id: 'ZMP', name: 'Minneapolis ARTCC', airports: [{ id: 'MSP', name: 'Minneapolis ATCT', n: 64, asdex: true, gates: 220, taxi: 106, stars: true }] }],
+  }
+  const scenario = scenarioNamed('KMSP 12s/17 SLCL 5MIT')
+  const ready = (): Model => {
+    let m = update(initialModel, Message.CompletedLoadSettings({ settings: { ...defaultSettings, tts: false } })).model
+    m = update(m, Message.CompletedReadDeepLink({ airport: 'MSP', scenario: scenario.id, room: null })).model
+    m = update(m, Message.ResizedScope({ width: 1000, height: 700, devicePixelRatio: 2 })).model
+    m = update(m, Message.CompletedLoadIndex({ index })).model
+    m = update(m, Message.CompletedLoadAirport({ airport: msp })).model
+    m = update(m, Message.CompletedLoadScenario({ airportId: 'MSP', scenario })).model
+    return m
+  }
+
+  test('a click on an aircraft opens the ring; picks descend it; a command pick dispatches, logs and closes', () => {
+    const m = ready()
+    const world = worldOf(m)!
+    const p = toCanvas(m.scope, toWorld(world.graph, aircraftNamed(world, 'AAL894').position))
+    story(
+      update,
+      given(m),
+      message(Message.PressedScope({ x: p.x, y: p.y })),
+      message(Message.ReleasedScope({ x: p.x, y: p.y })),
+      Command.expectExact(FocusCommand),
+      Command.resolve(FocusCommand, Message.CompletedFocusCommand()),
+      model((n) => {
+        expect(n.selected).toBe('AAL894')
+        expect(n.radial).toEqual({ callsign: 'AAL894', trail: [] })
+      }),
+      message(Message.PickedRadial({ key: 'rwy' })),
+      message(Message.PickedRadial({ key: 'r:30L' })),
+      model((n) => expect(n.radial?.trail).toEqual(['rwy', 'r:30L'])),
+      message(Message.PickedRadial({ key: 'stale' })),
+      model((n) => expect(n.radial?.trail).toEqual(['rwy', 'r:30L'])),
+      message(Message.ClickedRadialBack()),
+      model((n) => expect(n.radial?.trail).toEqual(['rwy'])),
+      message(Message.PickedRadial({ key: 'r:30L' })),
+      message(Message.PickedRadial({ key: 'go' })),
+      Command.expectNone(),
+      model((n) => {
+        expect(n.radial).toBeNull()
+        expect(n.history[0]).toBe('AAL894 RWY 30L')
+        expect(n.log[1]?.kind).toBe('atc')
+        expect(n.log[1]?.text).toBe('AAL894 RWY 30L')
+        expect(n.log[0]?.kind).toBe('pilot')
+        expect(n.log[0]?.text).toBe('runway 30L, taxi via D B A')
+        expect(aircraftNamed(worldOf(n)!, 'AAL894').state).toBe('TAXI')
+        expect(n.commandLog.at(-1)?.command._tag).toBe('Runway')
+      }),
+    )
+  })
+
+  test('the DISP panel: the ring can be turned off, and the data block size is clamped and saved with the settings', () => {
+    const m = ready()
+    const world = worldOf(m)!
+    const p = toCanvas(m.scope, toWorld(world.graph, aircraftNamed(world, 'AAL894').position))
+    const off = update(m, Message.ToggledRadialMenu())
+    expect(off.model.settings.radialMenu).toBe(false)
+    expect(off.commands?.map((c) => c.name)).toEqual([SaveSettings.name])
+    const clicked = update(update(off.model, Message.PressedScope({ x: p.x, y: p.y })).model, Message.ReleasedScope({ x: p.x, y: p.y })).model
+    expect(clicked.selected).toBe('AAL894')
+    expect(clicked.radial).toBeNull()
+    expect(update(update(m, Message.ClickedAsdexPanel()).model, Message.PressedOutsideAsdexPanel()).model.asdexPanelOpen).toBe(false)
+    expect(update(m, Message.ToggledParkedTags()).model.settings.asdexParkedTags).toBe(true)
+    let n = m
+    for (let i = 0; i < 20; i++) {
+      n = update(n, Message.ChangedTagSize({ delta: 1 })).model
+    }
+    expect(n.settings.asdexTagSize).toBe(MAX_TAG_SIZE)
+    expect(update(n, Message.ChangedTagSize({ delta: -100 })).model.settings.asdexTagSize).toBe(MIN_TAG_SIZE)
+    expect(mergeSettings({ asdexTagSize: 40, radialMenu: false })).toEqual({ ...defaultSettings, radialMenu: false })
+  })
+
+  test('the ring closes at its root, on Escape, on a click over empty pavement, and when another aircraft is selected', () => {
+    const m = ready()
+    const world = worldOf(m)!
+    const p = toCanvas(m.scope, toWorld(world.graph, aircraftNamed(world, 'AAL894').position))
+    const open = (): Model => {
+      let n = update(m, Message.PressedScope({ x: p.x, y: p.y })).model
+      n = update(n, Message.ReleasedScope({ x: p.x, y: p.y })).model
+      expect(n.radial).not.toBeNull()
+      return n
+    }
+    expect(update(open(), Message.ClickedRadialBack()).model.radial).toBeNull()
+    expect(update(open(), Message.ClosedRadial()).model.radial).toBeNull()
+    const empty = update(update(open(), Message.PressedScope({ x: 5, y: 5 })).model, Message.ReleasedScope({ x: 5, y: 5 })).model
+    expect(empty.radial).toBeNull()
+    expect(empty.selected).toBe('AAL894')
+    const second = world.aircraft.find((a) => a.callsign !== 'AAL894')!.callsign
+    const other = update(open(), Message.ClickedStrip({ callsign: second })).model
+    expect(other.radial).toBeNull()
+    expect(other.selected).toBe(second)
+    const dragged = update(update(update(open(), Message.PressedScope({ x: 100, y: 100 })).model, Message.MovedScope({ x: 150, y: 120 })).model, Message.ReleasedScope({ x: 150, y: 120 })).model
+    expect(dragged.radial).toEqual({ callsign: 'AAL894', trail: [] })
+  })
+})

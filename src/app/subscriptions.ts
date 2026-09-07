@@ -64,11 +64,27 @@ export const subscriptions = Subscription.make<Model, Message, Services>()((entr
           : Stream.empty,
     },
   ),
-  keys: entry(
-    { dialogOpen: Schema.Boolean },
+  /** likewise for the ASDE-X display panel */
+  asdexOutside: entry(
+    { open: Schema.Boolean },
     {
-      modelToDependencies: (model) => ({ dialogOpen: model.dialog !== 'none' }),
-      dependenciesToStream: ({ dialogOpen }) =>
+      modelToDependencies: (model) => ({ open: model.asdexPanelOpen }),
+      dependenciesToStream: ({ open }) =>
+        open
+          ? Subscription.fromEventFilterMap<PointerEvent, Message>({
+              target: () => globalThis.document,
+              type: 'pointerdown',
+              toMessage: (event) =>
+                event.target instanceof Element && event.target.closest('.adisp, .adisp-btn') !== null ? Option.none() : Option.some(Message.PressedOutsideAsdexPanel()),
+            })
+          : Stream.empty,
+    },
+  ),
+  keys: entry(
+    { dialogOpen: Schema.Boolean, radialOpen: Schema.Boolean },
+    {
+      modelToDependencies: (model) => ({ dialogOpen: model.dialog !== 'none', radialOpen: model.radial !== null }),
+      dependenciesToStream: ({ dialogOpen, radialOpen }) =>
         Subscription.fromEventFilterMap<KeyboardEvent, Message>({
           target: () => globalThis.document,
           type: 'keydown',
@@ -76,6 +92,9 @@ export const subscriptions = Subscription.make<Model, Message, Services>()((entr
             if (event.key === '/' && !dialogOpen && !isTyping()) {
               event.preventDefault()
               return Option.some(Message.PressedSlash())
+            }
+            if (event.key === 'Escape' && radialOpen && !dialogOpen) {
+              return Option.some(Message.ClosedRadial())
             }
             if (event.key === 'Escape' && isTyping()) {
               return Option.some(Message.PressedEscape())
