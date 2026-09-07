@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { LoadStarsMap, StarsMessage, StarsOut, canvasToNm, defaultMaps, initialStars, radarPoint, rangeView, starsInit, starsUpdate, toCanvas, zoomAt } from '../src/positions/local/stars'
+import { LoadStarsMap, StarsMessage, StarsOut, canvasToNm, defaultMaps, initialMaps, initialStars, isDefaultMaps, radarPoint, rangeView, starsInit, starsUpdate, toCanvas, zoomAt } from '../src/positions/local/stars'
 import { LOCAL_RULES } from '../src/domain/rules'
 import { command, emptyWorld, groundWorld, msp, runUntil, stateOf } from './helpers'
 
@@ -21,6 +21,22 @@ describe('STARS pane', () => {
     expect(init.commands?.map((c) => c.name)).toEqual(ids.map(() => LoadStarsMap.name))
     const again = starsInit({ ...init.model, loaded: ids }, 'ZMP', stars)
     expect(again.commands).toEqual([])
+  })
+
+  test('a remembered selection replaces the defaults on init, minus ids the catalog no longer has', () => {
+    const ids = defaultMaps(stars)
+    const other = stars.maps.find((m) => !ids.includes(m.id))!.id
+    expect(initialMaps(stars, null)).toEqual(ids)
+    expect(initialMaps(stars, [other, 'gone'])).toEqual([other])
+    expect(initialMaps(stars, [])).toEqual([])
+    expect(initialMaps(null, [other])).toEqual([])
+    expect(isDefaultMaps(stars, ids)).toBe(true)
+    expect(isDefaultMaps(stars, [...ids].reverse())).toBe(true)
+    expect(isDefaultMaps(stars, [...ids, other])).toBe(false)
+    expect(isDefaultMaps(stars, ids.slice(1))).toBe(false)
+    const init = starsInit(initialStars, 'ZMP', stars, 15, [other])
+    expect(init.model.shown).toEqual([other])
+    expect(init.commands?.map((c) => c.args)).toEqual([{ artcc: 'ZMP', id: other }])
   })
 
   test('the radar plane is letterboxed and zooms about the cursor within 6 to 320 nm', () => {

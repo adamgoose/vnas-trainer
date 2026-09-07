@@ -56,7 +56,7 @@ import { SimEvent, type World, findAircraft, makeWorld, matchCallsign } from '..
 import { type PositionMode, positionFor } from '../positions'
 import { INTERSECTION_HIT_FRACTION, openPlan, radialAt, runwayPickTrail } from './radial'
 import { intersections } from './plan'
-import { StarsOut, rangeView, starsInit, starsUpdate } from '../positions/local/stars'
+import { StarsOut, isDefaultMaps, rangeView, starsInit, starsUpdate } from '../positions/local/stars'
 import { type TurnServer } from '../services/session'
 import { MAX_TAG_SIZE, MIN_TAG_SIZE, type Settings, defaultSettings } from '../services/settings'
 import { sourceForProxy } from '../services/vnasData'
@@ -780,7 +780,7 @@ export const update = (model: Model, message: Message): Return =>
       const world = makeWorld(airport, rulesFor(model.settings.mode), WORLD_SEED)
       const info = airportInfo(airport)
       const pavement = pavementFor(airport.asdex, airport.twrmap, model.settings.asdexCabMap)
-      const radar = starsInit(model.stars, airport.artcc, airport.stars, positionFor(model.settings.mode).scopeRangeNm)
+      const radar = starsInit(model.stars, airport.artcc, airport.stars, positionFor(model.settings.mode).scopeRangeNm, model.settings.starsMaps[airport.id] ?? null)
       const fitted: Model = restartTimeline({
         ...model,
         airport: { _tag: 'Ready', info, world },
@@ -1105,9 +1105,17 @@ export const update = (model: Model, message: Message): Return =>
       return saveSettings(model, { ...model.settings, cabLayersOff: next.length === 0 ? rest : { ...rest, [id]: next } })
     },
 
+    /** STARS messages fold into the pane; a map toggle is remembered per airport (dropped again once the selection is the default one). */
     GotStars: ({ message }) => {
       const info = infoOf(model)
-      return foldStars(info?.artcc ?? '')(model, { message, world: worldOf(model) })
+      const folded = foldStars(info?.artcc ?? '')(model, { message, world: worldOf(model) })
+      if (info === null || message._tag !== 'ToggledMap') {
+        return folded
+      }
+      const shown = folded.model.stars.shown
+      const { [info.id]: _, ...rest } = folded.model.settings.starsMaps
+      const saved = saveSettings(folded.model, { ...folded.model.settings, starsMaps: isDefaultMaps(info.stars, shown) ? rest : { ...rest, [info.id]: shown } })
+      return { model: saved.model, commands: [...(folded.commands ?? []), ...(saved.commands ?? [])] }
     },
 
     // PUSH-TO-TALK

@@ -31,6 +31,8 @@ export const Settings = Schema.Struct({
   asdexCabMap: Schema.Boolean,
   /** tower-cab layers switched off, by map id (see `cabLayers`) */
   cabLayersOff: Schema.Record(Schema.String, Schema.Array(Schema.String)),
+  /** STARS video maps on the display, by airport id; absent means the defaults (see `defaultMaps`) */
+  starsMaps: Schema.Record(Schema.String, Schema.Array(Schema.String)),
   /** the window layout of each position (see `app/layout.ts`) */
   layouts: Layouts,
 })
@@ -57,6 +59,7 @@ export const defaultSettings: Settings = {
   asdexTagSize: 11,
   asdexCabMap: false,
   cabLayersOff: {},
+  starsMaps: {},
   layouts: defaultLayouts,
 }
 

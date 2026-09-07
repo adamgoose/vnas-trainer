@@ -11,6 +11,7 @@ import { type Model, initialModel, worldOf } from '../src/app/model'
 import { fullLengthEntry, intersections, newPlan, planPreview } from '../src/app/plan'
 import { MAX_ITEMS, type RadialNode, openPlan, radialAt, radialRoot } from '../src/app/radial'
 import { pavementFor, update } from '../src/app/update'
+import { LoadStarsMap, StarsMessage, defaultMaps } from '../src/positions/local/stars'
 import type { Aircraft } from '../src/domain/aircraft'
 import { parseCommandLine } from '../src/domain/commands'
 import { runwayEntries } from '../src/domain/graph'
@@ -376,6 +377,31 @@ describe('radial menu in the app', () => {
     expect(update(update(two, Message.ToggledCabLayer({ key: 'line:#fcb737:3' })).model, Message.ToggledCabLayer({ key: 'fill:#343434:1' })).model.settings.cabLayersOff).toEqual({})
     expect(mergeSettings({ cabLayersOff: { a: ['x'] } }).cabLayersOff).toEqual({ a: ['x'] })
     expect(mergeSettings({ cabLayersOff: 'nope' }).cabLayersOff).toEqual({})
+  })
+
+  test('the STARS map selection is remembered per airport and restored when the airport opens', () => {
+    const m = ready()
+    const ids = defaultMaps(msp.stars)
+    expect(m.stars.shown).toEqual(ids)
+    expect(m.settings.starsMaps).toEqual({})
+    const other = msp.stars!.maps.find((x) => !ids.includes(x.id))!.id
+    // switching a map on writes the whole selection under the airport id
+    const on = update(m, Message.GotStars({ message: StarsMessage.ToggledMap({ id: other }) }))
+    expect(on.model.settings.starsMaps).toEqual({ MSP: [...ids, other] })
+    expect(on.commands?.map((c) => c.name)).toEqual([LoadStarsMap.name, SaveSettings.name])
+    // back to the defaults (in any order) forgets the airport again
+    const off = update(on.model, Message.GotStars({ message: StarsMessage.ToggledMap({ id: other }) }))
+    expect(off.model.settings.starsMaps).toEqual({})
+    expect(off.commands?.map((c) => c.name)).toEqual([SaveSettings.name])
+    // a pane message that is not a toggle saves nothing
+    expect(update(m, Message.GotStars({ message: StarsMessage.ClickedMaps() })).commands).toEqual([])
+    // reopening the airport restores the remembered selection instead of the defaults
+    const emptied = update(update(m, Message.GotStars({ message: StarsMessage.ToggledMap({ id: ids[0]! }) })).model, Message.GotStars({ message: StarsMessage.ToggledMap({ id: other }) })).model
+    expect(emptied.settings.starsMaps).toEqual({ MSP: [...ids.slice(1), other] })
+    const reopened = update({ ...emptied, airport: { _tag: 'Loading', id: 'MSP' } }, Message.CompletedLoadAirport({ airport: msp })).model
+    expect(reopened.stars.shown).toEqual([...ids.slice(1), other])
+    expect(mergeSettings({ starsMaps: { MSP: ['x'] } }).starsMaps).toEqual({ MSP: ['x'] })
+    expect(mergeSettings({ starsMaps: ['x'] }).starsMaps).toEqual({})
   })
 
   test('the ring closes at its root, on Escape, on a click over empty pavement, and when another aircraft is selected', () => {

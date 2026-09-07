@@ -68,6 +68,25 @@ export const defaultMaps = (stars: Stars | null): ReadonlyArray<string> => {
   return [...ids]
 }
 
+/**
+ * The maps to show when an airport opens: the remembered selection where it
+ * still names maps the airport has, else the defaults. An empty remembered
+ * selection is a choice too (every map switched off).
+ */
+export const initialMaps = (stars: Stars | null, remembered: ReadonlyArray<string> | null): ReadonlyArray<string> => {
+  if (stars === null || remembered === null) {
+    return defaultMaps(stars)
+  }
+  const known = new Set(stars.maps.map((m) => m.id))
+  return remembered.filter((id) => known.has(id))
+}
+
+/** Whether a selection is the default one, in any order. */
+export const isDefaultMaps = (stars: Stars | null, shown: ReadonlyArray<string>): boolean => {
+  const def = defaultMaps(stars)
+  return def.length === shown.length && def.every((id) => shown.includes(id))
+}
+
 // MESSAGE
 
 export const StarsMessage = defineMessageUnion({
@@ -182,9 +201,15 @@ export type StarsInput = Readonly<{ message: StarsMessage; world: World | null }
 
 export type StarsReturn = Update.ReturnWithOutMessage<StarsModel, StarsMessage, StarsOut, VideoMaps>
 
-/** Fresh pane for an airport: default range and the default maps loading. */
-export const starsInit = (model: StarsModel, artcc: string, stars: Stars | null, range: number = DEFAULT_RANGE_NM): Update.Return<StarsModel, StarsMessage, VideoMaps> => {
-  const shown = defaultMaps(stars)
+/** Fresh pane for an airport: default range and the remembered (else default) maps loading. */
+export const starsInit = (
+  model: StarsModel,
+  artcc: string,
+  stars: Stars | null,
+  range: number = DEFAULT_RANGE_NM,
+  remembered: ReadonlyArray<string> | null = null,
+): Update.Return<StarsModel, StarsMessage, VideoMaps> => {
+  const shown = initialMaps(stars, remembered)
   return {
     model: { ...model, view: rangeView(range), drag: null, mapsOpen: false, shown, loaded: model.loaded },
     commands: shown.filter((id) => !model.loaded.includes(id)).map((id) => LoadStarsMap({ artcc, id })),
