@@ -99,6 +99,13 @@ export const Message = defineMessageUnion({
   CompletedTestKey: { ok: Schema.Boolean, detail: Schema.String },
   ClickedTestVoice: {},
   CompletedTestVoice: { detail: Schema.String, ok: Schema.Boolean },
+  /** the rewind panel: toggle, a press or drag on the graph at fractions of the lanes area, relative steps, jumps, and leaving the past */
+  ClickedTimeline: {},
+  ScrubbedTimeline: { fx: Schema.Number, fy: Schema.Number },
+  SteppedTimeline: { steps: Schema.Number },
+  JumpedTimeline: { to: Schema.Literals(['start', 'end']) },
+  ClickedTimelineLive: {},
+  ClickedTimelineResume: {},
   ClickedSession: {},
   ClickedHostSession: {},
   UpdatedRoomInput: { value: Schema.String },

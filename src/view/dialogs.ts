@@ -101,6 +101,15 @@ export const helpView = (h: HtmlBuilder<Message>): Html =>
         ...cmdRow(h, 'PAUSE / UNPAUSE', ['Freeze or resume the clock.']),
         ...cmdRow(h, 'SIMRATE {1-8}', ['Run the clock faster.']),
       ]),
+      h.h3([], ['Rewind and fork']),
+      h.p([], [
+        h.b([], ['Rewind']),
+        ' in the header opens the time graph of this session. Drag the playhead, click a lane, or step back with the buttons: the scopes, strips and log show the session as it was at that moment, with the sim paused. ',
+        h.b([], ['Resume here']),
+        ' (or the play button) runs on from that point as a new branch; the future you rewound past stays on the graph as its own lane, and clicking it takes you back there. Resuming at the end of a lane continues that branch instead. ',
+        h.b([], ['Live']),
+        ' returns to the present without changing anything. In a shared session only the host can rewind; guests follow the branch the host resumes.',
+      ]),
       h.h3([], ['What this does and does not simulate']),
       h.p([], [
         'Aircraft taxi along the facility\'s ', h.b([], ['real ATCTrainer training map']),

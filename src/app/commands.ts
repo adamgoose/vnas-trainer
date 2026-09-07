@@ -232,6 +232,67 @@ export const SplitHandle = Mount.defineStream('SplitHandle', {
     ),
 })
 
+/**
+ * The lanes area of the rewind panel: a press, and the drag that follows it,
+ * report where the pointer is as fractions of the area (x along the track, y
+ * down the lanes), so the update can pick the branch and the tick.
+ */
+type TimelineMessage = ReturnType<typeof Message.ScrubbedTimeline>
+
+export const TimelineSurface = Mount.defineStream('TimelineSurface', {
+  messages: [Message.ScrubbedTimeline],
+  execute: ({ element }) =>
+    Stream.callback<TimelineMessage>((queue) =>
+      Effect.gen(function* () {
+        const area = element as HTMLElement
+        let dragging = false
+        const at = (event: PointerEvent): TimelineMessage => {
+          const rect = area.getBoundingClientRect()
+          return Message.ScrubbedTimeline({
+            fx: rect.width === 0 ? 0 : (event.clientX - rect.left) / rect.width,
+            fy: rect.height === 0 ? 0 : (event.clientY - rect.top) / rect.height,
+          })
+        }
+        const offer = (event: PointerEvent) => Effect.runSync(Queue.offer(queue, at(event)))
+        const down = (event: PointerEvent) => {
+          if (event.button !== 0) {
+            return
+          }
+          event.preventDefault()
+          dragging = true
+          area.setPointerCapture(event.pointerId)
+          offer(event)
+        }
+        const move = (event: PointerEvent) => {
+          if (dragging) {
+            offer(event)
+          }
+        }
+        const up = (event: PointerEvent) => {
+          if (!dragging) {
+            return
+          }
+          dragging = false
+          if (area.hasPointerCapture(event.pointerId)) {
+            area.releasePointerCapture(event.pointerId)
+          }
+        }
+        area.addEventListener('pointerdown', down)
+        area.addEventListener('pointermove', move)
+        area.addEventListener('pointerup', up)
+        area.addEventListener('pointercancel', up)
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            area.removeEventListener('pointerdown', down)
+            area.removeEventListener('pointermove', move)
+            area.removeEventListener('pointerup', up)
+            area.removeEventListener('pointercancel', up)
+          }),
+        )
+      }),
+    ),
+})
+
 // AUDIO AND AI
 
 export const StartRecording = Command.define('StartRecording', {

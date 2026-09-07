@@ -29,7 +29,7 @@ export const subscriptions = Subscription.make<Model, Message, Services>()((entr
   tick: entry(
     { isActive: Schema.Boolean },
     {
-      modelToDependencies: (model) => ({ isActive: model.running && model.airport._tag === 'Ready' && model.session.role !== 'guest' }),
+      modelToDependencies: (model) => ({ isActive: model.running && model.review === null && model.airport._tag === 'Ready' && model.session.role !== 'guest' }),
       dependenciesToStream: ({ isActive }) =>
         isActive
           ? Stream.tick(`${TICK_MS} millis`).pipe(

@@ -39,7 +39,8 @@ import {
   TranslateText,
 } from './commands'
 import { Message } from './message'
-import { AirportLoad, type AirportInfo, IndexLoad, type LogLine, type Model, Pavement, infoOf, initialModel, initialSession, isGuest, isHost, worldOf } from './model'
+import { AirportLoad, type AirportInfo, IndexLoad, type LogLine, type Model, Pavement, infoOf, initialModel, initialSession, isGuest, isHost, isReviewing, worldOf } from './model'
+import { type Point, branchOf, currentBranch, commandLogAt, liveEnd, logAt, parkBranch, pointAt, recordChange, recordSteps, resolvePoint, resumeAt, startTimeline, worldAt } from './timeline'
 import type { Services } from './subscriptions'
 import { TICK_MS } from './subscriptions'
 import type { AirportFile, CatalogIndex } from '../domain/catalog'
@@ -98,8 +99,15 @@ export const init = (): Return => ({ model: initialModel, commands: [LoadSetting
 const withWorld = (model: Model, world: World): Model =>
   model.airport._tag === 'Ready' ? { ...model, airport: { _tag: 'Ready', info: model.airport.info, world } } : model
 
+/** Replace the World after a change that was not a step, and mark it on the time graph. */
+const withWorldChange = (model: Model, world: World, label: string): Model => evo(withWorld(model, world), { timeline: (t) => recordChange(t, world, label) })
+
 const pushLog = (model: Model, kind: LogLine['kind'], who: string | null, text: string): Model =>
   evo(model, { log: (log) => [{ kind, time: worldOf(model)?.simTime ?? 0, who, text }, ...log].slice(0, 140) })
+
+const REWOUND_HINT = 'rewound — Resume forks the timeline here; Live returns to the present'
+
+const tPlus = (seconds: number): string => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
 
 /** A Speak command for the current voice settings; `raw` text already ends the way a pilot would. */
 const speakCommand = (settings: Settings, callsign: string, text: string) =>
@@ -154,6 +162,7 @@ const runCommand = (model: Model, callsign: string | null, command: AtcCommand, 
   const recorded = evo(withWorld(model, result.world), {
     commandLog: (log) => [...log, { tick: world.tick, callsign, command }],
     selected: (s) => (command._tag === 'Delete' && s === callsign ? null : s),
+    timeline: (t) => recordChange(t, result.world, said ?? `${callsign ?? ''} ${command._tag.toUpperCase()}`.trim()),
   })
   const applied = applyEvents(recorded, result.events, { quiet })
   return { model: applied.model, commands: [...applied.commands, ...broadcast(model, SessionEvent.Commanded({ callsign, command, said }))], ok: true }
@@ -164,9 +173,11 @@ const runCommand = (model: Model, callsign: string | null, command: AtcCommand, 
  * broadcast comes back; the host and a solo player execute it here.
  */
 const dispatchCommand = (model: Model, callsign: string | null, command: AtcCommand, said: string | null, quiet = false): Ran =>
-  isGuest(model)
-    ? { model, commands: [SendSession({ event: SessionEvent.RequestedCommand({ callsign, command, said }), target: model.session.hostId })], ok: true }
-    : runCommand(model, callsign, command, quiet, said)
+  isReviewing(model)
+    ? { model: pushLog(model, 'err', null, REWOUND_HINT), commands: [], ok: false }
+    : isGuest(model)
+      ? { model, commands: [SendSession({ event: SessionEvent.RequestedCommand({ callsign, command, said }), target: model.session.hostId })], ok: true }
+      : runCommand(model, callsign, command, quiet, said)
 
 /**
  * A command line, typed or picked from the radial menu: into the history, parsed
@@ -236,6 +247,106 @@ const saveSettings = (model: Model, settings: Settings): Return => ({
   commands: [SaveSettings({ settings })],
 })
 
+// REWIND
+
+/** The point being looked at: the review, or the live end. */
+const viewedPoint = (model: Model): Point | null => model.review ?? liveEnd(model.timeline)
+
+/**
+ * Show the World at a point of the graph. The first rewind parks the live log
+ * on the branch being extended and pauses the sim (a host tells its peers);
+ * later scrubs step from the World already shown when that is cheaper.
+ */
+const scrubTo = (model: Model, branch: number, tick: number): Return => {
+  if (isGuest(model) || worldOf(model) === null) {
+    return { model }
+  }
+  const point = resolvePoint(model.timeline, branch, tick)
+  const end = liveEnd(model.timeline)
+  if (point === null || end === null) {
+    return { model }
+  }
+  if (model.review === null && point.branch === end.branch && point.tick === end.tick) {
+    return { model }
+  }
+  const timeline = model.review === null ? parkBranch(model.timeline, model.log, model.commandLog) : model.timeline
+  const shown = worldOf(model)
+  const hint = model.review !== null && shown !== null ? { point: model.review, world: shown } : null
+  const world = worldAt(timeline, point, hint)
+  const target = branchOf(timeline, point.branch)
+  if (world === null || target === undefined) {
+    return { model }
+  }
+  const wasRunning = model.review?.wasRunning ?? model.running
+  const next = evo(withWorld(model, world), {
+    timeline: () => timeline,
+    review: () => ({ branch: point.branch, tick: point.tick, wasRunning }),
+    running: () => false,
+    lastTickAt: () => null,
+    log: () => logAt(target, world.simTime),
+    commandLog: () => commandLogAt(target, point.tick),
+    selected: (s) => (s !== null && findAircraft(world, s) !== undefined ? s : null),
+    radial: () => null,
+  })
+  return { model: next, commands: model.review === null ? broadcast(model, SessionEvent.Controlled({ control: SessionControl.SetRunning({ running: false }) })) : [] }
+}
+
+/** Back to the present: the end of the branch being extended, its log, and the clock as it was. */
+const goLive = (model: Model): Return => {
+  const review = model.review
+  const branch = currentBranch(model.timeline)
+  const end = liveEnd(model.timeline)
+  const world = end === null ? null : worldAt(model.timeline, end)
+  if (review === null || branch === undefined || world === null) {
+    return { model: evo(model, { review: () => null }) }
+  }
+  const next = evo(withWorld(model, world), {
+    review: () => null,
+    running: () => review.wasRunning,
+    lastTickAt: () => null,
+    log: () => branch.log,
+    commandLog: () => branch.commandLog,
+    selected: (s) => (s !== null && findAircraft(world, s) !== undefined ? s : null),
+    radial: () => null,
+  })
+  return { model: next, commands: broadcast(model, SessionEvent.Controlled({ control: SessionControl.SetRunning({ running: review.wasRunning }) })) }
+}
+
+/** Resume the sim from the point shown: a fork before the end of a branch, a continuation at it. Peers take a fresh snapshot. */
+const resumeHere = (model: Model): Return => {
+  const review = model.review
+  const world = worldOf(model)
+  if (review === null || world === null) {
+    return { model }
+  }
+  const resumed = resumeAt(model.timeline, review, world)
+  if (resumed === null) {
+    return goLive(model)
+  }
+  const next = evo(model, {
+    timeline: () => resumed.timeline,
+    review: () => null,
+    running: () => review.wasRunning,
+    lastTickAt: () => null,
+    log: () => resumed.branch.log,
+    commandLog: () => resumed.branch.commandLog,
+  })
+  const logged = pushLog(
+    next,
+    'sys',
+    null,
+    resumed.forked ? `rewound to T+${tPlus(world.simTime)} — branch ${resumed.branch.id + 1} forks here; the old future stays on the timeline` : `continuing branch ${resumed.branch.id + 1} from T+${tPlus(world.simTime)}`,
+  )
+  const snapshot = snapshotOf(logged)
+  return {
+    model: logged,
+    commands: [
+      ...(snapshot === null ? [] : broadcast(logged, SessionEvent.Snapshot({ snapshot }))),
+      ...broadcast(logged, SessionEvent.Controlled({ control: SessionControl.SetRunning({ running: review.wasRunning }) })),
+    ],
+  }
+}
+
 // SESSION HELPERS
 
 const turnOf = (settings: Settings): TurnServer | null =>
@@ -243,13 +354,25 @@ const turnOf = (settings: Settings): TurnServer | null =>
 
 const broadcast = (model: Model, event: SessionEvent): Commands => (isHost(model) ? [SendSession({ event, target: null })] : [])
 
+/** What a peer should follow: the present, even while this browser is looking at the past. */
 const snapshotOf = (model: Model): Snapshot | null => {
-  const world = worldOf(model)
+  const end = liveEnd(model.timeline)
+  const world = model.review !== null && end !== null ? worldAt(model.timeline, end) : worldOf(model)
   const info = infoOf(model)
   if (world === null || info === null) {
     return null
   }
-  return { airportId: info.id, artcc: info.artcc, scenarioId: world.scenario?.id ?? null, world, running: model.running, rate: model.rate, mode: model.settings.mode }
+  return { airportId: info.id, artcc: info.artcc, scenarioId: world.scenario?.id ?? null, world, running: model.review?.wasRunning ?? model.running, rate: model.rate, mode: model.settings.mode }
+}
+
+/** A fresh time graph rooted at the World now in the model; any rewind in progress ends. */
+const restartTimeline = (model: Model): Model => {
+  const world = worldOf(model)
+  return evo(model, {
+    timeline: () => (world === null ? model.timeline : startTimeline(world)),
+    review: () => null,
+    running: (running) => model.review?.wasRunning ?? running,
+  })
 }
 
 const withSession = (model: Model, patch: Partial<Model['session']>): Model => evo(model, { session: (session) => ({ ...session, ...patch }) })
@@ -264,7 +387,7 @@ const applyControl = (model: Model, control: SessionControl): Return =>
       if (world === null) {
         return { model }
       }
-      const next = withWorld(model, { ...world, arrivalsEnabled: enabled, nextArrivalAt: world.simTime + 5 })
+      const next = withWorldChange(model, { ...world, arrivalsEnabled: enabled, nextArrivalAt: world.simTime + 5 }, enabled ? 'arrivals on' : 'arrivals off')
       return {
         model: pushLog(next, 'sys', null, enabled ? `arrival generator on — ${world.airport.fleet.length > 0 ? `${world.airport.id} fleet mix` : 'generic GA mix'}` : 'arrival generator off'),
       }
@@ -273,7 +396,7 @@ const applyControl = (model: Model, control: SessionControl): Return =>
       const settings = { ...model.settings, mode }
       const world = worldOf(model)
       const switched = evo(model, { settings: () => settings, draft: () => settings })
-      const withRules = world === null ? switched : withWorld(switched, { ...world, rules: rulesFor(mode) })
+      const withRules = world === null ? switched : withWorldChange(switched, { ...world, rules: rulesFor(mode) }, `${positionLabel(mode)} position`)
       const ranged = evo(withRules, { stars: (stars) => ({ ...stars, view: rangeView(positionFor(mode).scopeRangeNm) }) })
       const logged = world === null ? ranged : pushLog(ranged, 'sys', null, `${positionLabel(mode)} position — try: ${positionTips(mode, world)}`)
       return { model: logged, commands: [SaveSettings({ settings })] }
@@ -282,6 +405,9 @@ const applyControl = (model: Model, control: SessionControl): Return =>
 
 /** A control from the UI: guests ask the host; the host applies and broadcasts. */
 const control = (model: Model, c: SessionControl): Return => {
+  if (isReviewing(model)) {
+    return c._tag === 'SetRunning' ? (c.running ? resumeHere(model) : { model }) : c._tag === 'SetRate' ? applyControl(model, c) : { model: pushLog(model, 'err', null, REWOUND_HINT) }
+  }
   if (isGuest(model)) {
     return { model, commands: [SendSession({ event: SessionEvent.RequestedControl({ control: c }), target: model.session.hostId })] }
   }
@@ -299,7 +425,7 @@ const applySnapshot = (model: Model, snapshot: Snapshot, hostId: string): Return
     }
   }
   const settings = { ...model.settings, mode: snapshot.mode }
-  const taken = evo(withWorld(model, snapshot.world), {
+  const taken = evo(restartTimeline(withWorld(model, snapshot.world)), {
     running: () => snapshot.running,
     rate: () => snapshot.rate,
     settings: () => settings,
@@ -326,7 +452,7 @@ const receiveSession = (model: Model, peerId: string, event: SessionEvent): Retu
         return { model }
       }
       const stepped = stepWorldTimes(world, steps)
-      return applyEvents(withWorld(model, stepped.world), stepped.events)
+      return applyEvents(evo(withWorld(model, stepped.world), { timeline: (t) => recordSteps(t, stepped.world) }), stepped.events)
     },
     /** A peer's command never moves this browser's selection: the user may be mid-way through typing for another aircraft. */
     Commanded: ({ callsign, command, said }) => {
@@ -391,7 +517,7 @@ const applyScenario = (model: Model, scenarioId: string | null, scenario: Parame
     return { model }
   }
   const loaded = loadScenario(world, scenario)
-  const fresh = evo(withWorld(model, loaded.world), {
+  const fresh = evo(restartTimeline(withWorld(model, loaded.world)), {
     log: () => [],
     selected: () => null,
     commandLog: () => [],
@@ -564,13 +690,13 @@ export const update = (model: Model, message: Message): Return =>
       const info = airportInfo(airport)
       const pavement = pavementFor(airport.asdex, airport.twrmap, model.settings.asdexCabMap)
       const radar = starsInit(model.stars, airport.artcc, airport.stars, positionFor(model.settings.mode).scopeRangeNm)
-      const fitted: Model = {
+      const fitted: Model = restartTimeline({
         ...model,
         airport: { _tag: 'Ready', info, world },
         pavement: pavement === null ? Pavement.None() : Pavement.Loading({ id: pavement.id }),
         scope: fit(world.graph, { ...model.scope, fitted: false }),
         stars: radar.model,
-      }
+      })
       const pending = model.session.pendingSnapshot
       const wanted = model.deepLink.airport === airport.id ? model.deepLink.scenario : null
       const scenarioId = wanted !== null && info.scenarios.some((s) => s.id === wanted) ? wanted : defaultScenario(info, model.settings.mode)
@@ -613,7 +739,7 @@ export const update = (model: Model, message: Message): Return =>
 
     Ticked: ({ now }) => {
       const world = worldOf(model)
-      if (world === null) {
+      if (world === null || isReviewing(model)) {
         return { model }
       }
       if (model.lastTickAt === null) {
@@ -630,7 +756,7 @@ export const update = (model: Model, message: Message): Return =>
       }
       const steps = n * model.rate
       const stepped = stepWorldTimes(world, steps)
-      const applied = applyEvents(withWorld(clocked, stepped.world), stepped.events)
+      const applied = applyEvents(evo(withWorld(clocked, stepped.world), { timeline: (t) => recordSteps(t, stepped.world) }), stepped.events)
       return { model: applied.model, commands: [...applied.commands, ...broadcast(model, SessionEvent.Stepped({ steps }))] }
     },
 
@@ -1011,6 +1137,39 @@ export const update = (model: Model, message: Message): Return =>
     CompletedTestVoice: ({ detail, ok }) => ({ model: status(model, detail, ok ? 'ok' : 'bad') }),
 
     // SHARED SESSIONS
+
+    // REWIND
+
+    ClickedTimeline: () => {
+      if (model.timelineOpen && isReviewing(model)) {
+        const live = goLive(model)
+        return { model: evo(live.model, { timelineOpen: () => false }), commands: live.commands ?? [] }
+      }
+      return { model: evo(model, { timelineOpen: (open) => !open }) }
+    },
+
+    ScrubbedTimeline: ({ fx, fy }) => {
+      const point = pointAt(model.timeline, fx, fy)
+      return point === null ? { model } : scrubTo(model, point.branch, point.tick)
+    },
+
+    SteppedTimeline: ({ steps }) => {
+      const viewed = viewedPoint(model)
+      return viewed === null ? { model } : scrubTo(model, viewed.branch, viewed.tick + steps)
+    },
+
+    JumpedTimeline: ({ to }) => {
+      const viewed = viewedPoint(model)
+      const branch = viewed === null ? undefined : branchOf(model.timeline, viewed.branch)
+      if (viewed === null || branch === undefined) {
+        return { model }
+      }
+      return scrubTo(model, viewed.branch, to === 'start' ? -Infinity : branch.endTick)
+    },
+
+    ClickedTimelineLive: () => goLive(model),
+
+    ClickedTimelineResume: () => resumeHere(model),
 
     ClickedSession: () => ({ model: evo(model, { dialog: () => 'session' }) }),
 

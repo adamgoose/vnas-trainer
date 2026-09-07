@@ -10,6 +10,7 @@ import { dialogView } from './dialogs'
 import { headerView } from './header'
 import { accentFor, scopeView } from './scope'
 import { starsView } from './stars'
+import { timelineView } from './timeline'
 import { selectedStripView, stripsView } from './strips'
 
 export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
@@ -42,6 +43,7 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
       [
         headerView(model, h),
         h.main([], [scopes, stripsView(model, h)]),
+        timelineView(model, h),
         deckView(model, h),
         dialogView(model, h),
       ],

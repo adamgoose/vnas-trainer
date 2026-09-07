@@ -1,7 +1,7 @@
 import type { Html, HtmlBuilder } from 'foldkit/html'
 
 import { Message } from '../app/message'
-import { type Model, infoOf, worldOf } from '../app/model'
+import { type Model, infoOf, isGuest, isReviewing, worldOf } from '../app/model'
 import { positionLabel } from '../app/update'
 import { positionFor } from '../positions'
 
@@ -64,7 +64,21 @@ export const headerView = (model: Model, h: HtmlBuilder<Message>): Html => {
         [h.Class('clock')],
         [
           h.span([], ['T+', h.b([], [clock(world?.simTime ?? 0)])]),
-          h.button([h.Class('tbtn'), h.Type('button'), h.AriaPressed(model.running ? 'true' : 'false'), h.OnClick(Message.ClickedTogglePlay())], [model.running ? 'Running' : 'Paused']),
+          h.button(
+            [
+              h.Class(`tbtn rewind${isReviewing(model) ? ' rewound' : ''}`),
+              h.Type('button'),
+              h.AriaPressed(model.timelineOpen ? 'true' : 'false'),
+              h.Disabled(world === null || isGuest(model)),
+              h.Title(isGuest(model) ? 'The host owns the clock; rewinding is for the host' : 'Rewind through this session and resume from any point as a new branch'),
+              h.OnClick(Message.ClickedTimeline()),
+            ],
+            [isReviewing(model) ? 'Rewound' : 'Rewind'],
+          ),
+          h.button(
+            [h.Class('tbtn'), h.Type('button'), h.AriaPressed(model.running ? 'true' : 'false'), h.Title(isReviewing(model) ? 'Resume from the point shown (forks the timeline)' : ''), h.OnClick(Message.ClickedTogglePlay())],
+            [model.running ? 'Running' : isReviewing(model) ? 'Resume' : 'Paused'],
+          ),
           h.button([h.Class('tbtn'), h.Type('button'), h.OnClick(Message.ClickedRate())], [`${model.rate}×`]),
           h.button([h.Class('tbtn'), h.Type('button'), h.AriaPressed(world?.arrivalsEnabled ? 'true' : 'false'), h.OnClick(Message.ClickedArrivals())], ['Arrivals']),
           positionFor(model.settings.mode).hasRadar && positionFor(model.settings.mode).groundScope

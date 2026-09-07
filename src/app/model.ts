@@ -8,10 +8,13 @@ import { defineTaggedUnion } from 'foldkit/schema'
 
 import { CatalogIndex, Stars } from '../domain/catalog'
 import { Snapshot } from '../domain/session'
-import { AtcCommand } from '../domain/commands'
 import { World } from '../domain/world'
+import { CommandRecord, LogLine } from './log'
+import { Review, Timeline, emptyTimeline } from './timeline'
 import { StarsModel, initialStars } from '../positions/local/stars'
 import { Settings, defaultSettings } from '../services/settings'
+
+export { CommandRecord, LogLine } from './log'
 
 export const IndexLoad = defineTaggedUnion({
   Loading: {},
@@ -70,21 +73,6 @@ export const Drag = Schema.Struct({
   moved: Schema.Boolean,
 })
 export type Drag = typeof Drag.Type
-
-export const LogLine = Schema.Struct({
-  kind: Schema.Literals(['atc', 'pilot', 'sys', 'err', 'ai']),
-  time: Schema.Number,
-  who: Schema.NullOr(Schema.String),
-  text: Schema.String,
-})
-export type LogLine = typeof LogLine.Type
-
-export const CommandRecord = Schema.Struct({
-  tick: Schema.Number,
-  callsign: Schema.NullOr(Schema.String),
-  command: AtcCommand,
-})
-export type CommandRecord = typeof CommandRecord.Type
 
 /** The radial command menu open on the ground scope: which aircraft, and the keys picked so far. */
 export const Radial = Schema.Struct({ callsign: Schema.String, trail: Schema.Array(Schema.String) })
@@ -162,6 +150,12 @@ export const Model = Schema.Struct({
   log: Schema.Array(LogLine),
   /** every executed command with the sim tick it was issued at; replays a session */
   commandLog: Schema.Array(CommandRecord),
+  /** the session's time graph: keyframes per branch (timeline.ts) */
+  timeline: Timeline,
+  /** the point of the graph shown instead of the present; the sim is paused while set */
+  review: Schema.NullOr(Review),
+  /** the rewind panel is open */
+  timelineOpen: Schema.Boolean,
   dialog: Dialog,
   draft: Settings,
   settingsStatus: SettingsStatus,
@@ -198,6 +192,9 @@ export const initialModel: Model = {
   historyIndex: -1,
   log: [],
   commandLog: [],
+  timeline: emptyTimeline,
+  review: null,
+  timelineOpen: false,
   dialog: 'none',
   draft: defaultSettings,
   settingsStatus: { text: '', kind: '' },
@@ -211,6 +208,8 @@ export const initialModel: Model = {
 
 export const isHost = (model: Model): boolean => model.session.role === 'host'
 export const isGuest = (model: Model): boolean => model.session.role === 'guest'
+
+export const isReviewing = (model: Model): boolean => model.review !== null
 
 export const worldOf = (model: Model): World | null => (model.airport._tag === 'Ready' ? model.airport.world : null)
 export const infoOf = (model: Model): AirportInfo | null => (model.airport._tag === 'Ready' ? model.airport.info : null)
