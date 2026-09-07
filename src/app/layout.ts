@@ -8,7 +8,7 @@ import { Schema } from 'effect'
 
 import { type PositionMode, positionFor } from '../positions'
 
-export const Panel = Schema.Literals(['controls', 'asdex', 'stars', 'strips', 'console', 'rewind', 'commands', 'settings', 'session'])
+export const Panel = Schema.Literals(['controls', 'scenarios', 'asdex', 'stars', 'strips', 'console', 'rewind', 'commands', 'settings', 'session'])
 export type Panel = typeof Panel.Type
 export const PANELS: ReadonlyArray<Panel> = Panel.literals
 
@@ -72,8 +72,6 @@ export const MIN_FLOAT_H = 120
 /** how much of a floating window must stay inside the workspace */
 export const KEEP_VISIBLE_PX = 120
 export const TITLE_PX = 26
-/** the share of the height the Controls window opens with */
-export const CONTROLS_SHARE = 0.1
 
 // PANELS
 
@@ -81,6 +79,8 @@ export type PanelSpec = Readonly<{
   title: string
   /** opens floating and is closed again when the app loads */
   transient: boolean
+  /** a bar: tiled, it cannot be made smaller than its content, and it opens with a tiny share so that is all it takes */
+  fixed: boolean
   /** the size it floats at */
   size: Readonly<{ w: number; h: number }>
   /** where it docks when opened tiled: the first panel present wins, else `rootEdge` */
@@ -89,16 +89,20 @@ export type PanelSpec = Readonly<{
 }>
 
 export const PANEL_SPECS: Readonly<Record<Panel, PanelSpec>> = {
-  controls: { title: 'Controls', transient: false, size: { w: 900, h: 64 }, dock: [], rootEdge: 'top' },
-  asdex: { title: 'ASDE-X', transient: false, size: { w: 720, h: 520 }, dock: [{ beside: 'stars', edge: 'left' }, { beside: 'strips', edge: 'left' }], rootEdge: 'left' },
-  stars: { title: 'STARS', transient: false, size: { w: 720, h: 520 }, dock: [{ beside: 'asdex', edge: 'right' }, { beside: 'strips', edge: 'left' }], rootEdge: 'right' },
-  strips: { title: 'Strips', transient: false, size: { w: 320, h: 520 }, dock: [{ beside: 'stars', edge: 'right' }, { beside: 'asdex', edge: 'right' }], rootEdge: 'right' },
-  console: { title: 'Console', transient: false, size: { w: 760, h: 240 }, dock: [], rootEdge: 'bottom' },
-  rewind: { title: 'Rewind', transient: false, size: { w: 760, h: 220 }, dock: [{ beside: 'console', edge: 'top' }], rootEdge: 'bottom' },
-  commands: { title: 'Command reference', transient: true, size: { w: 760, h: 620 }, dock: [], rootEdge: 'right' },
-  settings: { title: 'Settings', transient: true, size: { w: 760, h: 620 }, dock: [], rootEdge: 'right' },
-  session: { title: 'Shared session', transient: true, size: { w: 540, h: 460 }, dock: [], rootEdge: 'right' },
+  controls: { title: 'Controls', transient: false, fixed: true, size: { w: 900, h: 0 }, dock: [], rootEdge: 'top' },
+  scenarios: { title: 'Scenarios', transient: true, fixed: false, size: { w: 760, h: 520 }, dock: [{ beside: 'strips', edge: 'top' }], rootEdge: 'right' },
+  asdex: { title: 'ASDE-X', transient: false, fixed: false, size: { w: 720, h: 520 }, dock: [{ beside: 'stars', edge: 'left' }, { beside: 'strips', edge: 'left' }], rootEdge: 'left' },
+  stars: { title: 'STARS', transient: false, fixed: false, size: { w: 720, h: 520 }, dock: [{ beside: 'asdex', edge: 'right' }, { beside: 'strips', edge: 'left' }], rootEdge: 'right' },
+  strips: { title: 'Strips', transient: false, fixed: false, size: { w: 320, h: 520 }, dock: [{ beside: 'stars', edge: 'right' }, { beside: 'asdex', edge: 'right' }], rootEdge: 'right' },
+  console: { title: 'Console', transient: false, fixed: false, size: { w: 760, h: 240 }, dock: [], rootEdge: 'bottom' },
+  rewind: { title: 'Rewind', transient: false, fixed: false, size: { w: 760, h: 220 }, dock: [{ beside: 'console', edge: 'top' }], rootEdge: 'bottom' },
+  commands: { title: 'Command reference', transient: true, fixed: false, size: { w: 760, h: 620 }, dock: [], rootEdge: 'right' },
+  settings: { title: 'Settings', transient: true, fixed: false, size: { w: 760, h: 620 }, dock: [], rootEdge: 'right' },
+  session: { title: 'Shared session', transient: true, fixed: false, size: { w: 540, h: 460 }, dock: [], rootEdge: 'right' },
 }
+
+/** the share a bar opens with: below its content, so the content minimum decides */
+export const BAR_SHARE = 0.01
 
 /** The panels a position has: the ground scope needs a ground scope, the radar a radar. */
 export const availablePanels = (mode: PositionMode): ReadonlyArray<Panel> => {
@@ -288,9 +292,12 @@ export const placement = (layout: Layout, panel: Panel): Placement =>
 
 export const isOpen = (layout: Layout, panel: Panel): boolean => placement(layout, panel) !== null
 
-const clampRect = (rect: Rect, ws: Size): Rect => {
+/** A bar's floating height is a minimum the content overrides, so it may be anything; other windows keep a usable size. */
+const minFloatHeight = (panel: Panel): number => (PANEL_SPECS[panel].fixed ? 0 : MIN_FLOAT_H)
+
+const clampRect = (panel: Panel, rect: Rect, ws: Size): Rect => {
   const w = Math.max(MIN_FLOAT_W, ws.width > 0 ? Math.min(rect.w, ws.width) : rect.w)
-  const h = Math.max(MIN_FLOAT_H, ws.height > 0 ? Math.min(rect.h, ws.height) : rect.h)
+  const h = Math.max(minFloatHeight(panel), ws.height > 0 ? Math.min(rect.h, ws.height) : rect.h)
   const x = ws.width > 0 ? Math.max(KEEP_VISIBLE_PX - w, Math.min(ws.width - KEEP_VISIBLE_PX, rect.x)) : Math.max(0, rect.x)
   const y = ws.height > 0 ? Math.max(0, Math.min(ws.height - TITLE_PX, rect.y)) : Math.max(0, rect.y)
   return { x, y, w, h }
@@ -300,7 +307,7 @@ const clampRect = (rect: Rect, ws: Size): Rect => {
 const floatRect = (layout: Layout, panel: Panel, ws: Size): Rect => {
   const remembered = layout.rects[panel]
   if (remembered !== undefined) {
-    return clampRect(remembered, ws)
+    return clampRect(panel, remembered, ws)
   }
   const size = PANEL_SPECS[panel].size
   const w = ws.width > 0 ? Math.min(size.w, ws.width - 24) : size.w
@@ -308,7 +315,7 @@ const floatRect = (layout: Layout, panel: Panel, ws: Size): Rect => {
   const step = 24 * layout.floating.length
   const x = ws.width > 0 ? Math.max(12, (ws.width - w) / 2) + step : 40 + step
   const y = ws.height > 0 ? Math.max(12, (ws.height - h) / 2) + step : 40 + step
-  return clampRect({ x, y, w, h }, ws)
+  return clampRect(panel, { x, y, w, h }, ws)
 }
 
 export const close = (layout: Layout, panel: Panel): Layout => {
@@ -331,7 +338,7 @@ export const openTiled = (layout: Layout, panel: Panel): Layout => {
   const closed = close(layout, panel)
   const spec = PANEL_SPECS[panel]
   const partner = spec.dock.find((d) => contains(closed.root, d.beside))
-  const root = partner !== undefined ? insertBeside(closed.root, partner.beside, panel, partner.edge) : insertAtRoot(closed.root, panel, spec.rootEdge, panel === 'controls' ? CONTROLS_SHARE : 0.25)
+  const root = partner !== undefined ? insertBeside(closed.root, partner.beside, panel, partner.edge) : insertAtRoot(closed.root, panel, spec.rootEdge, spec.fixed ? BAR_SHARE : 0.25)
   return { ...closed, root }
 }
 
@@ -367,14 +374,14 @@ const withFloating = (layout: Layout, panel: Panel, f: (w: Floating) => Floating
 })
 
 export const moveFloating = (layout: Layout, panel: Panel, x: number, y: number, ws: Size): Layout =>
-  withFloating(layout, panel, (w) => ({ ...w, ...clampRect({ x, y, w: w.w, h: w.h }, ws) }))
+  withFloating(layout, panel, (w) => ({ ...w, ...clampRect(panel, { x, y, w: w.w, h: w.h }, ws) }))
 
 /** Pull a grip to the pointer at (x, y) in workspace px. */
 export const resizeFloating = (layout: Layout, panel: Panel, grip: Grip, x: number, y: number): Layout =>
   withFloating(layout, panel, (w) => ({
     ...w,
     w: grip === 'bottom' ? w.w : Math.max(MIN_FLOAT_W, Math.round(x - w.x)),
-    h: grip === 'right' ? w.h : Math.max(MIN_FLOAT_H, Math.round(y - w.y)),
+    h: grip === 'right' ? w.h : Math.max(minFloatHeight(panel), Math.round(y - w.y)),
   }))
 
 export const resizeGutter = (layout: Layout, path: ReadonlyArray<number>, index: number, fraction: number): Layout => ({
@@ -388,12 +395,12 @@ export const prune = (layout: Layout, available: ReadonlyArray<Panel>): Layout =
 
 /** Floating windows kept on screen after the workspace changed size. */
 export const fitFloating = (layout: Layout, ws: Size): Layout =>
-  ws.width <= 0 || ws.height <= 0 ? layout : { ...layout, floating: layout.floating.map((w) => ({ ...w, ...clampRect(w, ws) })) }
+  ws.width <= 0 || ws.height <= 0 ? layout : { ...layout, floating: layout.floating.map((w) => ({ ...w, ...clampRect(w.panel, w, ws) })) }
 
 // DEFAULTS
 
 const columns = (middle: ReadonlyArray<readonly [Panel, number]>): Node =>
-  split('col', [leaf('controls'), split('row', middle.map(([p]) => leaf(p)), middle.map(([, s]) => s)), leaf('console')], [CONTROLS_SHARE, 1 - CONTROLS_SHARE - 0.28, 0.28])
+  split('col', [leaf('controls'), split('row', middle.map(([p]) => leaf(p)), middle.map(([, s]) => s)), leaf('console')], [BAR_SHARE, 0.71, 0.28])
 
 export const defaultLayouts: Layouts = {
   ground: { root: columns([['asdex', 0.78], ['strips', 0.22]]), floating: [], rects: {} },

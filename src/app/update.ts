@@ -853,15 +853,10 @@ export const update = (model: Model, message: Message): Return =>
 
     ChangedPosition: ({ mode }) => control(model, SessionControl.SetPosition({ mode })),
 
-    ChangedArtcc: ({ id }) => {
-      if (model.index._tag !== 'Ready') {
-        return { model }
-      }
-      const first = model.index.index.artccs.find((a) => a.id === id)?.airports[0]
-      return first === undefined ? { model } : startLoadingAirport(model, first.id)
-    },
+    /** The Scenarios pane browses an ARTCC without loading anything; an airport click loads that airport. */
+    ChangedArtcc: ({ id }) => ({ model: evo(model, { browseArtcc: () => id }) }),
 
-    ChangedAirport: ({ id }) => startLoadingAirport(model, id),
+    ChangedAirport: ({ id }) => startLoadingAirport(evo(model, { browseArtcc: () => null }), id),
 
     ChangedScenario: ({ id }) =>
       isGuest(model)

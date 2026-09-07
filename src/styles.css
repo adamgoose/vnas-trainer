@@ -54,6 +54,10 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .win.floating:last-child { z-index: 6; }
 .win.full { position: absolute; inset: 3px; }
 .win.dragging { opacity: .85; }
+/* a bar: its content is its minimum, so a gutter can shrink it no further; overflow stays visible so that minimum counts */
+.win.fixed { overflow: visible; min-height: auto; min-width: auto; }
+.win.floating.fixed { overflow: hidden; }
+.win.fixed > .win-body { flex: 0 0 auto; overflow: visible; }
 .win-title { flex: 0 0 auto; height: 26px; display: flex; align-items: center; gap: 2px; padding: 0 2px 0 10px; background: var(--panel-2); border-bottom: 1px solid var(--rule); cursor: grab; user-select: none; -webkit-user-select: none; touch-action: none; }
 .win-title:active { cursor: grabbing; }
 .win.floating > .win-title { background: #1c252a; }
@@ -62,7 +66,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .win-btn { width: 24px; height: 22px; border-radius: 2px; color: var(--ink-3); font-family: var(--f-m); font-size: 13px; line-height: 1; padding: 0; }
 .win-btn:hover { color: var(--ink); background: var(--rule); }
 .win-btn[aria-pressed="true"] { color: var(--accent); }
-.win-body { position: relative; flex: 1 1 auto; min-height: 0; min-width: 0; overflow: hidden; }
+.win-body { position: relative; flex: 1 1 auto; min-height: 0; min-width: 0; overflow: hidden; container-type: inline-size; }
 .grip { position: absolute; z-index: 3; touch-action: none; }
 .grip.right { top: 0; right: -3px; bottom: 0; width: 7px; cursor: ew-resize; }
 .grip.bottom { left: 0; right: 0; bottom: -3px; height: 7px; cursor: ns-resize; }
@@ -77,9 +81,13 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .app.window-dragging .win-body { pointer-events: none; }
 
 /* ---------- controls window ---------- */
-.controls { display: flex; align-items: center; gap: 8px; padding: 6px 10px; height: 100%; overflow: auto; }
-.controls select { flex: 0 1 auto; min-width: 56px; }
-.controls select.mode { flex: 0 0 auto; font-family: var(--f-d); font-weight: 700; color: var(--accent); }
+.controls { display: flex; align-items: center; gap: 8px; padding: 5px 10px; flex-wrap: wrap; }
+.win.full .controls { height: 100%; overflow: auto; align-content: flex-start; }
+.controls select.mode { flex: 0 0 auto; font-family: var(--f-d); font-weight: 700; color: var(--accent); padding: 4px 6px; }
+.controls .tbtn { padding: 4px 9px; }
+.controls .current { font-size: 11.5px; letter-spacing: .02em; color: var(--ink-2); }
+.controls .current b { color: var(--ink); font-weight: 600; }
+.controls .current span { color: var(--ink-2); }
 select { font-family: var(--f-m); font-size: 11.5px; background: var(--bg); color: var(--ink); border: 1px solid var(--rule-2); border-radius: 2px; padding: 5px 8px; max-width: 360px; }
 select:disabled { opacity: .5; }
 .clock { margin-left: auto; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; font-family: var(--f-m); font-size: 12px; color: var(--ink-2); white-space: nowrap; }
@@ -154,6 +162,27 @@ select:disabled { opacity: .5; }
 .adisp .row b { color: var(--ink); font-weight: 500; min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; }
 .adisp .row button { width: 22px; height: 20px; border: 1px solid var(--rule-2); border-radius: 2px; font-family: var(--f-m); font-size: 12px; color: var(--ink-2); line-height: 1; }
 .adisp .row button:hover { color: var(--ink); }
+
+/* ---------- scenarios ---------- */
+.scenarios { position: absolute; inset: 0; display: flex; background: var(--panel); }
+.sc-airports { flex: 0 0 auto; width: min(44%, 300px); display: flex; flex-direction: column; border-right: 1px solid var(--rule); min-height: 0; }
+.sc-airports select { margin: 8px 10px 4px; max-width: none; }
+.sc-scenarios { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.sc-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.sc-airport { display: grid; grid-template-columns: 44px 1fr auto; gap: 8px; align-items: baseline; width: 100%; text-align: left; padding: 6px 12px; border-bottom: 1px solid var(--rule); font-family: var(--f-m); font-size: 11.5px; color: var(--ink-2); }
+.sc-airport b { color: var(--ink); font-weight: 600; }
+.sc-airport span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-airport i { font-style: normal; color: var(--ink-3); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.sc-airport:hover { background: var(--panel-2); }
+.sc-airport.loaded { background: var(--panel-2); box-shadow: inset 3px 0 0 var(--accent); }
+.sc-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; padding: 7px 13px; border-bottom: 1px solid var(--rule); font-family: var(--f-m); font-size: 11.5px; }
+.sc-row .sc-name { color: var(--ink); font-weight: 500; grid-row: 1; }
+.sc-row .sc-counts { color: var(--ink-3); font-size: 10.5px; grid-row: 2; }
+.sc-row .sc-load { grid-column: 2; grid-row: 1 / 3; }
+.sc-row.running { background: var(--panel-2); box-shadow: inset 3px 0 0 var(--accent); }
+.sc-row.unusable .sc-name { color: var(--ink-3); }
+.sc-empty { padding: 16px; font-family: var(--f-m); font-size: 11.5px; color: var(--ink-3); }
+@container (max-width: 520px) { .scenarios { flex-direction: column; } .sc-airports { width: auto; max-height: 45%; border-right: 0; border-bottom: 1px solid var(--rule); } }
 
 /* ---------- strips ---------- */
 .strips-panel { position: absolute; inset: 0; background: var(--panel); display: flex; flex-direction: column; }

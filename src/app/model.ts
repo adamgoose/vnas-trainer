@@ -142,6 +142,8 @@ export const Model = Schema.Struct({
   airport: AirportLoad,
   /** scenario id being fetched (live mode) */
   scenarioLoading: Schema.NullOr(Schema.String),
+  /** the ARTCC shown in the Scenarios pane; null follows the loaded airport */
+  browseArtcc: Schema.NullOr(Schema.String),
   pavement: Pavement,
   scope: ScopeView,
   drag: Schema.NullOr(Drag),
@@ -189,6 +191,7 @@ export const initialModel: Model = {
   index: IndexLoad.Loading(),
   airport: AirportLoad.Idle(),
   scenarioLoading: null,
+  browseArtcc: null,
   pavement: Pavement.None(),
   scope: { width: 800, height: 600, scale: 0.05, originX: 0, originY: 0, fitted: false },
   drag: null,

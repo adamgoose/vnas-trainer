@@ -30,16 +30,18 @@ const grips = (panel: Panel, h: HtmlBuilder<Message>): ReadonlyArray<Html> =>
 
 export const windowView = (model: Model, h: HtmlBuilder<Message>, panel: Panel, title: string, mode: WindowMode, content: Html): Html => {
   const dragging = model.windowDrag?.panel === panel && model.windowDrag.moved
+  /** a bar: its content is its height; tiled, a gutter cannot go below it, floating, the stored height is only a minimum */
+  const fixed = PANEL_SPECS[panel].fixed && mode.kind !== 'full'
   const style =
     mode.kind === 'tiled'
       ? { flex: `${mode.size} 1 0%` }
       : mode.kind === 'floating'
-        ? { left: `${mode.rect.x}px`, top: `${mode.rect.y}px`, width: `${mode.rect.w}px`, height: `${mode.rect.h}px` }
+        ? { left: `${mode.rect.x}px`, top: `${mode.rect.y}px`, width: `${mode.rect.w}px`, [fixed ? 'minHeight' : 'height']: `${mode.rect.h}px` }
         : {}
   return h.keyed('div')(
     panel,
     [
-      h.Class(`win ${mode.kind}${dragging ? ' dragging' : ''}`),
+      h.Class(`win ${mode.kind}${fixed ? ' fixed' : ''}${dragging ? ' dragging' : ''}`),
       h.Attribute('data-panel', panel),
       h.Style(style),
       ...(mode.kind === 'floating' ? [h.OnPointerDown(() => Option.some(Message.FocusedWindow({ panel })))] : []),

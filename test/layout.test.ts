@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { Schema } from 'effect'
 
 import {
-  CONTROLS_SHARE,
+  BAR_SHARE,
   KEEP_VISIBLE_PX,
   Layout,
   MIN_FLOAT_W,
@@ -95,7 +95,7 @@ describe('layout tree', () => {
     expect(splitAt(pinned, [1])!.sizes[1]).toBeCloseTo(MIN_SHARE)
     const middle = resizeAt(ground.root, [], 1, 0.5)!
     const sizes = splitAt(middle, [])!.sizes
-    expect(sizes[0]).toBeCloseTo(CONTROLS_SHARE)
+    expect(sizes[0]).toBeCloseTo(BAR_SHARE)
     expect(sizes[0]! + sizes[1]!).toBeCloseTo(0.5)
     expect(sizes[2]).toBeCloseTo(0.5)
     expect(resizeAt(ground.root, [1], 5, 0.5)).toEqual(ground.root)
@@ -123,7 +123,7 @@ describe('windows', () => {
     expect(bare.root).toEqual({ _tag: 'Leaf', panel: 'console' })
     const withControls = open(bare, 'controls', ws)
     expect(panelsOf(withControls.root)).toEqual(['controls', 'console'])
-    expect(splitAt(withControls.root, [])!.sizes[0]).toBeCloseTo(CONTROLS_SHARE)
+    expect(splitAt(withControls.root, [])!.sizes[0]).toBeCloseTo(BAR_SHARE)
   })
 
   test('close removes a window and remembers where it floated; toggle goes both ways', () => {
@@ -185,6 +185,7 @@ describe('windows', () => {
     expect(availablePanels('ground')).not.toContain('stars')
     expect(availablePanels('tracon')).not.toContain('asdex')
     expect(availablePanels('tower')).toEqual(PANELS)
+    expect(PANELS).toContain('scenarios')
     expect(panelsOf(prune(defaultLayouts.tower, availablePanels('ground')).root)).toEqual(['controls', 'asdex', 'strips', 'console'])
     const loaded = loadedLayout(open(open(ground, 'settings', ws), 'rewind', ws))
     expect(placement(loaded, 'settings')).toBeNull()

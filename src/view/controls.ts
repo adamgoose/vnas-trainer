@@ -1,6 +1,7 @@
 /**
- * The Controls window: position, ARTCC, airport and scenario pickers, the clock
- * and the transport (rewind, run, rate, arrivals).
+ * The Controls window, a bar the height of its content: position, the loaded
+ * airport and scenario (a click opens the Scenarios pane), the clock and the
+ * transport (rewind, run, rate, arrivals).
  */
 import type { Html, HtmlBuilder } from 'foldkit/html'
 
@@ -17,9 +18,6 @@ const option = (h: HtmlBuilder<Message>, value: string, label: string, selected:
 export const controlsView = (model: Model, h: HtmlBuilder<Message>): Html => {
   const world = worldOf(model)
   const info = infoOf(model)
-  const index = model.index._tag === 'Ready' ? model.index.index : null
-  const currentArtcc = info?.artcc ?? index?.artccs[0]?.id ?? ''
-  const airports = index?.artccs.find((a) => a.id === currentArtcc)?.airports ?? []
   const loadingId = model.airport._tag === 'Loading' ? model.airport.id : null
   const currentAirport = info?.id ?? loadingId ?? ''
   const currentScenario = model.scenarioLoading ?? world?.scenario?.id ?? ''
@@ -34,19 +32,11 @@ export const controlsView = (model: Model, h: HtmlBuilder<Message>): Html => {
           option(h, 'tracon', 'Approach', model.settings.mode === 'tracon'),
         ],
       ),
-      h.select(
-        [h.AriaLabel('ARTCC'), h.Disabled(index === null), h.OnChange((id) => Message.ChangedArtcc({ id }))],
-        (index?.artccs ?? []).map((a) => option(h, a.id, `${a.id} — ${a.name}`, a.id === currentArtcc)),
-      ),
-      h.select(
-        [h.AriaLabel('Airport'), h.Disabled(index === null), h.OnChange((id) => Message.ChangedAirport({ id }))],
-        airports.map((p) => option(h, p.id, `${p.id} — ${p.name}${p.n > 0 ? ` (${p.n})` : ''}`, p.id === currentAirport)),
-      ),
-      h.select(
-        [h.AriaLabel('Scenario'), h.Disabled(info === null), h.OnChange((id) => Message.ChangedScenario({ id }))],
+      h.button(
+        [h.Type('button'), h.Class('tbtn current'), h.Title('Open the Scenarios pane'), h.OnClick(Message.ToggledWindow({ panel: 'scenarios' }))],
         [
-          option(h, '', '— empty field —', currentScenario === ''),
-          ...(info?.scenarios ?? []).map((s) => option(h, s.id, `${s.name}${s.count > 0 ? ` — ${s.count}` : ''}`, s.id === currentScenario)),
+          h.b([], [currentAirport === '' ? 'no airport' : currentAirport]),
+          currentAirport === '' ? h.empty : h.span([], [` · ${model.scenarioLoading !== null ? 'loading…' : info === null ? 'loading…' : (info.scenarios.find((x) => x.id === currentScenario)?.name ?? 'empty field')}`]),
         ],
       ),
       h.div(

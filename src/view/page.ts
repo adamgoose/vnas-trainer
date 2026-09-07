@@ -16,6 +16,7 @@ import { deckView } from './deck'
 import { helpView, sessionView, settingsView } from './dialogs'
 import { accentFor, scopeView } from './scope'
 import { starsView } from './stars'
+import { scenariosView } from './scenarios'
 import { selectedStripView, stripsView } from './strips'
 import { timelineView } from './timeline'
 import { type WindowMode, windowView } from './window'
@@ -34,6 +35,8 @@ const titleOf = (model: Model, panel: Panel): string => {
       return 'Console'
     case 'controls':
       return 'Controls'
+    case 'scenarios':
+      return `Scenarios${info === null ? '' : ` · ${info.id}`}`
     case 'rewind':
       return 'Rewind'
     case 'commands':
@@ -49,6 +52,8 @@ const contentOf = (model: Model, h: HtmlBuilder<Message>, panel: Panel): Html =>
   switch (panel) {
     case 'controls':
       return controlsView(model, h)
+    case 'scenarios':
+      return scenariosView(model, h)
     case 'asdex':
       return scopeView(model, h, selectedStripView(model, h))
     case 'stars':
