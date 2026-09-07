@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { Command, given, message, model, story } from 'foldkit/story'
 
 import { FocusCommand, LoadAirport, LoadBrowserVoices, LoadIndex, LoadPavement, LoadScenario, LoadSettings, ProbeRecognition, ReadDeepLink, ReplaceDeepLink, SaveSettings, Speak } from '../src/app/commands'
+import { close, placement } from '../src/app/layout'
 import { Message } from '../src/app/message'
 import { type Model, initialModel, worldOf } from '../src/app/model'
 import { init, update } from '../src/app/update'
@@ -334,10 +335,14 @@ describe('Local position', () => {
       model((n) => expect(n.log[0]?.text).toBe('map abc: HTTP 404')),
       message(Message.GotStars({ message: StarsMessage.ClickedRangeOut() })),
       model((n) => expect(n.stars.view.w).toBe(46)),
-      message(Message.ClickedPane({ view: 'stars' })),
-      Command.expectExact(SaveSettings({ settings: { ...defaultSettings, view: 'stars' } })),
+      message(Message.ToggledWindow({ panel: 'strips' })),
+      Command.expectExact(SaveSettings({ settings: { ...defaultSettings, layouts: { ...defaultSettings.layouts, ground: close(defaultSettings.layouts.ground, 'strips') } } })),
       Command.resolve(SaveSettings, Message.CompletedSaveSettings()),
-      model((n) => expect(n.settings.view).toBe('stars')),
+      model((n) => expect(placement(n.settings.layouts.ground, 'strips')).toBeNull()),
+      message(Message.ToggledWindow({ panel: 'strips' })),
+      Command.expectExact(SaveSettings),
+      Command.resolve(SaveSettings, Message.CompletedSaveSettings()),
+      model((n) => expect(placement(n.settings.layouts.ground, 'strips')).toBe('tiled')),
     )
   })
 })
@@ -348,10 +353,11 @@ describe('settings', () => {
       update,
       given(ready()),
       message(Message.ClickedSettings()),
-      Command.expectExact(LoadBrowserVoices),
+      Command.expectExact(SaveSettings, LoadBrowserVoices),
+      Command.resolve(SaveSettings, Message.CompletedSaveSettings()),
       Command.resolve(LoadBrowserVoices, Message.CompletedLoadBrowserVoices({ voices: [{ name: 'Samantha', lang: 'en-US' }] })),
       model((m) => {
-        expect(m.dialog).toBe('settings')
+        expect(placement(m.settings.layouts.ground, 'settings')).toBe('floating')
         expect(m.browserVoices).toEqual([{ name: 'Samantha', lang: 'en-US' }])
       }),
       message(Message.UpdatedDraft({ draft: { ...defaultSettings, key: ' sk-1 ', model: '  ', proxy: ' https://p/?url= ' } })),
@@ -363,7 +369,7 @@ describe('settings', () => {
       Command.resolve(SaveSettings, Message.CompletedSaveSettings()),
       Command.resolve(LoadIndex, Message.FailedLoadIndex({ error: 'no proxy' })),
       model((m) => {
-        expect(m.dialog).toBe('none')
+        expect(placement(m.settings.layouts.ground, 'settings')).toBeNull()
         expect(m.settings.model).toBe(defaultSettings.model)
         expect(m.log[0]?.text).toBe(`plain-English commands on via OpenRouter (${defaultSettings.model})`)
         expect(m.index).toEqual({ _tag: 'Failed', error: 'no proxy' })

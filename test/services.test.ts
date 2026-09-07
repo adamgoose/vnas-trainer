@@ -107,7 +107,7 @@ describe('VideoMaps', () => {
 describe('Settings', () => {
   test('merges stored values over defaults and ignores bad ones', () => {
     expect(mergeSettings(null)).toEqual(defaultSettings)
-    expect(mergeSettings({ key: 'abc', mode: 'tower', tts: 'yes', ttsEngine: 'nope', view: 'stars' })).toEqual({ ...defaultSettings, key: 'abc', mode: 'tower', view: 'stars' })
+    expect(mergeSettings({ key: 'abc', mode: 'tower', tts: 'yes', ttsEngine: 'nope', view: 'stars' })).toEqual({ ...defaultSettings, key: 'abc', mode: 'tower' })
   })
 
   test('round-trips through a storage under the legacy key', async () => {

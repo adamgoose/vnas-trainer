@@ -1,6 +1,6 @@
 /**
- * The Commands reference and the Settings dialog, rendered as in-page modals
- * over the app (no native <dialog>, so no DOM commands are needed to open them).
+ * The Commands reference, the Settings form and the Session panel: the contents
+ * of their windows, a scrolling body and an optional footer.
  */
 import type { Html, HtmlBuilder } from 'foldkit/html'
 
@@ -10,20 +10,7 @@ import { professionalVoices } from '../domain/voices'
 import type { Settings } from '../services/settings'
 
 const shell = (title: string, body: ReadonlyArray<Html>, footer: ReadonlyArray<Html>, h: HtmlBuilder<Message>): Html =>
-  h.div(
-    [h.Class('modal-layer')],
-    [
-      h.div([h.Class('modal-backdrop'), h.OnClick(Message.ClosedDialog())]),
-      h.div(
-        [h.Class('modal'), h.Role('dialog'), h.AriaLabel(title)],
-        [
-          h.div([h.Class('dlg-h')], [h.h2([], [title]), h.button([h.Class('x'), h.Type('button'), h.AriaLabel('Close'), h.OnClick(Message.ClosedDialog())], ['×'])]),
-          h.div([h.Class('dlg-b')], body),
-          ...(footer.length > 0 ? [h.div([h.Class('dlg-f')], footer)] : []),
-        ],
-      ),
-    ],
-  )
+  h.div([h.Class('dlg'), h.AriaLabel(title)], [h.div([h.Class('dlg-b')], body), ...(footer.length > 0 ? [h.div([h.Class('dlg-f')], footer)] : [])])
 
 const cmdRow = (h: HtmlBuilder<Message>, code: string, text: ReadonlyArray<Html | string>): ReadonlyArray<Html> => [
   h.code([], [code]),
@@ -302,6 +289,3 @@ export const sessionView = (model: Model, h: HtmlBuilder<Message>): Html => {
     h,
   )
 }
-
-export const dialogView = (model: Model, h: HtmlBuilder<Message>): Html =>
-  model.dialog === 'help' ? helpView(h) : model.dialog === 'settings' ? settingsView(model, h) : model.dialog === 'session' ? sessionView(model, h) : h.empty

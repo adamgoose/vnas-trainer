@@ -6,7 +6,7 @@ import { Message } from '../app/message'
 import type { Model } from '../app/model'
 import { aiEnabled } from '../app/update'
 import { positionFor } from '../positions'
-import { clock } from './header'
+import { clock } from './controls'
 
 const placeholder = (model: Model): string => positionFor(model.settings.mode).placeholder
 

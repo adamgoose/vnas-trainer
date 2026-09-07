@@ -1,9 +1,12 @@
+/**
+ * The Controls window: position, ARTCC, airport and scenario pickers, the clock
+ * and the transport (rewind, run, rate, arrivals).
+ */
 import type { Html, HtmlBuilder } from 'foldkit/html'
 
 import { Message } from '../app/message'
 import { type Model, infoOf, isGuest, isReviewing, worldOf } from '../app/model'
 import { positionLabel } from '../app/update'
-import { positionFor } from '../positions'
 
 export const clock = (seconds: number): string =>
   `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
@@ -11,7 +14,7 @@ export const clock = (seconds: number): string =>
 const option = (h: HtmlBuilder<Message>, value: string, label: string, selected: boolean): Html =>
   h.option([h.Value(value), h.Selected(selected)], [label])
 
-export const headerView = (model: Model, h: HtmlBuilder<Message>): Html => {
+export const controlsView = (model: Model, h: HtmlBuilder<Message>): Html => {
   const world = worldOf(model)
   const info = infoOf(model)
   const index = model.index._tag === 'Ready' ? model.index.index : null
@@ -20,23 +23,15 @@ export const headerView = (model: Model, h: HtmlBuilder<Message>): Html => {
   const loadingId = model.airport._tag === 'Loading' ? model.airport.id : null
   const currentAirport = info?.id ?? loadingId ?? ''
   const currentScenario = model.scenarioLoading ?? world?.scenario?.id ?? ''
-  return h.header(
-    [],
+  return h.div(
+    [h.Class('controls')],
     [
-      h.span(
-        [h.Class('brand')],
+      h.select(
+        [h.Class('mode'), h.AriaLabel('Position'), h.Title('Switch position'), h.OnChange((v) => Message.ChangedPosition({ mode: v === 'tower' ? 'tower' : v === 'tracon' ? 'tracon' : 'ground' }))],
         [
-          'vNAS ',
-          h.select(
-            [h.Class('mode'), h.AriaLabel('Position'), h.Title('Switch position'), h.OnChange((v) => Message.ChangedPosition({ mode: v === 'tower' ? 'tower' : v === 'tracon' ? 'tracon' : 'ground' }))],
-            [
-              option(h, 'ground', 'Ground', model.settings.mode === 'ground'),
-              option(h, 'tower', 'Local', model.settings.mode === 'tower'),
-              option(h, 'tracon', 'Approach', model.settings.mode === 'tracon'),
-            ],
-          ),
-          ' Trainer',
-          h.small([], ['ATCTrainer command set']),
+          option(h, 'ground', 'Ground', model.settings.mode === 'ground'),
+          option(h, 'tower', 'Local', model.settings.mode === 'tower'),
+          option(h, 'tracon', 'Approach', model.settings.mode === 'tracon'),
         ],
       ),
       h.select(
@@ -54,12 +49,6 @@ export const headerView = (model: Model, h: HtmlBuilder<Message>): Html => {
           ...(info?.scenarios ?? []).map((s) => option(h, s.id, `${s.name}${s.count > 0 ? ` — ${s.count}` : ''}`, s.id === currentScenario)),
         ],
       ),
-      h.button([h.Class('tbtn'), h.Type('button'), h.OnClick(Message.ClickedHelp())], ['Commands']),
-      h.button([h.Class('tbtn'), h.Type('button'), h.OnClick(Message.ClickedSettings())], ['Settings']),
-      h.button(
-        [h.Class(`tbtn session-btn ${model.session.status}`), h.Type('button'), h.AriaPressed(model.session.role === 'solo' ? 'false' : 'true'), h.OnClick(Message.ClickedSession())],
-        [model.session.role === 'solo' ? 'Session' : `${model.session.role === 'host' ? 'Hosting' : 'Joined'} ${model.session.room ?? ''} · ${model.session.peers.length}`],
-      ),
       h.div(
         [h.Class('clock')],
         [
@@ -68,7 +57,6 @@ export const headerView = (model: Model, h: HtmlBuilder<Message>): Html => {
             [
               h.Class(`tbtn rewind${isReviewing(model) ? ' rewound' : ''}`),
               h.Type('button'),
-              h.AriaPressed(model.timelineOpen ? 'true' : 'false'),
               h.Disabled(world === null || isGuest(model)),
               h.Title(isGuest(model) ? 'The host owns the clock; rewinding is for the host' : 'Rewind through this session and resume from any point as a new branch'),
               h.OnClick(Message.ClickedTimeline()),
@@ -81,14 +69,7 @@ export const headerView = (model: Model, h: HtmlBuilder<Message>): Html => {
           ),
           h.button([h.Class('tbtn'), h.Type('button'), h.OnClick(Message.ClickedRate())], [`${model.rate}×`]),
           h.button([h.Class('tbtn'), h.Type('button'), h.AriaPressed(world?.arrivalsEnabled ? 'true' : 'false'), h.OnClick(Message.ClickedArrivals())], ['Arrivals']),
-          positionFor(model.settings.mode).hasRadar && positionFor(model.settings.mode).groundScope
-            ? h.div(
-                [h.Class('viewbar'), h.Role('group'), h.AriaLabel('Panes')],
-                (['ground', 'both', 'stars'] as const).map((view) =>
-                  h.button([h.Type('button'), h.AriaPressed(model.settings.view === view ? 'true' : 'false'), h.OnClick(Message.ClickedPane({ view }))], [view === 'ground' ? 'ASDE-X' : view === 'both' ? 'Both' : 'STARS']),
-                ),
-              )
-            : h.span([h.Class('position-note')], [positionLabel(model.settings.mode)]),
+          h.span([h.Class('position-note')], [positionLabel(model.settings.mode)]),
         ],
       ),
     ],

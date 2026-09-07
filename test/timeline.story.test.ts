@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { Command, given, message, model, story } from 'foldkit/story'
 
 import { LoadScenario, SendSession, Speak } from '../src/app/commands'
+import { isOpen } from '../src/app/layout'
 import { Message } from '../src/app/message'
 import { type Model, initialModel, worldOf } from '../src/app/model'
 import { branchOf } from '../src/app/timeline'
@@ -73,7 +74,7 @@ describe('rewinding', () => {
       update,
       given(update(played(), Message.ClickedTimeline()).model),
       model((m) => {
-        expect(m.timelineOpen).toBe(true)
+        expect(isOpen(m.settings.layouts.ground, 'rewind')).toBe(true)
         expect(m.review).toBeNull()
       }),
       message(Message.SteppedTimeline({ steps: -15 })),
@@ -195,7 +196,7 @@ describe('forking', () => {
     expect(played2.running).toBe(true)
     expect(played2.timeline.current).toBe(1)
     const closed = update(rewound, Message.ClickedTimeline()).model
-    expect(closed.timelineOpen).toBe(false)
+    expect(isOpen(closed.settings.layouts.ground, 'rewind')).toBe(false)
     expect(closed.review).toBeNull()
     expect(closed.timeline.branches).toHaveLength(1)
     expect(tickOf(closed)).toBe(30)

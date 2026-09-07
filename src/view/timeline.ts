@@ -1,8 +1,8 @@
 /**
- * The rewind panel between the scopes and the deck: transport buttons, and the
- * time graph as one lane per branch, a fork hanging under its parent, marks
- * where commands changed the World, and the playhead at the point shown. A
- * press or drag on the lanes goes through the TimelineSurface Mount.
+ * The Rewind window: transport buttons, and the time graph as one lane per
+ * branch, a fork hanging under its parent, marks where commands changed the
+ * World, and the playhead at the point shown. A press or drag on the lanes goes
+ * through the TimelineSurface Mount.
  */
 import type { Html, HtmlBuilder } from 'foldkit/html'
 
@@ -11,7 +11,7 @@ import { Message } from '../app/message'
 import { type Model, isGuest, worldOf } from '../app/model'
 import { type Point, axisTicks, currentBranch, extent, lanes, liveEnd } from '../app/timeline'
 import { SIM_STEP_S } from '../domain/physics'
-import { clock } from './header'
+import { clock } from './controls'
 
 export const LANE_PX = 18
 
@@ -24,8 +24,8 @@ export const timelineView = (model: Model, h: HtmlBuilder<Message>): Html => {
   const world = worldOf(model)
   const all = lanes(model.timeline)
   const end = liveEnd(model.timeline)
-  if (!model.timelineOpen || world === null || end === null || all.length === 0) {
-    return h.empty
+  if (world === null || end === null || all.length === 0) {
+    return h.div([h.Class('timeline')], [h.div([h.Class('tl-bar')], [h.span([h.Class('tl-status')], ['no session to rewind yet'])])])
   }
   const reviewing = model.review !== null
   const guest = isGuest(model)

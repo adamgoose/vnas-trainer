@@ -105,8 +105,8 @@ export const stripsView = (model: Model, h: HtmlBuilder<Message>): Html => {
   const world = worldOf(model)
   const list = [...(world?.aircraft ?? [])].sort((a, b) => rank(a) - rank(b) || a.callsign.localeCompare(b.callsign))
   const pending = list.filter((a) => a.delay > 0).length
-  return h.aside(
-    [],
+  return h.div(
+    [h.Class('strips-panel')],
     [
       h.div(
         [h.Class('aside-h')],

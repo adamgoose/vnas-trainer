@@ -81,25 +81,28 @@ export const subscriptions = Subscription.make<Model, Message, Services>()((entr
     },
   ),
   keys: entry(
-    { dialogOpen: Schema.Boolean, radialOpen: Schema.Boolean },
+    { fullscreen: Schema.Boolean, radialOpen: Schema.Boolean },
     {
-      modelToDependencies: (model) => ({ dialogOpen: model.dialog !== 'none', radialOpen: model.radial !== null }),
-      dependenciesToStream: ({ dialogOpen, radialOpen }) =>
+      modelToDependencies: (model) => ({ fullscreen: model.fullscreen !== null, radialOpen: model.radial !== null }),
+      dependenciesToStream: ({ fullscreen, radialOpen }) =>
         Subscription.fromEventFilterMap<KeyboardEvent, Message>({
           target: () => globalThis.document,
           type: 'keydown',
           toMessage: (event) => {
-            if (event.key === '/' && !dialogOpen && !isTyping()) {
+            if (event.key === '/' && !isTyping()) {
               event.preventDefault()
               return Option.some(Message.PressedSlash())
             }
-            if (event.key === 'Escape' && radialOpen && !dialogOpen) {
+            if (event.key === 'Escape' && radialOpen) {
               return Option.some(Message.ClosedRadial())
             }
             if (event.key === 'Escape' && isTyping()) {
               return Option.some(Message.PressedEscape())
             }
-            if (event.key === ' ' && !event.repeat && !dialogOpen && !isTyping()) {
+            if (event.key === 'Escape' && fullscreen) {
+              return Option.some(Message.ExitedFullscreen())
+            }
+            if (event.key === ' ' && !event.repeat && !isTyping()) {
               event.preventDefault()
               return Option.some(Message.PressedPtt())
             }

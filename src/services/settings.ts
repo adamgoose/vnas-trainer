@@ -4,11 +4,10 @@
  */
 import { Context, Effect, Layer, Schema } from 'effect'
 
+import { Layouts, defaultLayouts } from '../app/layout'
+
 export const MIN_TAG_SIZE = 8
 export const MAX_TAG_SIZE = 18
-/** the ground scope's share of the width in the two-pane view */
-export const MIN_SPLIT = 0.2
-export const MAX_SPLIT = 0.8
 
 export const Settings = Schema.Struct({
   key: Schema.String,
@@ -22,7 +21,6 @@ export const Settings = Schema.Struct({
   voice: Schema.String,
   radio: Schema.Boolean,
   mode: Schema.Literals(['ground', 'tower', 'tracon']),
-  view: Schema.Literals(['ground', 'both', 'stars']),
   /** shared sessions: an optional TURN relay for NATs that block direct connections */
   turnUrl: Schema.String,
   turnUsername: Schema.String,
@@ -33,8 +31,8 @@ export const Settings = Schema.Struct({
   asdexCabMap: Schema.Boolean,
   /** tower-cab layers switched off, by map id (see `cabLayers`) */
   cabLayersOff: Schema.Record(Schema.String, Schema.Array(Schema.String)),
-  /** where the divider sits between the ground scope and STARS in the two-pane view, as the ground scope's share of the width */
-  split: Schema.Number.pipe(Schema.check(Schema.isBetween({ minimum: MIN_SPLIT, maximum: MAX_SPLIT }))),
+  /** the window layout of each position (see `app/layout.ts`) */
+  layouts: Layouts,
 })
 export type Settings = typeof Settings.Type
 
@@ -52,7 +50,6 @@ export const defaultSettings: Settings = {
   voice: '',
   radio: true,
   mode: 'ground',
-  view: 'both',
   turnUrl: '',
   turnUsername: '',
   turnCredential: '',
@@ -60,7 +57,7 @@ export const defaultSettings: Settings = {
   asdexTagSize: 11,
   asdexCabMap: false,
   cabLayersOff: {},
-  split: 0.5,
+  layouts: defaultLayouts,
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)

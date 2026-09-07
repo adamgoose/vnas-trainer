@@ -5,6 +5,7 @@ import { AirportFile, CatalogIndex, Scenario } from '../domain/catalog'
 import { AtcCommand } from '../domain/commands'
 import { Translation } from '../domain/prompt'
 import { SessionEvent } from '../domain/session'
+import { Dir, Edge, Grip, Panel } from './layout'
 import { BrowserVoice, ModelCatalogue } from './model'
 import { StarsMessage } from '../positions/local/stars'
 import { Settings } from '../services/settings'
@@ -65,13 +66,36 @@ export const Message = defineMessageUnion({
   ClickedSpeaker: {},
   ClickedHelp: {},
   ClickedSettings: {},
-  ClosedDialog: {},
   UpdatedDraft: { draft: Settings },
   ClickedSaveSettings: {},
-  ClickedPane: { view: Schema.Literals(['ground', 'both', 'stars']) },
-  /** the divider between the panes is being dragged: the ground scope's share of the width */
-  DraggedSplit: { ratio: Schema.Number },
-  ReleasedSplit: {},
+  /** windows: the bar's chips open and close, the title bar floats, fills or closes, a press raises a floating one */
+  ToggledWindow: { panel: Panel },
+  ClosedWindow: { panel: Panel },
+  ToggledFloat: { panel: Panel },
+  ToggledFullscreen: { panel: Panel },
+  ExitedFullscreen: {},
+  FocusedWindow: { panel: Panel },
+  ClickedResetLayout: {},
+  ResizedWorkspace: { width: Schema.Number, height: Schema.Number },
+  /**
+   * A drag on a handle, in workspace px: a gutter between tiles (`key` is the split's
+   * path, `fraction` where the pointer is along it), a window's title bar (`over` and
+   * `edge` say which tile the pointer is on and which side of it), or a floating
+   * window's resize grip.
+   */
+  DraggedHandle: {
+    kind: Schema.Literals(['gutter', 'window', 'resize']),
+    key: Schema.String,
+    index: Schema.Number,
+    dir: Schema.NullOr(Dir),
+    grip: Schema.NullOr(Grip),
+    phase: Schema.Literals(['down', 'move', 'up']),
+    x: Schema.Number,
+    y: Schema.Number,
+    fraction: Schema.Number,
+    over: Schema.NullOr(Panel),
+    edge: Schema.NullOr(Edge),
+  },
   GotStars: { message: StarsMessage },
   PressedPtt: {},
   ReleasedPtt: {},

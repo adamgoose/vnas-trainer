@@ -38,6 +38,7 @@ import {
   TranslateAudio,
   TranslateText,
 } from './commands'
+import { type Edge, type Layout, type Panel, availablePanels, close, defaultLayouts, dock, fitFloating, isOpen, loadedLayouts, moveFloating, open, placement, raise, resizeFloating, resizeGutter, toggleFloat } from './layout'
 import { Message } from './message'
 import { AirportLoad, type AirportInfo, IndexLoad, type LogLine, type Model, Pavement, infoOf, initialModel, initialSession, isGuest, isHost, isReviewing, worldOf } from './model'
 import { type Point, branchOf, currentBranch, commandLogAt, liveEnd, logAt, parkBranch, pointAt, recordChange, recordSteps, resolvePoint, resumeAt, startTimeline, worldAt } from './timeline'
@@ -57,7 +58,7 @@ import { INTERSECTION_HIT_FRACTION, openPlan, radialAt, runwayPickTrail } from '
 import { intersections } from './plan'
 import { StarsOut, rangeView, starsInit, starsUpdate } from '../positions/local/stars'
 import { type TurnServer } from '../services/session'
-import { MAX_SPLIT, MAX_TAG_SIZE, MIN_SPLIT, MIN_TAG_SIZE, type Settings, defaultSettings } from '../services/settings'
+import { MAX_TAG_SIZE, MIN_TAG_SIZE, type Settings, defaultSettings } from '../services/settings'
 import { sourceForProxy } from '../services/vnasData'
 import { BUTTON_IN, BUTTON_OUT, WHEEL_IN, WHEEL_OUT, fit, hitTest, pan, resize, zoomAt, zoomCentre } from '../view/viewport'
 
@@ -246,6 +247,93 @@ const saveSettings = (model: Model, settings: Settings): Return => ({
   model: evo(model, { settings: () => settings, draft: () => settings }),
   commands: [SaveSettings({ settings })],
 })
+
+// WINDOWS
+
+/** The layout of the position in use, without the panels it lacks. */
+export const activeLayout = (model: Model): Layout => model.settings.layouts[model.settings.mode]
+
+/**
+ * Change the layout of the position in use. Only `layouts` moves in the draft, so
+ * an edit in progress in the Settings window survives a window being dragged.
+ */
+const withLayout = (model: Model, f: (layout: Layout) => Layout): Model => {
+  const mode = model.settings.mode
+  const layouts = { ...model.settings.layouts, [mode]: f(model.settings.layouts[mode]) }
+  return evo(model, { settings: (s) => ({ ...s, layouts }), draft: (d) => ({ ...d, layouts }) })
+}
+
+const persistLayout = (model: Model): Return => ({ model, commands: [SaveSettings({ settings: model.settings })] })
+
+/** Open a window, with what opening it used to do as a dialog: Settings reloads its draft and lists, Rewind is the host's. */
+const openWindow = (model: Model, panel: Panel): Return => {
+  if (!availablePanels(model.settings.mode).includes(panel)) {
+    return { model }
+  }
+  const opened = withLayout(model, (l) => raise(open(l, panel, model.workspace), panel))
+  if (panel === 'settings') {
+    return {
+      model: status(evo(opened, { draft: () => opened.settings }), '', ''),
+      commands: [SaveSettings({ settings: opened.settings }), LoadBrowserVoices(), ...(model.settings.key !== '' && model.models === null ? [LoadModels({ key: model.settings.key })] : [])],
+    }
+  }
+  return persistLayout(opened)
+}
+
+/** Close a window; closing Rewind while rewound returns to the present, as the old button did. */
+const closeWindow = (model: Model, panel: Panel): Return => {
+  const live = panel === 'rewind' && isReviewing(model) ? goLive(model) : { model }
+  const closed = evo(withLayout(live.model, (l) => close(l, panel)), { fullscreen: (f) => (f === panel ? null : f) })
+  return { model: closed, commands: [...(live.commands ?? []), SaveSettings({ settings: closed.settings })] }
+}
+
+const toggleWindow = (model: Model, panel: Panel): Return => (isOpen(activeLayout(model), panel) ? closeWindow(model, panel) : openWindow(model, panel))
+
+/** A drag on a gutter, a title bar or a resize grip (see `DragHandle`). */
+const dragHandle = (model: Model, drag: ReturnType<typeof Message.DraggedHandle>): Return => {
+  if (drag.kind === 'gutter') {
+    const path = drag.key === '' ? [] : drag.key.split('.').map(Number)
+    const resized = drag.phase === 'move' ? withLayout(model, (l) => resizeGutter(l, path, drag.index, drag.fraction)) : model
+    return drag.phase === 'up' ? persistLayout(resized) : { model: resized }
+  }
+  const panel = drag.key as Panel
+  if (!(availablePanels(model.settings.mode) as ReadonlyArray<string>).includes(panel)) {
+    return { model }
+  }
+  if (drag.kind === 'resize') {
+    const grip = drag.grip
+    const resized = drag.phase === 'move' && grip !== null ? withLayout(model, (l) => resizeFloating(l, panel, grip, drag.x, drag.y)) : model
+    return drag.phase === 'up' ? persistLayout(resized) : { model: resized }
+  }
+  const layout = activeLayout(model)
+  const floating = layout.floating.find((f) => f.panel === panel)
+  if (drag.phase === 'down') {
+    const raised = floating === undefined ? model : withLayout(model, (l) => raise(l, panel))
+    return {
+      model: evo(raised, {
+        windowDrag: () => ({ panel, startX: drag.x, startY: drag.y, originX: floating?.x ?? 0, originY: floating?.y ?? 0, moved: false, over: null, edge: null }),
+      }),
+    }
+  }
+  const current = model.windowDrag
+  if (current === null || current.panel !== panel) {
+    return { model }
+  }
+  const moved = current.moved || Math.hypot(drag.x - current.startX, drag.y - current.startY) > 4
+  const over = moved && drag.over !== panel ? drag.over : null
+  const edge: Edge | null = over === null ? null : drag.edge
+  if (drag.phase === 'move') {
+    const tracked = evo(model, { windowDrag: () => ({ ...current, moved, over, edge }) })
+    return {
+      model: floating === undefined || !moved ? tracked : withLayout(tracked, (l) => moveFloating(l, panel, current.originX + drag.x - current.startX, current.originY + drag.y - current.startY, model.workspace)),
+    }
+  }
+  const dropped = evo(model, { windowDrag: () => null })
+  if (moved && over !== null && edge !== null) {
+    return persistLayout(withLayout(dropped, (l) => dock(l, panel, over, edge)))
+  }
+  return floating !== undefined && moved ? persistLayout(dropped) : { model: dropped }
+}
 
 // REWIND
 
@@ -640,10 +728,13 @@ const draftUtterance = (model: Model, callsign: string, text: string) =>
 
 export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
-    CompletedLoadSettings: ({ settings }) => ({
-      model: evo(model, { settings: () => settings, draft: () => settings }),
-      commands: [ReadDeepLink(), ProbeRecognition()],
-    }),
+    CompletedLoadSettings: ({ settings: stored }) => {
+      const settings = { ...stored, layouts: loadedLayouts(stored.layouts) }
+      return {
+        model: evo(model, { settings: () => settings, draft: () => settings }),
+        commands: [ReadDeepLink(), ProbeRecognition()],
+      }
+    },
 
     CompletedReadDeepLink: ({ airport, scenario, room }) => ({
       model: withSession(evo(model, { deepLink: () => ({ airport, scenario, room }), index: () => IndexLoad.Loading() }), room === null ? {} : { role: 'guest', room, status: 'connecting', roomInput: room }),
@@ -937,14 +1028,34 @@ export const update = (model: Model, message: Message): Return =>
       }
     },
 
-    ClickedHelp: () => ({ model: evo(model, { dialog: () => 'help' }) }),
+    ClickedHelp: () => openWindow(model, 'commands'),
 
-    ClickedSettings: () => ({
-      model: status(evo(model, { dialog: () => 'settings', draft: () => model.settings }), '', ''),
-      commands: [LoadBrowserVoices(), ...(model.settings.key !== '' && model.models === null ? [LoadModels({ key: model.settings.key })] : [])],
+    ClickedSettings: () => openWindow(model, 'settings'),
+
+    // WINDOWS
+
+    ToggledWindow: ({ panel }) => toggleWindow(model, panel),
+
+    ClosedWindow: ({ panel }) => closeWindow(model, panel),
+
+    ToggledFloat: ({ panel }) => persistLayout(withLayout(model, (l) => toggleFloat(l, panel, model.workspace))),
+
+    ToggledFullscreen: ({ panel }) => ({ model: evo(model, { fullscreen: (f) => (f === panel ? null : panel) }) }),
+
+    ExitedFullscreen: () => ({ model: evo(model, { fullscreen: () => null }) }),
+
+    FocusedWindow: ({ panel }) => ({ model: placement(activeLayout(model), panel) === 'floating' ? withLayout(model, (l) => raise(l, panel)) : model }),
+
+    ClickedResetLayout: () => {
+      const layouts = { ...model.settings.layouts, [model.settings.mode]: defaultLayouts[model.settings.mode] }
+      return persistLayout(evo(model, { settings: (s) => ({ ...s, layouts }), draft: (d) => ({ ...d, layouts }), fullscreen: () => null, windowDrag: () => null }))
+    },
+
+    ResizedWorkspace: ({ width, height }) => ({
+      model: withLayout(evo(model, { workspace: () => ({ width, height }) }), (l) => fitFloating(l, { width, height })),
     }),
 
-    ClosedDialog: () => ({ model: evo(model, { dialog: () => 'none' }) }),
+    DraggedHandle: (drag) => dragHandle(model, drag),
 
     UpdatedDraft: ({ draft }) => ({ model: evo(model, { draft: () => draft }) }),
 
@@ -958,7 +1069,7 @@ export const update = (model: Model, message: Message): Return =>
         ttsModel: d.ttsModel.trim() || defaultSettings.ttsModel,
         proxy: d.proxy.trim(),
       }
-      const saved = evo(model, { settings: () => settings, draft: () => settings, dialog: () => 'none' })
+      const saved = withLayout(evo(model, { settings: () => settings, draft: () => settings }), (l) => close(l, 'settings'))
       const warning = keyWarning(settings.key)
       const logged = pushLog(
         warning === null ? saved : pushLog(saved, 'err', null, warning),
@@ -969,7 +1080,7 @@ export const update = (model: Model, message: Message): Return =>
       const proxyChanged = settings.proxy !== model.settings.proxy
       return {
         model: proxyChanged ? evo(logged, { index: () => IndexLoad.Loading(), airport: () => AirportLoad.Idle() }) : logged,
-        commands: [SaveSettings({ settings }), ...(proxyChanged ? [LoadIndex({ source: sourceForProxy(settings.proxy) })] : [])],
+        commands: [SaveSettings({ settings: logged.settings }), ...(proxyChanged ? [LoadIndex({ source: sourceForProxy(settings.proxy) })] : [])],
       }
     },
 
@@ -998,15 +1109,6 @@ export const update = (model: Model, message: Message): Return =>
       const { [id]: _, ...rest } = model.settings.cabLayersOff
       return saveSettings(model, { ...model.settings, cabLayersOff: next.length === 0 ? rest : { ...rest, [id]: next } })
     },
-
-    ClickedPane: ({ view }) => saveSettings(model, { ...model.settings, view }),
-
-    DraggedSplit: ({ ratio }) => {
-      const split = Math.round(Math.min(MAX_SPLIT, Math.max(MIN_SPLIT, ratio)) * 1000) / 1000
-      return { model: evo(model, { settings: (s) => ({ ...s, split }), draft: (d) => ({ ...d, split }) }) }
-    },
-
-    ReleasedSplit: () => saveSettings(model, model.settings),
 
     GotStars: ({ message }) => {
       const info = infoOf(model)
@@ -1140,13 +1242,7 @@ export const update = (model: Model, message: Message): Return =>
 
     // REWIND
 
-    ClickedTimeline: () => {
-      if (model.timelineOpen && isReviewing(model)) {
-        const live = goLive(model)
-        return { model: evo(live.model, { timelineOpen: () => false }), commands: live.commands ?? [] }
-      }
-      return { model: evo(model, { timelineOpen: (open) => !open }) }
-    },
+    ClickedTimeline: () => toggleWindow(model, 'rewind'),
 
     ScrubbedTimeline: ({ fx, fy }) => {
       const point = pointAt(model.timeline, fx, fy)
@@ -1171,7 +1267,7 @@ export const update = (model: Model, message: Message): Return =>
 
     ClickedTimelineResume: () => resumeHere(model),
 
-    ClickedSession: () => ({ model: evo(model, { dialog: () => 'session' }) }),
+    ClickedSession: () => openWindow(model, 'session'),
 
     ClickedHostSession: () => ({
       model: withSession(model, { role: 'host', status: 'connecting', error: null, peers: [], hostId: null }),

@@ -6,6 +6,7 @@
 import { Effect, Queue, Schema, Stream } from 'effect'
 import { Command, Dom, Mount } from 'foldkit'
 
+import { Dir, type Edge, Grip, PANELS, type Panel } from './layout'
 import { storeVideoMap, videoMapById } from './mapCache'
 import { Message } from './message'
 import { parseTranslation } from '../domain/prompt'
@@ -176,56 +177,119 @@ export const ScopeSurface = Mount.defineStream('ScopeSurface', {
   },
 })
 
-/**
- * The divider between the two scopes: a drag moves the split, reported as the
- * ground scope's share of the container's width. The pointer is captured so the
- * drag survives leaving the bar, and the release saves the settings.
- */
-type SplitMessage = ReturnType<typeof Message.DraggedSplit> | ReturnType<typeof Message.ReleasedSplit>
-
-export const SplitHandle = Mount.defineStream('SplitHandle', {
-  messages: [Message.DraggedSplit, Message.ReleasedSplit],
+/** The workspace under the bar: its CSS size, so floating windows can be placed and kept on screen. */
+export const WorkspaceSurface = Mount.defineStream('WorkspaceSurface', {
+  messages: [Message.ResizedWorkspace],
   execute: ({ element }) =>
-    Stream.callback<SplitMessage>((queue) =>
+    Stream.callback<ReturnType<typeof Message.ResizedWorkspace>>((queue) =>
       Effect.gen(function* () {
-        const offer = (message: SplitMessage) => Effect.runSync(Queue.offer(queue, message))
-        const bar = element as HTMLElement
-        let dragging = false
+        const report = () => {
+          const rect = element.getBoundingClientRect()
+          Effect.runSync(Queue.offer(queue, Message.ResizedWorkspace({ width: Math.round(rect.width), height: Math.round(rect.height) })))
+        }
+        const observer = new ResizeObserver(report)
+        observer.observe(element)
+        report()
+        yield* Effect.addFinalizer(() => Effect.sync(() => observer.disconnect()))
+      }),
+    ),
+})
+
+/** Which side of a tile the pointer is on: the nearest edge within its outer quarter, else the centre. */
+export const edgeAt = (rx: number, ry: number): Edge => {
+  const candidates: ReadonlyArray<readonly [number, Edge]> = [
+    [rx, 'left'],
+    [1 - rx, 'right'],
+    [ry, 'top'],
+    [1 - ry, 'bottom'],
+  ]
+  const nearest = candidates.reduce((best, c) => (c[0] < best[0] ? c : best))
+  return nearest[0] > 0.25 ? 'center' : nearest[1]
+}
+
+const isPanel = (value: string | undefined): value is Panel => value !== undefined && (PANELS as ReadonlyArray<string>).includes(value)
+
+/**
+ * A pointer drag on a layout handle, reported in workspace CSS px with pointer
+ * capture so it survives leaving the element. A gutter also reports where the
+ * pointer is along its parent split; a window's title bar also reports the tile
+ * under the pointer (found in the DOM, since the Model has no geometry) and the
+ * side of it the pointer is nearest. A floating window only looks for a tile
+ * while Shift is held, so a plain drag moves it; a tiled window always does.
+ */
+type HandleMessage = ReturnType<typeof Message.DraggedHandle>
+
+export const DragHandle = Mount.defineStream('DragHandle', {
+  args: { kind: Schema.Literals(['gutter', 'window', 'resize']), key: Schema.String, index: Schema.Number, dir: Schema.NullOr(Dir), grip: Schema.NullOr(Grip) },
+  messages: [Message.DraggedHandle],
+  execute: ({ element, kind, key, index, dir, grip }) =>
+    Stream.callback<HandleMessage>((queue) =>
+      Effect.gen(function* () {
+        const handle = element as HTMLElement
+        const own = handle.closest('.win')
+        const workspace = () => (handle.closest('.workspace') ?? handle).getBoundingClientRect()
+        const target = (event: PointerEvent): Readonly<{ over: Panel | null; edge: Edge | null }> => {
+          if (kind !== 'window' || (own !== null && own.classList.contains('floating') && !event.shiftKey)) {
+            return { over: null, edge: null }
+          }
+          const tile = document.elementsFromPoint(event.clientX, event.clientY).find((el) => el.matches('.win.tiled') && el !== own)
+          if (!(tile instanceof HTMLElement) || !isPanel(tile.dataset['panel'])) {
+            return { over: null, edge: null }
+          }
+          const rect = tile.getBoundingClientRect()
+          return { over: tile.dataset['panel'], edge: edgeAt((event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height) }
+        }
+        const at = (phase: 'down' | 'move' | 'up', event: PointerEvent): HandleMessage => {
+          const ws = workspace()
+          const parent = (handle.parentElement ?? handle).getBoundingClientRect()
+          const fraction =
+            kind !== 'gutter' ? 0 : dir === 'col' ? (parent.height === 0 ? 0.5 : (event.clientY - parent.top) / parent.height) : parent.width === 0 ? 0.5 : (event.clientX - parent.left) / parent.width
+          return Message.DraggedHandle({ kind, key, index, dir, grip, phase, x: event.clientX - ws.left, y: event.clientY - ws.top, fraction, ...target(event) })
+        }
+        const offer = (message: HandleMessage) => Effect.runSync(Queue.offer(queue, message))
+        let pointer: number | null = null
+        const move = (event: PointerEvent) => {
+          if (event.pointerId === pointer) {
+            offer(at('move', event))
+          }
+        }
+        const up = (event: PointerEvent) => {
+          if (event.pointerId !== pointer) {
+            return
+          }
+          pointer = null
+          document.removeEventListener('pointermove', move)
+          document.removeEventListener('pointerup', up)
+          document.removeEventListener('pointercancel', up)
+          if (handle.hasPointerCapture(event.pointerId)) {
+            handle.releasePointerCapture(event.pointerId)
+          }
+          offer(at('up', event))
+        }
+        /** Moves and the release are taken from the document: pointer capture is only a courtesy, some embedders ignore it. */
         const down = (event: PointerEvent) => {
-          if (event.button !== 0) {
+          if (event.button !== 0 || pointer !== null || (event.target instanceof Element && event.target.closest('button') !== null)) {
             return
           }
           event.preventDefault()
-          dragging = true
-          element.setPointerCapture(event.pointerId)
-        }
-        const move = (event: PointerEvent) => {
-          if (!dragging) {
-            return
+          pointer = event.pointerId
+          try {
+            handle.setPointerCapture(event.pointerId)
+          } catch {
+            /* a synthetic pointer cannot be captured */
           }
-          const rect = (element.parentElement ?? element).getBoundingClientRect()
-          offer(Message.DraggedSplit({ ratio: rect.width === 0 ? 0.5 : (event.clientX - rect.left) / rect.width }))
+          document.addEventListener('pointermove', move)
+          document.addEventListener('pointerup', up)
+          document.addEventListener('pointercancel', up)
+          offer(at('down', event))
         }
-        const up = (event: PointerEvent) => {
-          if (!dragging) {
-            return
-          }
-          dragging = false
-          if (element.hasPointerCapture(event.pointerId)) {
-            element.releasePointerCapture(event.pointerId)
-          }
-          offer(Message.ReleasedSplit())
-        }
-        bar.addEventListener('pointerdown', down)
-        bar.addEventListener('pointermove', move)
-        bar.addEventListener('pointerup', up)
-        bar.addEventListener('pointercancel', up)
+        handle.addEventListener('pointerdown', down)
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
-            bar.removeEventListener('pointerdown', down)
-            bar.removeEventListener('pointermove', move)
-            bar.removeEventListener('pointerup', up)
-            bar.removeEventListener('pointercancel', up)
+            handle.removeEventListener('pointerdown', down)
+            document.removeEventListener('pointermove', move)
+            document.removeEventListener('pointerup', up)
+            document.removeEventListener('pointercancel', up)
           }),
         )
       }),

@@ -18,7 +18,8 @@ import { TRACON_RULES } from '../src/domain/rules'
 import { loadScenario } from '../src/domain/scenario'
 import { type World, makeWorld } from '../src/domain/world'
 import type { PositionMode } from '../src/positions'
-import { MAX_SPLIT, MAX_TAG_SIZE, MIN_SPLIT, MIN_TAG_SIZE, defaultSettings, mergeSettings } from '../src/services/settings'
+import { MAX_TAG_SIZE, MIN_TAG_SIZE, defaultSettings, mergeSettings } from '../src/services/settings'
+import { MIN_SHARE, splitAt } from '../src/app/layout'
 import { toCanvas, toWorld } from '../src/view/viewport'
 import { aircraftNamed, command, groundWorld, msp, runUntil, scenarioNamed, stateOf } from './helpers'
 
@@ -317,22 +318,28 @@ describe('radial menu in the app', () => {
     expect(aircraftNamed(worldOf(issued)!, 'AAL894').cleared).toEqual(['4-22'])
   })
 
-  test('a plain click only selects; the pane split is clamped, saved on release, and merged from storage', () => {
+  test('a plain click only selects; a gutter drag is clamped, saved on release, and the layout merged from storage', () => {
     const m = ready()
     const world = worldOf(m)!
     const p = toCanvas(m.scope, toWorld(world.graph, aircraftNamed(world, 'AAL894').position))
     const clicked = update(update(m, Message.PressedScope({ x: p.x, y: p.y })).model, Message.ReleasedScope({ x: p.x, y: p.y })).model
     expect(clicked.selected).toBe('AAL894')
     expect(clicked.radial).toBeNull()
-    const dragged = update(m, Message.DraggedSplit({ ratio: 0.9 }))
-    expect(dragged.model.settings.split).toBe(MAX_SPLIT)
+    const gutter = (fraction: number, phase: 'move' | 'up' = 'move') =>
+      Message.DraggedHandle({ kind: 'gutter', key: '1', index: 0, dir: 'row', grip: null, phase, x: 0, y: 0, fraction, over: null, edge: null })
+    const sizesOf = (n: typeof m) => splitAt(n.settings.layouts.ground.root, [1])!.sizes
+    const dragged = update(m, gutter(0.99))
+    expect(sizesOf(dragged.model)[0]).toBeCloseTo(1 - MIN_SHARE)
     expect(dragged.commands ?? []).toEqual([])
-    expect(update(m, Message.DraggedSplit({ ratio: -1 })).model.settings.split).toBe(MIN_SPLIT)
-    expect(update(m, Message.DraggedSplit({ ratio: 0.33333 })).model.settings.split).toBe(0.333)
-    const released = update(dragged.model, Message.ReleasedSplit())
+    expect(sizesOf(update(m, gutter(-1)).model)[0]).toBeCloseTo(MIN_SHARE)
+    expect(sizesOf(update(m, gutter(0.333)).model)[0]).toBeCloseTo(0.333)
+    const released = update(dragged.model, gutter(0.99, 'up'))
     expect(released.commands?.map((c) => c.name)).toEqual([SaveSettings.name])
-    expect(mergeSettings({ split: 5 })).toEqual(defaultSettings)
-    expect(mergeSettings({ split: 0.3, radialMenu: false })).toEqual({ ...defaultSettings, split: 0.3 })
+    expect(mergeSettings({ layouts: 5 })).toEqual(defaultSettings)
+    expect(mergeSettings({ layouts: { ...defaultSettings.layouts, ground: { root: null, floating: [], rects: {} } }, radialMenu: false })).toEqual({
+      ...defaultSettings,
+      layouts: { ...defaultSettings.layouts, ground: { root: null, floating: [], rects: {} } },
+    })
     expect(update(update(m, Message.ClickedAsdexPanel()).model, Message.PressedOutsideAsdexPanel()).model.asdexPanelOpen).toBe(false)
     expect(update(m, Message.ToggledParkedTags()).model.settings.asdexParkedTags).toBe(true)
     let n = m

@@ -197,7 +197,7 @@ describe('settings actions', () => {
   test('Load list, Test key and Test voice report through the status line', () => {
     story(
       update,
-      given({ ...ready(), dialog: 'settings', draft: { ...defaultSettings, key: ' sk-or-1 ', model: 'm' } }),
+      given({ ...ready(), draft: { ...defaultSettings, key: ' sk-or-1 ', model: 'm' } }),
       message(Message.ClickedLoadModels()),
       Command.expectExact(LoadModels({ key: 'sk-or-1' })),
       Command.resolve(LoadModels, Message.CompletedLoadModels({ models: { ids: ['a', 'b'], audioIds: ['a'], speech: { 'k/kokoro': ['af_heart', 'af_heart_whisper'] } } })),

@@ -9,6 +9,7 @@ import { defineTaggedUnion } from 'foldkit/schema'
 import { CatalogIndex, Stars } from '../domain/catalog'
 import { Snapshot } from '../domain/session'
 import { World } from '../domain/world'
+import { Edge, Panel, Size } from './layout'
 import { CommandRecord, LogLine } from './log'
 import { Review, Timeline, emptyTimeline } from './timeline'
 import { StarsModel, initialStars } from '../positions/local/stars'
@@ -78,8 +79,18 @@ export type Drag = typeof Drag.Type
 export const Radial = Schema.Struct({ callsign: Schema.String, trail: Schema.Array(Schema.String) })
 export type Radial = typeof Radial.Type
 
-export const Dialog = Schema.Literals(['none', 'help', 'settings', 'session'])
-export type Dialog = typeof Dialog.Type
+/** A window being dragged by its title bar: where the press was, where a floating window started, and the tile under the pointer. */
+export const WindowDrag = Schema.Struct({
+  panel: Panel,
+  startX: Schema.Number,
+  startY: Schema.Number,
+  originX: Schema.Number,
+  originY: Schema.Number,
+  moved: Schema.Boolean,
+  over: Schema.NullOr(Panel),
+  edge: Schema.NullOr(Edge),
+})
+export type WindowDrag = typeof WindowDrag.Type
 
 export const DeepLink = Schema.Struct({
   airport: Schema.NullOr(Schema.String),
@@ -154,9 +165,11 @@ export const Model = Schema.Struct({
   timeline: Timeline,
   /** the point of the graph shown instead of the present; the sim is paused while set */
   review: Schema.NullOr(Review),
-  /** the rewind panel is open */
-  timelineOpen: Schema.Boolean,
-  dialog: Dialog,
+  /** the workspace (the area under the bar) in CSS px */
+  workspace: Size,
+  windowDrag: Schema.NullOr(WindowDrag),
+  /** a window filling the workspace on its own */
+  fullscreen: Schema.NullOr(Panel),
   draft: Settings,
   settingsStatus: SettingsStatus,
   /** OpenRouter model lists once loaded in Settings */
@@ -194,8 +207,9 @@ export const initialModel: Model = {
   commandLog: [],
   timeline: emptyTimeline,
   review: null,
-  timelineOpen: false,
-  dialog: 'none',
+  workspace: { width: 0, height: 0 },
+  windowDrag: null,
+  fullscreen: null,
   draft: defaultSettings,
   settingsStatus: { text: '', kind: '' },
   models: null,
