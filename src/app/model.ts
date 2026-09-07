@@ -85,8 +85,10 @@ export const Drag = Schema.Struct({
 })
 export type Drag = typeof Drag.Type
 
-/** The radial command menu open on the ground scope: which aircraft, and the keys picked so far. */
-export const Radial = Schema.Struct({ callsign: Schema.String, trail: Schema.Array(Schema.String) })
+/** The radial command menu open on a scope: which pane drew it, which aircraft, and the keys picked so far. */
+export const RadialPane = Schema.Literals(['asdex', 'stars'])
+export type RadialPane = typeof RadialPane.Type
+export const Radial = Schema.Struct({ pane: RadialPane, callsign: Schema.String, trail: Schema.Array(Schema.String) })
 export type Radial = typeof Radial.Type
 
 /** A window being dragged by its title bar: where the press was, where a floating window started, and the tile under the pointer. */

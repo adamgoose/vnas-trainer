@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { LoadStarsMap, StarsMessage, StarsOut, canvasToNm, defaultMaps, initialMaps, initialStars, isDefaultMaps, radarPoint, rangeView, starsInit, starsUpdate, toCanvas, zoomAt } from '../src/positions/local/stars'
+import { LoadStarsMap, StarsMessage, StarsOut, canvasToNm, defaultMaps, initialMaps, initialStars, isDefaultMaps, radarPoint, rangeView, starsInit, starsUpdate, targetAt, toCanvas, zoomAt } from '../src/positions/local/stars'
 import { LOCAL_RULES } from '../src/domain/rules'
 import { command, emptyWorld, groundWorld, msp, runUntil, stateOf } from './helpers'
 
@@ -93,10 +93,28 @@ describe('STARS pane', () => {
     expect(released.outMessage).toEqual(StarsOut.SelectedTarget({ callsign: arrival.callsign }))
     expect(released.model.drag).toBeNull()
     const far = starsUpdate(pressed, 'ZMP', { message: StarsMessage.Released({ x: c.x + 200, y: c.y + 200 }), world: spawned })
-    expect(far.outMessage).toBeUndefined()
+    expect(far.outMessage).toEqual(StarsOut.ClickedEmpty())
     const dragged = starsUpdate(pressed, 'ZMP', { message: StarsMessage.Moved({ x: c.x + 60, y: c.y }), world: spawned }).model
     expect(dragged.view.x).toBeCloseTo(model.view.x - 60 / 20, 6)
     expect(starsUpdate(dragged, 'ZMP', { message: StarsMessage.Released({ x: c.x + 60, y: c.y }), world: spawned }).outMessage).toBeUndefined()
+  })
+
+  test('a right-click reports the target under it (or none) and drops the drag the press started', () => {
+    const world = { ...groundWorld(LOCAL_RULES), arrivalsEnabled: true }
+    const spawned = runUntil(world, (w) => w.aircraft.some((a) => a.radar !== null), 15).world
+    const arrival = spawned.aircraft.find((a) => a.radar !== null)!
+    const model = { ...initialStars, width: 600, height: 600 }
+    const p = radarPoint(spawned, arrival.radar!.position)
+    const c = toCanvas(model, p.x, p.y)
+    expect(targetAt(model, spawned, c.x, c.y)).toBe(arrival.callsign)
+    expect(targetAt(model, spawned, c.x + 200, c.y + 200)).toBeNull()
+    const pressed = starsUpdate(model, 'ZMP', { message: StarsMessage.Pressed({ x: c.x, y: c.y }), world: spawned }).model
+    const context = starsUpdate(pressed, 'ZMP', { message: StarsMessage.Context({ x: c.x, y: c.y }), world: spawned })
+    expect(context.outMessage).toEqual(StarsOut.ContextTarget({ callsign: arrival.callsign }))
+    expect(context.model.drag).toBeNull()
+    const empty = starsUpdate(model, 'ZMP', { message: StarsMessage.Context({ x: c.x + 200, y: c.y + 200 }), world: spawned })
+    expect(empty.outMessage).toEqual(StarsOut.ContextTarget({ callsign: null }))
+    expect(starsUpdate(model, 'ZMP', { message: StarsMessage.Context({ x: c.x, y: c.y }), world: null }).outMessage).toBeUndefined()
   })
 
   test('toggling a map loads it once; a failed map is removed and noted', () => {

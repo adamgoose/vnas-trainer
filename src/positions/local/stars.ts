@@ -95,6 +95,8 @@ export const StarsMessage = defineMessageUnion({
   Pressed: { x: Schema.Number, y: Schema.Number },
   Moved: { x: Schema.Number, y: Schema.Number },
   Released: { x: Schema.Number, y: Schema.Number },
+  /** a right-click on the radar (the browser's menu is suppressed) */
+  Context: { x: Schema.Number, y: Schema.Number },
   ClickedRangeIn: {},
   ClickedRangeOut: {},
   ClickedCentre: {},
@@ -109,6 +111,10 @@ export type StarsMessage = typeof StarsMessage.Type
 
 export const StarsOut = defineTaggedUnion({
   SelectedTarget: { callsign: Schema.String },
+  /** a right-click: on a target, the parent opens its command ring; on empty radar (null), it closes the ring */
+  ContextTarget: { callsign: Schema.NullOr(Schema.String) },
+  /** a click on empty radar: the parent closes the ring this pane opened */
+  ClickedEmpty: {},
   Noted: { text: Schema.String },
 })
 export type StarsOut = typeof StarsOut.Type
@@ -126,11 +132,11 @@ export const LoadStarsMap = Command.define('LoadStarsMap', {
     }).pipe(Effect.catch((e) => Effect.succeed(StarsMessage.FailedLoadMap({ id, error: e.message })))),
 })
 
-type ScopeMessage = ReturnType<typeof StarsMessage.Resized> | ReturnType<typeof StarsMessage.Wheeled>
+type ScopeMessage = ReturnType<typeof StarsMessage.Resized> | ReturnType<typeof StarsMessage.Wheeled> | ReturnType<typeof StarsMessage.Context>
 
-/** Size and wheel deltas of the radar container (see ScopeSurface for the ground scope). */
+/** Size, wheel deltas and right-clicks of the radar container (see ScopeSurface for the ground scope). */
 export const StarsSurface = Mount.defineStream('StarsSurface', {
-  messages: [StarsMessage.Resized, StarsMessage.Wheeled],
+  messages: [StarsMessage.Resized, StarsMessage.Wheeled, StarsMessage.Context],
   execute: ({ element }) => {
     const sizes = Stream.callback<ScopeMessage>((queue) =>
       Effect.gen(function* () {
@@ -154,7 +160,18 @@ export const StarsSurface = Mount.defineStream('StarsSurface', {
         return StarsMessage.Wheeled({ x: event.clientX - rect.left, y: event.clientY - rect.top, deltaY: event.deltaY })
       }),
     )
-    return Stream.merge(sizes, wheels)
+    const contexts = Stream.fromEventListener<MouseEvent>(element, 'contextmenu').pipe(
+      Stream.map((event): ScopeMessage | null => {
+        event.preventDefault()
+        if (!(event.target instanceof Element) || event.target.closest('.stars-canvas, .eram-canvas') === null) {
+          return null
+        }
+        const rect = element.getBoundingClientRect()
+        return StarsMessage.Context({ x: event.clientX - rect.left, y: event.clientY - rect.top })
+      }),
+      Stream.filter((message): message is ScopeMessage => message !== null),
+    )
+    return Stream.merge(Stream.merge(sizes, wheels), contexts)
   },
 })
 
@@ -196,6 +213,25 @@ export const radarPoint = (world: World, c: readonly [number, number]): RadarPoi
   const centre = world.airport.radarCenter ?? [0, 0]
   const [x, y] = nmOffset(radarProjectionAt(centre[1]), centre, c)
   return { x, y }
+}
+
+/** The callsign of the radar return nearest canvas point (x, y), when one lies within HIT_FRACTION of the view's width. */
+export const targetAt = (model: RadarPane, world: World, x: number, y: number): string | null => {
+  const target = canvasToNm(model, x, y)
+  let best: string | null = null
+  let bestDistance = Infinity
+  for (const a of world.aircraft) {
+    if (a.radar === null) {
+      continue
+    }
+    const p = radarPoint(world, a.radar.position)
+    const d = Math.hypot(p.x - target.x, p.y - target.y)
+    if (d < bestDistance) {
+      bestDistance = d
+      best = a.callsign
+    }
+  }
+  return best !== null && bestDistance < model.view.w * HIT_FRACTION ? best : null
 }
 
 // INIT / UPDATE
@@ -248,23 +284,14 @@ export const starsUpdate = (model: StarsModel, artcc: string, input: StarsInput)
       if (drag === null || drag.moved || input.world === null) {
         return { model: released }
       }
-      const target = canvasToNm(model, x, y)
-      let best: string | null = null
-      let bestDistance = Infinity
-      for (const a of input.world.aircraft) {
-        if (a.radar === null) {
-          continue
-        }
-        const p = radarPoint(input.world, a.radar.position)
-        const d = Math.hypot(p.x - target.x, p.y - target.y)
-        if (d < bestDistance) {
-          bestDistance = d
-          best = a.callsign
-        }
-      }
-      return best !== null && bestDistance < model.view.w * HIT_FRACTION
-        ? { model: released, outMessage: StarsOut.SelectedTarget({ callsign: best }) }
-        : { model: released }
+      const hit = targetAt(model, input.world, x, y)
+      return hit !== null ? { model: released, outMessage: StarsOut.SelectedTarget({ callsign: hit }) } : { model: released, outMessage: StarsOut.ClickedEmpty() }
+    },
+
+    /** A right-click: the target under it (or none) goes to the parent. Any drag the press started is dropped, as on the ground scope. */
+    Context: ({ x, y }) => {
+      const released = evo(model, { drag: () => null })
+      return input.world === null ? { model: released } : { model: released, outMessage: StarsOut.ContextTarget({ callsign: targetAt(model, input.world, x, y) }) }
     },
 
     ClickedRangeIn: () => ({ model: evo(model, { view: (view) => rangeView(Math.max(MIN_RANGE_NM, Math.round(view.w / 2 / 1.5))) }) }),

@@ -284,6 +284,12 @@ describe('the ERAM pane', () => {
     const tdm = eramUpdate(init, { message: EramMessage.ToggledTdm(), world: null, artcc: zmp })
     expect(tdm.model.tdm).toBe(true)
     expect(tdm.commands?.length).toBe(mapsToShow(zmp.geoMaps[0]!, true).length)
+    // a right-click (the pane shares the STARS surface Mount) only drops the drag the press started
+    const pressed = eramUpdate(init, { message: EramMessage.Pressed({ x: 10, y: 10 }), world: null, artcc: zmp }).model
+    expect(pressed.drag).not.toBeNull()
+    const context = eramUpdate(pressed, { message: EramMessage.Context({ x: 10, y: 10 }), world: null, artcc: zmp })
+    expect(context.model.drag).toBeNull()
+    expect(context.outMessage).toBeUndefined()
   })
 
   test('display entries change the block state, answer ACCEPT, and route displays expire', () => {

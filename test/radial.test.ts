@@ -11,7 +11,7 @@ import { type Model, initialModel, worldOf } from '../src/app/model'
 import { fullLengthEntry, intersections, newPlan, planPreview } from '../src/app/plan'
 import { MAX_ITEMS, type RadialNode, openPlan, radialAt, radialRoot } from '../src/app/radial'
 import { pavementFor, update } from '../src/app/update'
-import { LoadStarsMap, StarsMessage, defaultMaps } from '../src/positions/local/stars'
+import { LoadStarsMap, StarsMessage, defaultMaps, radarPoint, toCanvas as toRadar } from '../src/positions/local/stars'
 import type { Aircraft } from '../src/domain/aircraft'
 import { parseCommandLine } from '../src/domain/commands'
 import { runwayEntries } from '../src/domain/graph'
@@ -244,7 +244,7 @@ describe('radial menu in the app', () => {
       Command.resolve(FocusCommand, Message.CompletedFocusCommand()),
       model((n) => {
         expect(n.selected).toBe('AAL894')
-        expect(n.radial).toEqual({ callsign: 'AAL894', trail: [] })
+        expect(n.radial).toEqual({ pane: 'asdex', callsign: 'AAL894', trail: [] })
       }),
       message(Message.PickedRadial({ key: 'rwy' })),
       message(Message.PickedRadial({ key: 'r:30L' })),
@@ -414,7 +414,7 @@ describe('radial menu in the app', () => {
       n = update(n, Message.ContextScope({ x: p.x, y: p.y })).model
       expect(n.drag).toBeNull()
       n = update(n, Message.ReleasedScope({ x: p.x, y: p.y })).model
-      expect(n.radial).toEqual({ callsign: 'AAL894', trail: [] })
+      expect(n.radial).toEqual({ pane: 'asdex', callsign: 'AAL894', trail: [] })
       return n
     }
     expect(update(open(), Message.ClickedRadialBack()).model.radial).toBeNull()
@@ -428,6 +428,41 @@ describe('radial menu in the app', () => {
     expect(other.radial).toBeNull()
     expect(other.selected).toBe(second)
     const dragged = update(update(update(open(), Message.PressedScope({ x: 100, y: 100 })).model, Message.MovedScope({ x: 150, y: 120 })).model, Message.ReleasedScope({ x: 150, y: 120 })).model
-    expect(dragged.radial).toEqual({ callsign: 'AAL894', trail: [] })
+    expect(dragged.radial).toEqual({ pane: 'asdex', callsign: 'AAL894', trail: [] })
+  })
+
+  test('a right-click on a STARS target opens its ring on that pane; a pick dispatches; empty radar closes only that ring', () => {
+    const loaded = update(ready(), Message.GotStars({ message: StarsMessage.Resized({ width: 600, height: 600 }) })).model
+    if (loaded.airport._tag !== 'Ready') {
+      throw new Error('airport not ready')
+    }
+    // an arrival on final: the first aircraft the STARS pane paints
+    const world = runUntil({ ...loaded.airport.world, arrivalsEnabled: true }, (w) => w.aircraft.some((a) => a.radar !== null), 15).world
+    const m: Model = { ...loaded, airport: { ...loaded.airport, world } }
+    const arrival = world.aircraft.find((a) => a.radar !== null)!
+    const p = radarPoint(world, arrival.radar!.position)
+    const c = toRadar(m.stars, p.x, p.y)
+    const context = (from: Model, x: number, y: number) => update(from, Message.GotStars({ message: StarsMessage.Context({ x, y }) }))
+    const opened = context(m, c.x, c.y)
+    expect(opened.model.selected).toBe(arrival.callsign)
+    expect(opened.model.radial).toEqual({ pane: 'stars', callsign: arrival.callsign, trail: [] })
+    expect(opened.commands?.map((x) => x.name)).toEqual([FocusCommand.name])
+    // the ring is the aircraft's usual one: an arrival on final, already cleared by the tower automation, gets GA first
+    expect(keys(radialAt(world, m.settings.mode, arrival, []))[0]).toBe('ga')
+    const sent = update(opened.model, Message.PickedRadial({ key: 'ga' })).model
+    expect(sent.radial).toBeNull()
+    expect(sent.history[0]).toBe(`${arrival.callsign} GA`)
+    expect(sent.log.find((l) => l.kind === 'atc')?.text).toBe(`${arrival.callsign} GA`)
+    expect(aircraftNamed(worldOf(sent)!, arrival.callsign).goingAround).toBe(true)
+    // a right-click on empty radar closes the ring; so does a plain click there, but only a ring this pane opened
+    expect(context(opened.model, c.x + 200, c.y + 200).model.radial).toBeNull()
+    const click = (from: Model, x: number, y: number): Model =>
+      update(update(from, Message.GotStars({ message: StarsMessage.Pressed({ x, y }) })).model, Message.GotStars({ message: StarsMessage.Released({ x, y }) })).model
+    const emptied = click(opened.model, c.x + 200, c.y + 200)
+    expect(emptied.radial).toBeNull()
+    expect(emptied.selected).toBe(arrival.callsign)
+    const ground = { ...m, selected: 'AAL894', radial: { pane: 'asdex' as const, callsign: 'AAL894', trail: [] } }
+    expect(click(ground, c.x + 200, c.y + 200).radial).toEqual(ground.radial)
+    expect(context(ground, c.x + 200, c.y + 200).model.radial).toBeNull()
   })
 })

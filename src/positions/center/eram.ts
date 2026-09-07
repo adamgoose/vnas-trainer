@@ -118,6 +118,8 @@ export const EramMessage = defineMessageUnion({
   Resized: { width: Schema.Number, height: Schema.Number },
   Wheeled: { x: Schema.Number, y: Schema.Number, deltaY: Schema.Number },
   Pressed: { x: Schema.Number, y: Schema.Number },
+  /** a right-click (the pane shares StarsSurface): only the drag the press started is dropped; ERAM has no command ring */
+  Context: { x: Schema.Number, y: Schema.Number },
   Moved: { x: Schema.Number, y: Schema.Number },
   Released: { x: Schema.Number, y: Schema.Number },
   ClickedRangeIn: {},
@@ -247,6 +249,8 @@ export const eramUpdate = (model: EramModel, input: EramInput): EramReturn => {
     Wheeled: ({ x, y, deltaY }) => ({ model: evo(model, { view: () => zoomAt(model, x, y, deltaY > 0 ? 1.13 : 0.885, 2 * MAX_RANGE_NM) }) }),
 
     Pressed: ({ x, y }) => ({ model: evo(model, { drag: () => ({ startX: x, startY: y, viewX: model.view.x, viewY: model.view.y, moved: false }) }) }),
+
+    Context: () => ({ model: evo(model, { drag: () => null }) }),
 
     Moved: ({ x, y }) => {
       const drag = model.drag

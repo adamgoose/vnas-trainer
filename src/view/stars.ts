@@ -329,7 +329,7 @@ export const starsView = Submodel.defineView<StarsModel, StarsMessage, StarsInpu
         [h.Class('scope-keys')],
         LEGEND.map(([colour, label]) => h.span([], [h.i([h.Style({ background: colour === 'accent' ? inputs.accent : colour })]), label])),
       ),
-      h.div([h.Class('scope-hud')], [hud1, h.br([]), hud2]),
+      h.div([h.Class('scope-hud')], [hud1, h.br([]), hud2, h.br([]), 'scroll to zoom · drag to pan · right-click a target for commands']),
     ],
   )
 })

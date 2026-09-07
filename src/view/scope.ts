@@ -584,7 +584,7 @@ export const scopeView = (model: Model, h: HtmlBuilder<Message>, inset: Html = h
       staticScope(model, h),
       scopeCanvas(model, h),
       ...runwayButtonsView(model, h),
-      radialView(model, h),
+      radialView(model, h, 'asdex'),
       inset,
       h.div(
         [h.Class('scope-keys')],

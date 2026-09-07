@@ -707,6 +707,11 @@ const foldStars = (artcc: string) =>
     foldOutMessage: (out: StarsOut) => (model: Model) =>
       StarsOut.match<Return>(out, {
         SelectedTarget: ({ callsign }) => ({ model: evo(model, { selected: () => callsign, radial: () => null }), commands: [FocusCommand()] }),
+        ContextTarget: ({ callsign }) =>
+          callsign === null
+            ? { model: evo(model, { radial: () => null }) }
+            : { model: evo(model, { selected: () => callsign, radial: () => ({ pane: 'stars' as const, callsign, trail: [] }) }), commands: [FocusCommand()] },
+        ClickedEmpty: () => ({ model: evo(model, { radial: (r) => (r?.pane === 'stars' ? null : r) }) }),
         Noted: ({ text }) => ({ model: pushLog(model, 'sys', null, text) }),
       }),
   })
@@ -1036,7 +1041,7 @@ export const update = (model: Model, message: Message): Return =>
       const hit = hitTest(world.graph, model.scope, x, y, world.aircraft.filter((a) => a.delay <= 0), (a) => a.position)
       return hit === null
         ? { model: evo(released, { radial: () => null }) }
-        : { model: evo(released, { selected: () => hit.callsign, radial: () => ({ callsign: hit.callsign, trail: [] }) }), commands: [FocusCommand()] }
+        : { model: evo(released, { selected: () => hit.callsign, radial: () => ({ pane: 'asdex' as const, callsign: hit.callsign, trail: [] }) }), commands: [FocusCommand()] }
     },
 
     PickedRadial: ({ key }) => pickRadial(model, key),

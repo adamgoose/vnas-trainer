@@ -14,6 +14,7 @@ import { barView } from './bar'
 import { controlsView } from './controls'
 import { deckView } from './deck'
 import { helpView, sessionView, settingsView } from './dialogs'
+import { radialView } from './radial'
 import { accentFor, scopeView } from './scope'
 import { eramView } from './eram'
 import { starsView } from './stars'
@@ -60,13 +61,20 @@ const contentOf = (model: Model, h: HtmlBuilder<Message>, panel: Panel): Html =>
     case 'asdex':
       return scopeView(model, h, selectedStripView(model, h))
     case 'stars':
-      return h.submodel({
-        slotId: 'stars',
-        model: model.stars,
-        view: starsView,
-        viewInputs: { world: worldOf(model), stars: infoOf(model)?.stars ?? null, selected: model.selected, devicePixelRatio: model.devicePixelRatio, accent: accentFor(model.settings.mode) },
-        toParentMessage: (message) => Message.GotStars({ message }),
-      })
+      // the ring is the parent's (its picks are parent messages), so it overlays the pane as a sibling
+      return h.div(
+        [h.Class('radar-pane')],
+        [
+          h.submodel({
+            slotId: 'stars',
+            model: model.stars,
+            view: starsView,
+            viewInputs: { world: worldOf(model), stars: infoOf(model)?.stars ?? null, selected: model.selected, devicePixelRatio: model.devicePixelRatio, accent: accentFor(model.settings.mode) },
+            toParentMessage: (message) => Message.GotStars({ message }),
+          }),
+          radialView(model, h, 'stars'),
+        ],
+      )
     case 'eram':
       return h.submodel({
         slotId: 'eram',

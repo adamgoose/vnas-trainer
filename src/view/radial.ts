@@ -1,15 +1,19 @@
 /**
- * The radial command menu over the ground scope: a pie of SVG wedges around the
- * clicked aircraft (src/app/radial.ts decides the wedges), kept inside the pane.
- * The hole in the middle goes back a ring, or closes at the root; a wedge with an
- * outer mark opens another ring. Labels are the command mnemonics only.
+ * The radial command menu over the ground scope or the STARS pane: a pie of SVG
+ * wedges around the clicked aircraft (src/app/radial.ts decides the wedges),
+ * kept inside the pane that opened it. The hole in the middle goes back a ring,
+ * or closes at the root; a wedge with an outer mark opens another ring. Labels
+ * are the command mnemonics only.
  */
 import type { Html, HtmlBuilder } from 'foldkit/html'
 
 import { Message } from '../app/message'
-import { type Model, worldOf } from '../app/model'
+import { type Model, type RadialPane, worldOf } from '../app/model'
 import { planPreview } from '../app/plan'
 import { offersRunways, radialAt } from '../app/radial'
+import type { Aircraft } from '../domain/aircraft'
+import type { World } from '../domain/world'
+import { radarPoint, toCanvas as toRadar } from '../positions/local/stars'
 import { toCanvas, toWorld } from './viewport'
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v))
@@ -40,10 +44,22 @@ const markPath = (r: number, a0: number, a1: number): string => {
   return `M${pt(polar(r, a0 + inset))} A${r} ${r} 0 ${large} 1 ${pt(polar(r, a1 - inset))}`
 }
 
-export const radialView = (model: Model, h: HtmlBuilder<Message>): Html => {
+type Anchor = Readonly<{ x: number; y: number; width: number; height: number }>
+
+/** Where the ring centres in `pane`: the aircraft on the ground scope, or its radar return on the STARS pane. */
+const anchorOf = (model: Model, world: World, pane: RadialPane, aircraft: Aircraft): Anchor => {
+  if (pane === 'stars') {
+    const p = radarPoint(world, aircraft.radar?.position ?? aircraft.position)
+    return { ...toRadar(model.stars, p.x, p.y), width: model.stars.width, height: model.stars.height }
+  }
+  return { ...toCanvas(model.scope, toWorld(world.graph, aircraft.position)), width: model.scope.width, height: model.scope.height }
+}
+
+/** The ring, when `pane` is the one that opened it. */
+export const radialView = (model: Model, h: HtmlBuilder<Message>, pane: RadialPane): Html => {
   const world = worldOf(model)
   const radial = model.radial
-  if (world === null || radial === null || model.selected !== radial.callsign) {
+  if (world === null || radial === null || radial.pane !== pane || model.selected !== radial.callsign) {
     return h.empty
   }
   const aircraft = world.aircraft.find((a) => a.callsign === radial.callsign)
@@ -60,14 +76,19 @@ export const radialView = (model: Model, h: HtmlBuilder<Message>): Html => {
   const r1 = outerRadius(n)
   const extent = r1 + 8
   const margin = extent + 28
-  const at = toCanvas(model.scope, toWorld(world.graph, aircraft.position))
-  const cx = clamp(at.x, margin, Math.max(margin, model.scope.width - margin))
-  const cy = clamp(at.y, margin, Math.max(margin, model.scope.height - margin))
+  const at = anchorOf(model, world, pane, aircraft)
+  const cx = clamp(at.x, margin, Math.max(margin, at.width - margin))
+  const cy = clamp(at.y, margin, Math.max(margin, at.height - margin))
   const root = radial.trail.length === 0
   const step = (2 * Math.PI) / n
   const rotated = n > 8
   return h.div(
-    [h.Class('radial'), h.Style({ left: `${cx.toFixed(1)}px`, top: `${cy.toFixed(1)}px` })],
+    [
+      h.Class('radial'),
+      h.Style({ left: `${cx.toFixed(1)}px`, top: `${cy.toFixed(1)}px` }),
+      // the STARS ring sits beside the pane, outside its right-click listener: a right-click on it closes it and skips the browser's menu, as on empty radar
+      ...(pane === 'stars' ? [h.OnContextMenu(Message.ClosedRadial())] : []),
+    ],
     [
       h.svg(
         [
@@ -117,7 +138,7 @@ export const radialView = (model: Model, h: HtmlBuilder<Message>): Html => {
 export const runwayButtonsView = (model: Model, h: HtmlBuilder<Message>): ReadonlyArray<Html> => {
   const world = worldOf(model)
   const radial = model.radial
-  if (world === null || radial === null || model.selected !== radial.callsign) {
+  if (world === null || radial === null || radial.pane !== 'asdex' || model.selected !== radial.callsign) {
     return []
   }
   const aircraft = world.aircraft.find((a) => a.callsign === radial.callsign)
