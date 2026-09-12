@@ -50,7 +50,7 @@ export const helpView = (h: HtmlBuilder<Message>): Html =>
         ...cmdRow(h, 'CTO [L|R] [hdg] [AT {twy}]', ['Cleared for takeoff — rolls, rotates at Vr and climbs runway heading to the airport\'s initial altitude. With a heading (', h.b([], ['CTO L 250']), ') the pilot turns to it through 400 feet. ', h.b([], ['AT D']), ' names the intersection (the one from the taxi clearance is used otherwise).']),
         ...cmdRow(h, 'CTL', ['Cleared to land. As Local, an arrival without it goes around at one mile.']),
         ...cmdRow(h, 'GA', ['Go around (an arrival still on final).']),
-        ...cmdRow(h, 'EXIT [taxiway]', ['Vacate the runway after landing, at a named taxiway or the nearest.']),
+        ...cmdRow(h, 'EXIT [taxiway]', ['Exit the runway at a taxiway: given on final it is taken up at touchdown, on the landing roll it changes the plan; with no taxiway, the first exit the aircraft can slow for. Left alone, an arrival picks the exit that makes the taxi to its gate shortest.']),
         ...cmdRow(h, 'FH {hdg}', ['Fly heading. ', h.b([], ['TL']), ' / ', h.b([], ['TR']), ' force the turn direction.']),
         ...cmdRow(h, 'CM {alt}', ['Climb (or descend) and maintain — feet, hundreds (', h.b([], ['CM 50']), ') or ', h.b([], ['FL230']), '.']),
         ...cmdRow(h, 'CD', ['Contact departure — the pilot switches to the departure frequency and drops off 20 seconds later.']),
@@ -185,7 +185,7 @@ const voiceSelect = (h: HtmlBuilder<Message>, model: Model): Html => {
   )
 }
 
-const checkbox = (h: HtmlBuilder<Message>, model: Model, id: string, key: 'tts' | 'radio', note: string): Html =>
+const checkbox = (h: HtmlBuilder<Message>, model: Model, id: string, key: 'tts' | 'radio' | 'autoTrack', note: string): Html =>
   h.div(
     [h.Class('row')],
     [
@@ -204,11 +204,11 @@ export const settingsView = (model: Model, h: HtmlBuilder<Message>): Html =>
   shell(
     'Settings',
     [
-      h.h3([], ['Plain-English commands · bring your own key']),
+      h.h3([], ['Plain-English commands · OpenRouter key']),
       h.p([], [
-        'Off by default — the trainer is fully usable with the command syntax alone. Add an ',
+        'Anything that isn\'t a recognised command is sent to the model below, which translates what you\'d say on frequency into ATCTrainer commands. The app ships with a shared, rate-limited ',
         h.a([h.Href('https://openrouter.ai/keys'), h.Target('_blank'), h.Rel('noopener')], ['OpenRouter']),
-        ' API key to have any provider/model translate what you\'d say on frequency into ATCTrainer commands. The key is stored only in this browser\'s local storage and sent only to openrouter.ai.',
+        ' key; paste your own to use your account (clearing the field goes back to the shared one). The key is stored only in this browser\'s local storage and sent only to openrouter.ai.',
       ]),
       h.div([h.Class('field')], [
         ...field(h, 's-key', 'OpenRouter API key', textInput(h, model, 's-key', 'key', 'sk-or-v1-…', 'password')),
@@ -222,7 +222,7 @@ export const settingsView = (model: Model, h: HtmlBuilder<Message>): Html =>
       datalist(h, 'ttsmodels', Object.keys(model.models?.speech ?? {}).sort()),
       h.h3([], ['Audio · push-to-talk and pilot voices']),
       h.p([], [
-        'Hold the ', h.b([], ['PTT']), ' button (or hold ', h.b([], ['Space']), ' while the command box isn\'t focused), say the transmission, release. With an OpenRouter key, the recording goes to an audio-capable model that transcribes it and translates it into commands in one step. Without a key, the browser\'s own speech recognition is used where available and the words are treated as typed. Pilots read back through the browser\'s speech synthesis by default, or through an OpenRouter speech model.',
+        'Hold the ', h.b([], ['PTT']), ' button (or hold ', h.b([], ['Space']), ' while the command box isn\'t focused), say the transmission, release. With an OpenRouter key, the recording goes to an audio-capable model that transcribes it and translates it into commands in one step. Without a key, the browser\'s own speech recognition is used where available and the words are treated as typed. Pilots read back through an OpenRouter speech model by default; the browser\'s own speech synthesis is the offline fallback.',
       ]),
       h.div([h.Class('field')], [
         ...field(h, 's-audio', 'Audio model', textInput(h, model, 's-audio', 'audioModel', 'google/gemini-3.5-flash-lite', 'text', 'audiomodels'), 'Must accept audio input — Load list above fills this picker with only those models. Gemini Flash models are fast and cheap for this.'),
@@ -237,6 +237,10 @@ export const settingsView = (model: Model, h: HtmlBuilder<Message>): Html =>
         ...field(h, 's-ttsmodel', 'TTS model', textInput(h, model, 's-ttsmodel', 'ttsModel', 'hexgrad/kokoro-82m', 'text', 'ttsmodels'), 'Any OpenRouter speech model. Kokoro is a fraction of a cent per call with many English voices; Deepgram Aura-2, Gemini TTS and MiniMax sound richer and cost more. Priced per character.'),
         ...field(h, 's-voice', 'Pilot voice', voiceSelect(h, model)),
         ...field(h, 's-radio', 'Radio effect', checkbox(h, model, 's-radio', 'radio', 'band-limit OpenRouter voices like a VHF receiver')),
+      ]),
+      h.h3([], ['Radar']),
+      h.div([h.Class('field')], [
+        ...field(h, 's-autotrack', 'Auto-track', checkbox(h, model, 's-autotrack', 'autoTrack', 'start a track on every target as radar acquires it; DROP still drops one, and with this off TRACK starts them')),
       ]),
       h.h3([], ['Data source']),
       h.p([], [

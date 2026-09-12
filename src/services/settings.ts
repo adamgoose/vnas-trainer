@@ -20,6 +20,8 @@ export const Settings = Schema.Struct({
   ttsVoice: Schema.String,
   voice: Schema.String,
   radio: Schema.Boolean,
+  /** radar: every target is tracked as it is acquired (DROP still drops one) */
+  autoTrack: Schema.Boolean,
   mode: Schema.Literals(['ground', 'tower', 'tracon', 'center']),
   /** shared sessions: an optional TURN relay for NATs that block direct connections */
   turnUrl: Schema.String,
@@ -42,17 +44,21 @@ export type Settings = typeof Settings.Type
 
 export const SETTINGS_KEY = 'vgt.settings'
 
+/** The key the app ships with (rate-limited on OpenRouter's side); an empty key field means this one. */
+export const DEFAULT_KEY = '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'
+
 export const defaultSettings: Settings = {
-  key: '',
+  key: DEFAULT_KEY,
   model: 'anthropic/claude-haiku-4.5',
   audioModel: 'google/gemini-3.5-flash-lite',
   proxy: '',
   tts: true,
-  ttsEngine: 'browser',
+  ttsEngine: 'openrouter',
   ttsModel: 'hexgrad/kokoro-82m',
   ttsVoice: '',
   voice: '',
   radio: true,
+  autoTrack: true,
   mode: 'ground',
   turnUrl: '',
   turnUsername: '',
@@ -68,7 +74,7 @@ export const defaultSettings: Settings = {
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
-/** Merge stored values over the defaults, keeping only fields that decode. */
+/** Merge stored values over the defaults, keeping only fields that decode; an empty stored key means the shipped one. */
 export const mergeSettings = (stored: unknown): Settings => {
   if (!isRecord(stored)) {
     return defaultSettings
@@ -79,6 +85,9 @@ export const mergeSettings = (stored: unknown): Settings => {
     if (stored[key] !== undefined && Schema.decodeUnknownOption(Settings)(candidate)._tag === 'Some') {
       merged[key] = stored[key]
     }
+  }
+  if (merged['key'] === '') {
+    merged['key'] = DEFAULT_KEY
   }
   return merged as Settings
 }

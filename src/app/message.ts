@@ -35,7 +35,8 @@ export const Message = defineMessageUnion({
   ChangedAirport: { id: Schema.String },
   ChangedScenario: { id: Schema.String },
   ClickedTogglePlay: {},
-  ClickedRate: {},
+  /** the rate picker: 0 pauses, anything else sets the rate and runs */
+  ChangedRate: { rate: Schema.Number },
   ClickedArrivals: {},
   ResizedScope: { width: Schema.Number, height: Schema.Number, devicePixelRatio: Schema.Number },
   WheeledScope: { x: Schema.Number, y: Schema.Number, deltaY: Schema.Number },

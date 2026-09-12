@@ -8,7 +8,7 @@ import type { Aircraft } from '../domain/aircraft'
 import type { LonLat } from '../domain/catalog'
 import { distanceFt } from '../domain/geo'
 import { type Graph, edgeName, isRunwayName, runwayEntries, runwaysEntered } from '../domain/graph'
-import { holdTarget } from '../domain/physics'
+import { FINAL_KT, holdTarget, rollFt, runwayExits } from '../domain/physics'
 import type { World } from '../domain/world'
 import type { PositionMode } from '../positions'
 import { type PlanPreview, type RoutePlan, newPlan, planLine, planPreview, setEntry, toggleCross, toggleWaypoint } from './plan'
@@ -305,6 +305,26 @@ const crossItem = (graph: Graph, a: Aircraft): ReadonlyArray<RadialItem> => {
     ? first
     : [menu('x', 'CROSS', () => paged('CROSS', [...first, ...ahead.map((r) => leaf(`r:${r}`, r, `CROSS ${r}`))]))]
 }
+/** EXIT: the taxiways ahead the aircraft can still slow for (the whole runway on final), plus a bare EXIT on the roll. */
+const exitItems = (graph: Graph, a: Aircraft): ReadonlyArray<RadialItem> => {
+  const end = a.runway !== null ? graph.runwayEnds[a.runway] : undefined
+  if (end === undefined || a.path === null) {
+    return []
+  }
+  const onFinal = a.state === 'FINAL'
+  const k = onFinal ? 0 : end.chain.indexOf(a.path[a.leg + 1] ?? -1)
+  if (k < 0) {
+    return []
+  }
+  const from = onFinal ? graph.nodes[end.chain[0]!]! : a.position
+  const minFt = rollFt(onFinal ? FINAL_KT : a.speed)
+  const names = [...new Set(runwayExits(graph, end, k, from).filter((e) => e.runwayFt >= minFt).map((e) => e.taxiway))]
+  const bare = onFinal ? [] : [leaf('exit', 'EXIT', 'EXIT')]
+  if (names.length === 0) {
+    return bare
+  }
+  return [menu('exit', 'EXIT', () => paged('EXIT', [...bare, ...names.map((n) => leaf(`e:${n}`, n, `EXIT ${n}`))]))]
+}
 const giveWayItem = (world: World, a: Aircraft): ReadonlyArray<RadialItem> => {
   const others = world.aircraft
     .filter((o) => o.callsign !== a.callsign && o.delay <= 0 && o.state !== 'AIRB' && o.state !== 'FINAL')
@@ -408,7 +428,7 @@ export const radialRoot = (world: World, mode: PositionMode, a: Aircraft): Radia
           leaf('exit', 'EXIT', 'EXIT'),
         ]
       case 'ROLLOUT':
-        return [leaf('exit', 'EXIT', 'EXIT'), ...taxiItem(graph, a), leaf('hold', 'HOLD', 'HOLD')]
+        return [...exitItems(graph, a), ...taxiItem(graph, a), leaf('hold', 'HOLD', 'HOLD')]
       case 'LUAW':
         return departureItems(a).filter((i) => i.key === 'cto')
       case 'TKOF':
@@ -417,6 +437,7 @@ export const radialRoot = (world: World, mode: PositionMode, a: Aircraft): Radia
         return [
           ...(a.clearedToLand ? [] : [leaf('ctl', 'CTL', 'CTL')]),
           leaf('ga', 'GA', 'GA'),
+          ...exitItems(graph, a),
           ...(mode === 'tracon' && !a.handoff ? [leaf('ct', 'CT', 'CT')] : []),
           ...trackOrDrop(a),
         ]

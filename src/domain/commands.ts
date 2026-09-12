@@ -24,7 +24,7 @@ import {
   runway as runwayToken,
   taxiways,
 } from './phrase'
-import { armHold, autoExit, goAround, holdTarget, withPath } from './physics'
+import { FINAL_KT, armHold, autoExit, goAround, holdTarget, planExit, rollFt, runwayExits, withPath } from './physics'
 import { PUSHBACK_RUNWAY_PENALTY_FT, findPath, routeVia } from './route'
 import { nextInt } from './prng'
 import {
@@ -56,7 +56,7 @@ export const AtcCommand = defineTaggedUnion({
   TaxiAll: {},
   LineUpAndWait: { at: Schema.NullOr(Schema.String) },
   ClearedForTakeoff: { heading: Schema.NullOr(Schema.Number), turn: Schema.NullOr(Schema.Literals(['L', 'R'])), at: Schema.NullOr(Schema.String) },
-  Exit: {},
+  Exit: { taxiway: Schema.NullOr(Schema.String) },
   GoAround: {},
   ClearedToLand: {},
   Track: {},
@@ -253,7 +253,7 @@ const parseVerb = (verb: string, args: ReadonlyArray<string>): Parsed => {
       return heading === null ? { error: 'heading?' } : AtcCommand.ClearedForTakeoff({ heading, turn, at })
     }
     case 'EXIT':
-      return AtcCommand.Exit()
+      return AtcCommand.Exit({ taxiway: upper[0] ?? null })
     case 'GA':
       return AtcCommand.GoAround()
     case 'CTL':
@@ -930,12 +930,34 @@ const executeFor = (world: World, a: Aircraft, command: AtcCommand): Outcome => 
       return reply(rolling, phrase(lead, digits(String(heading).padStart(3, '0')), ',', ...runwayWords(a.runway, intersection), ', cleared for takeoff'))
     },
 
-    Exit: () => {
-      if (a.state !== 'ROLLOUT' && a.state !== 'HOLD') {
-        return fail('not on a landing roll')
+    /** On final the exit is noted for touchdown; on the roll the plan changes now; from a stop on the runway the aircraft backtracks to it. */
+    Exit: ({ taxiway }) => {
+      if (a.state === 'FINAL') {
+        if (taxiway === null) {
+          return fail('exit where? name the taxiway (EXIT A5)')
+        }
+        const end = a.runway !== null ? graph.runwayEnds[a.runway] : undefined
+        if (end === undefined) {
+          return fail('no landing runway')
+        }
+        const exits = runwayExits(graph, end, 0, graph.nodes[end.chain[0]!]!).filter((e) => e.taxiway === taxiway)
+        if (exits.length === 0) {
+          return fail(`${taxiway} does not meet runway ${end.runway}`)
+        }
+        if (!exits.some((e) => e.runwayFt >= rollFt(FINAL_KT))) {
+          return fail(`unable ${taxiway}, too close to the threshold`)
+        }
+        return reply({ ...a, exitVia: taxiway }, phrase('exit at', taxiways([taxiway])))
       }
-      const out = autoExit(world, a)
-      return out.aircraft === null ? fail('cannot exit') : { aircraft: out.aircraft, events: out.events }
+      if (a.state === 'ROLLOUT') {
+        const plan = planExit(world, a, taxiway, true)
+        return 'error' in plan ? fail(plan.error) : reply(plan.aircraft, phrase('exit at', taxiways([plan.taxiway])))
+      }
+      if (a.state === 'HOLD') {
+        const out = autoExit(world, a, taxiway)
+        return 'error' in out ? fail(out.error) : out.aircraft === null ? fail('cannot exit') : { aircraft: out.aircraft, events: out.events }
+      }
+      return fail('not on a landing roll')
     },
 
     GoAround: () => {

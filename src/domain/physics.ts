@@ -17,10 +17,10 @@ import {
   reciprocal,
   turnDelta,
 } from './geo'
-import { type Graph, edgeName, gateNames, isRunwayName, nearestNode, runwayCourse, runwaysEntered } from './graph'
+import { type Graph, type RunwayEnd, edgeName, gateNames, isRunwayName, nearestNode, runwayCourse, runwaysEntered } from './graph'
 import { type Phrase, altitudeWords, callsign as callsignToken, gate as gateToken, numberWords, phrase, runway as runwayToken, taxiways } from './phrase'
 import { type Prng, nextBetween, nextInt, pick, pickWeighted } from './prng'
-import { findPath } from './route'
+import { RUNWAY_PENALTY_FT, findPath } from './route'
 import {
   SimEvent,
   type World,
@@ -52,6 +52,12 @@ export const BREAK_S = 15
 export const LINE_UP_TURN_DEG_S = 12
 export const FINAL_KT = 140
 export const GLIDE_FT_PER_NM = 318
+/** the landing roll: the deceleration, the speed kept on the runway until the exit, and how close to the turn-off the aircraft slows to the turn speed */
+export const ROLLOUT_DECEL_KT_S = 9
+export const ROLLOUT_KT = 50
+export const EXIT_TURN_FT = 300
+/** a pilot stopped at a hold waits this long (sim seconds) for a crossing, line-up or takeoff clearance before reporting "holding short" */
+export const HOLD_SHORT_PATIENCE_S = 10
 export const GO_AROUND_KT = 160
 export const HANDOFF_REMOVE_S = 20
 export const IDENT_S = 4
@@ -404,23 +410,189 @@ const stepAir = (world: World, input: Aircraft, dt: number): StepOut => {
 
 // GROUND
 
-/** Leave the runway at the nearest non-runway node, then taxi to the destination gate if any. */
-export const autoExit = (world: World, a: Aircraft): StepOut => {
+/** Feet needed to slow from `speed` to the turn speed at the landing-roll deceleration. */
+export const rollFt = (speed: number): number => (Math.max(0, speed * speed - TURN_KT * TURN_KT) / (2 * ROLLOUT_DECEL_KT_S)) * KT_TO_FT_PER_S
+
+export type ExitCandidate = Readonly<{
+  /** index in the runway chain of the node the taxiway leaves from */
+  chainIndex: number
+  /** the taxiway's node off the runway, and its name */
+  node: number
+  taxiway: string
+  /** feet to run along the runway from the aircraft (or the threshold) to the turn-off */
+  runwayFt: number
+}>
+
+/** Every taxiway leaving the runway from chain index `from` on, with the distance to run to it from `position`. */
+export const runwayExits = (graph: Graph, end: RunwayEnd, from: number, position: LonLat): ReadonlyArray<ExitCandidate> => {
+  const out: Array<ExitCandidate> = []
+  const proj = graph.projection
+  let d = distanceFt(proj, position, graph.nodes[end.chain[from]!]!)
+  for (let j = from; j < end.chain.length; j++) {
+    const n = end.chain[j]!
+    if (j > from) {
+      d += distanceFt(proj, graph.nodes[end.chain[j - 1]!]!, graph.nodes[n]!)
+    }
+    for (const edge of graph.adjacency[n] ?? []) {
+      if (isRunwayName(graph, edge.name) || (graph.nodeRunways[edge.to] ?? []).includes(end.runway)) {
+        continue
+      }
+      out.push({ chainIndex: j, node: edge.to, taxiway: edge.name, runwayFt: d })
+    }
+  }
+  return out
+}
+
+/** Feet along `nodes`, plus the router's penalty for every runway the taxi enters (a crossing means a hold and a clearance). */
+const taxiCostFt = (graph: Graph, nodes: ReadonlyArray<number>): number => {
+  let d = 0
+  for (let i = 1; i < nodes.length; i++) {
+    d += distanceFt(graph.projection, graph.nodes[nodes[i - 1]!]!, graph.nodes[nodes[i]!]!) + RUNWAY_PENALTY_FT * runwaysEntered(graph, nodes[i - 1]!, nodes[i]!).length
+  }
+  return d
+}
+
+export type ExitPlan = Readonly<{ aircraft: Aircraft; taxiway: string }> | Readonly<{ error: string }>
+
+/** The exit the controller named must lie ahead on the runway and far enough to slow for; the refusal says which. */
+const checkNamedExit = (a: Aircraft, runway: string, exits: ReadonlyArray<ExitCandidate>, allExits: ReadonlyArray<ExitCandidate>, via: string, speed: number): ExitCandidate | { error: string } => {
+  const named = exits.filter((e) => e.taxiway === via)
+  if (named.length === 0) {
+    return { error: allExits.some((e) => e.taxiway === via) ? `${via} is behind ${a.callsign}` : `${via} does not meet runway ${runway}` }
+  }
+  const usable = named.find((e) => e.runwayFt >= rollFt(speed))
+  return usable ?? { error: `unable ${via}, too close to stop` }
+}
+
+/**
+ * Plan the rest of the landing roll: run to the exit, turn off and taxi to the gate.
+ * `via` is the controller's taxiway; otherwise the exit that makes the taxi to the
+ * gate shortest (runway to run plus the taxi from the exit, runway crossings penalised), or the first the
+ * aircraft can slow for when `nearest` (a bare EXIT) or there is no gate. The path
+ * keeps the legs already flown, so the aircraft's leg and position stand.
+ */
+export const planExit = (world: World, a: Aircraft, via: string | null, nearest: boolean): ExitPlan => {
+  const graph = world.graph
+  const end = a.runway !== null ? graph.runwayEnds[a.runway] : undefined
+  if (end === undefined || a.path === null || a.leg + 1 >= a.path.length) {
+    return { error: 'not on a runway' }
+  }
+  const k = end.chain.indexOf(a.path[a.leg + 1]!)
+  if (k < 0) {
+    return { error: 'already off the runway' }
+  }
+  const exits = runwayExits(graph, end, k, a.position)
+  const gateNode = a.destinationGate !== null ? graph.parking[a.destinationGate]?.node : undefined
+  let chosen: ExitCandidate | undefined
+  if (via !== null) {
+    const named = checkNamedExit(a, end.runway, exits, runwayExits(graph, end, 0, graph.nodes[end.chain[0]!]!), via, a.speed)
+    if ('error' in named) {
+      return named
+    }
+    chosen = named
+  } else {
+    const usable = exits.filter((e) => e.runwayFt >= rollFt(a.speed))
+    const pool = usable.length > 0 ? usable : exits
+    if (nearest || gateNode === undefined) {
+      chosen = pool[0]
+    } else {
+      let best = Infinity
+      for (const e of pool) {
+        const onward = findPath(graph, e.node, gateNode)
+        const score = onward === null ? Infinity : e.runwayFt + taxiCostFt(graph, onward)
+        if (score < best) {
+          best = score
+          chosen = e
+        }
+      }
+      chosen ??= pool[0]
+    }
+  }
+  if (chosen === undefined) {
+    return { error: 'no exit ahead' }
+  }
+  const onward = gateNode !== undefined ? findPath(graph, chosen.node, gateNode) : null
+  const nodes = [...a.path.slice(0, a.leg + 1), ...end.chain.slice(k, chosen.chainIndex + 1), chosen.node, ...(onward ?? [chosen.node]).slice(1)]
+  const exitLeg = a.leg + (chosen.chainIndex - k) + 2
+  return { aircraft: armHold(graph, { ...a, path: nodes, exitLeg, exitVia: null }, a.leg), taxiway: chosen.taxiway }
+}
+
+/** At touchdown: the controller's exit if it can be made, else the best one for the gate; with no exit at all the roll runs to the end. */
+const planLanding = (world: World, a: Aircraft): Aircraft => {
+  if (a.exitVia !== null) {
+    const wanted = planExit(world, a, a.exitVia, true)
+    if ('aircraft' in wanted) {
+      return wanted.aircraft
+    }
+  }
+  const auto = planExit(world, a, null, false)
+  return 'aircraft' in auto ? auto.aircraft : { ...a, exitVia: null }
+}
+
+/** Off the runway at the exit node: taxi on to the gate (or hold there with none) and report clear. */
+const clearOfRunway = (world: World, a: Aircraft): StepOut => {
+  const graph = world.graph
+  const name = a.path !== null && a.exitLeg !== null ? edgeName(graph, a.path[a.exitLeg - 1]!, a.path[a.exitLeg]!) : null
+  const next: Aircraft = { ...a, state: atPathEnd(a) ? 'HOLD' : 'TAXI', runway: null, intersection: null, exitLeg: null }
+  return keep(next, [said(next, name !== null ? phrase('clear of the runway at', taxiways([name])) : phrase('clear of the runway'))])
+}
+
+/** The landing roll: slow to the roll speed, then to the turn speed near the exit, and turn off. */
+const stepRollout = (world: World, a: Aircraft, dt: number): StepOut => {
+  const graph = world.graph
+  if (world.rules.landingRemoves) {
+    const rolled = advance(graph, world.tick, { ...a, speed: Math.max(ROLLOUT_KT, a.speed - ROLLOUT_DECEL_KT_S * dt) }, dt)
+    return rolled.speed > ROLLOUT_KT + 1
+      ? keep(rolled)
+      : { aircraft: null, events: [SimEvent.Removed({ callsign: a.callsign, text: `${a.callsign} landed runway ${a.runway ?? ''}` })] }
+  }
+  const planned = a.exitLeg === null ? planLanding(world, a) : a
+  /** the turn-off is the node before the exit node; on the leg to the exit node the aircraft is already turning */
+  const turnNode = planned.exitLeg !== null && planned.path !== null ? planned.path[planned.exitLeg - 1] : undefined
+  const turning = planned.exitLeg !== null && planned.leg >= planned.exitLeg - 1
+  const toTurn = turnNode === undefined ? Infinity : distanceFt(graph.projection, planned.position, graph.nodes[turnNode]!)
+  /** the roll speed to the turn-off, the turn speed around it, taxi speed along a long exit leg */
+  const target = toTurn < EXIT_TURN_FT ? TURN_KT : turning ? TAXI_KT : ROLLOUT_KT
+  const speed = planned.speed > target ? Math.max(target, planned.speed - ROLLOUT_DECEL_KT_S * dt) : Math.min(target, planned.speed + 5 * dt)
+  const rolled = advance(graph, world.tick, { ...planned, speed }, dt)
+  if (rolled.exitLeg !== null && rolled.leg >= rolled.exitLeg) {
+    return clearOfRunway(world, rolled)
+  }
+  if (atPathEnd(rolled)) {
+    const held: Aircraft = { ...rolled, state: 'HOLD', speed: 0 }
+    return keep(held, [said(held, phrase('holding at the end of runway', runwayToken(a.runway ?? '')))])
+  }
+  return keep(rolled)
+}
+
+/**
+ * From a stop on the runway (EXIT on a HOLD): leave at the nearest taxiway off the
+ * runway, or the one named, in either direction, then taxi to the destination gate if any.
+ */
+export const autoExit = (world: World, a: Aircraft, via: string | null = null): StepOut | { error: string } => {
   const graph = world.graph
   const end = a.runway !== null ? graph.runwayEnds[a.runway] : undefined
   let exitNode: number | null = null
   let best = Infinity
+  let seen = false
   for (const n of end?.chain ?? []) {
     for (const e of graph.adjacency[n] ?? []) {
       if (isRunwayName(graph, e.name)) {
         continue
       }
+      if (via !== null && e.name !== via) {
+        continue
+      }
+      seen = true
       const d = distanceFt(graph.projection, graph.nodes[e.to]!, a.position)
       if (d < best) {
         best = d
         exitNode = e.to
       }
     }
+  }
+  if (via !== null && !seen && end !== undefined) {
+    return { error: `${via} does not meet runway ${end.runway}` }
   }
   const slowed: Aircraft = { ...a, speed: 6 }
   if (exitNode === null || end === undefined) {
@@ -435,8 +607,8 @@ export const autoExit = (world: World, a: Aircraft): StepOut => {
   const routed: Aircraft =
     nodes === null
       ? { ...slowed, cleared, state: 'HOLD', runway: null, intersection: null }
-      : { ...withPath(graph, { ...slowed, cleared }, nodes), state: 'TAXI', runway: null, intersection: null }
-  const exitName = graph.nodeTaxiways[exitNode]?.[0]
+      : { ...withPath(graph, { ...slowed, cleared }, nodes), state: 'TAXI', runway: null, intersection: null, exitLeg: null }
+  const exitName = via ?? graph.nodeTaxiways[exitNode]?.[0]
   return keep(
     routed,
     [said(routed, exitName !== undefined ? phrase('clear of the runway at', taxiways([exitName])) : phrase('clear of the runway'))],
@@ -467,8 +639,7 @@ const arriveEnd = (world: World, a: Aircraft): StepOut => {
       return keep(next, [said(next, phrase('in the blocks at', gateToken(next.gate ?? '')))])
     }
     if (stopped.runway !== null) {
-      const next: Aircraft = { ...stopped, state: 'SHORT' }
-      return keep(next, [said(next, phrase('holding short of', runwayToken(stopped.runway)))])
+      return keep({ ...stopped, state: 'SHORT', shortCallAt: world.simTime + HOLD_SHORT_PATIENCE_S })
     }
     const next: Aircraft = { ...stopped, state: 'HOLD' }
     return keep(next, [said(next, phrase('holding'))])
@@ -546,9 +717,7 @@ const stepGround = (world: World, a: Aircraft, dt: number): StepOut => {
   if (holdHere && speed < 0.4) {
     const stopped: Aircraft = { ...moving, speed: 0 }
     if (stopped.state !== 'SHORT') {
-      const next: Aircraft = { ...stopped, state: 'SHORT' }
-      const name = holdTarget(graph, a) ?? a.runway
-      return keep(next, [said(next, name !== null ? holdPointPhrase(graph, name) : phrase('holding short of the runway'))])
+      return keep({ ...stopped, state: 'SHORT', shortCallAt: world.simTime + HOLD_SHORT_PATIENCE_S })
     }
     return keep(stopped)
   }
@@ -589,8 +758,10 @@ export const checkInAirborne = (world: World, a: Aircraft): SimEvent => {
 }
 
 export const stepAircraft = (world: World, input: Aircraft, dt: number): StepOut => {
-  const a: Aircraft =
+  const identDone: Aircraft =
     input.transponder === 'I' && world.simTime >= input.identUntil ? { ...input, transponder: 'N' } : input
+  /** a clearance moved the aircraft on before its patience ran out: the "holding short" call is dropped */
+  const a: Aircraft = identDone.state !== 'SHORT' && identDone.shortCallAt !== null ? { ...identDone, shortCallAt: null } : identDone
   if (a.delay > 0) {
     const delay = a.delay - dt
     const next: Aircraft = { ...a, delay }
@@ -617,31 +788,29 @@ export const stepAircraft = (world: World, input: Aircraft, dt: number): StepOut
   }
   if (a.state === 'FINAL') {
     const flown = advance(graph, world.tick, { ...a, speed: FINAL_KT }, dt)
-    let onFinal: Aircraft
     if (flown.leg >= 1) {
-      onFinal = { ...flown, altitude: 0, landed: true }
-    } else {
-      const end = a.runway !== null ? graph.runwayEnds[a.runway] : undefined
-      const threshold = end !== undefined ? graph.nodes[end.chain[0]!] : undefined
-      const distanceNm = threshold !== undefined ? distanceFt(graph.projection, flown.position, threshold) / FT_PER_NM : 0
-      onFinal = { ...flown, altitude: Math.max(0, distanceNm * GLIDE_FT_PER_NM) }
-      if (world.rules.requireLandingClearance && !onFinal.clearedToLand && distanceNm < 1) {
-        return goAround(world, onFinal, 'no landing clearance')
-      }
+      /** touchdown: the roll starts at once and picks its exit for the gate */
+      return keep({ ...flown, altitude: 0, landed: true, state: 'ROLLOUT' })
     }
-    return atPathEnd(onFinal) ? keep({ ...onFinal, state: 'ROLLOUT', altitude: 0 }) : keep(onFinal)
+    const end = a.runway !== null ? graph.runwayEnds[a.runway] : undefined
+    const threshold = end !== undefined ? graph.nodes[end.chain[0]!] : undefined
+    const distanceNm = threshold !== undefined ? distanceFt(graph.projection, flown.position, threshold) / FT_PER_NM : 0
+    const onFinal: Aircraft = { ...flown, altitude: Math.max(0, distanceNm * GLIDE_FT_PER_NM) }
+    if (world.rules.requireLandingClearance && !onFinal.clearedToLand && distanceNm < 1) {
+      return goAround(world, onFinal, 'no landing clearance')
+    }
+    return keep(onFinal)
   }
   if (a.state === 'ROLLOUT') {
-    const rolled = advance(graph, world.tick, { ...a, speed: Math.max(18, a.speed - 9 * dt) }, dt)
-    if (rolled.speed > 19) {
-      return keep(rolled)
-    }
-    return world.rules.landingRemoves
-      ? { aircraft: null, events: [SimEvent.Removed({ callsign: a.callsign, text: `${a.callsign} landed runway ${a.runway ?? ''}` })] }
-      : autoExit(world, rolled)
+    return stepRollout(world, a, dt)
   }
   if (a.state === 'LUAW') {
     return keep({ ...a, speed: Math.max(0, a.speed - 14 * dt), heading: alignedOnRunway(graph, a, dt) })
+  }
+  if (a.state === 'SHORT' && a.shortCallAt !== null && world.simTime >= a.shortCallAt) {
+    const called: Aircraft = { ...a, speed: 0, shortCallAt: null }
+    const name = holdTarget(graph, a) ?? a.runway
+    return keep(called, [said(called, name !== null ? holdPointPhrase(graph, name) : phrase('holding short of the runway'))])
   }
   if (a.state === 'HOLD' || a.state === 'PUSHED' || a.state === 'SHORT') {
     return keep({ ...a, speed: Math.max(0, a.speed - 14 * dt) })
@@ -807,11 +976,13 @@ export const maybeArrival = (world: World): WorldResult => {
 
 // RADAR
 
-const radarSweep = (aircraft: ReadonlyArray<Aircraft>): ReadonlyArray<Aircraft> =>
+/** One return per sim second; with auto-track on, a target is tracked the moment radar first acquires it. */
+const radarSweep = (aircraft: ReadonlyArray<Aircraft>, autoTrack: boolean): ReadonlyArray<Aircraft> =>
   aircraft.map((a) =>
     isRadarVisible(a)
       ? {
           ...a,
+          tracked: a.tracked || (autoTrack && a.radar === null),
           radar: {
             position: a.position,
             altitude: a.altitude,
@@ -837,7 +1008,7 @@ export const stepWorld = (world: World, dt: number = SIM_STEP_S): WorldResult =>
   }
   const arrival = maybeArrival({ ...clock, aircraft })
   events.push(...arrival.events)
-  const swept = clock.tick % 10 === 0 ? { ...arrival.world, aircraft: radarSweep(arrival.world.aircraft) } : arrival.world
+  const swept = clock.tick % 10 === 0 ? { ...arrival.world, aircraft: radarSweep(arrival.world.aircraft, arrival.world.autoTrack) } : arrival.world
   return { world: swept, events }
 }
 

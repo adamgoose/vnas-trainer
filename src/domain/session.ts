@@ -17,6 +17,7 @@ export const SessionControl = defineTaggedUnion({
   SetRunning: { running: Schema.Boolean },
   SetRate: { rate: Schema.Number },
   SetArrivals: { enabled: Schema.Boolean },
+  SetAutoTrack: { enabled: Schema.Boolean },
   SetPosition: { mode: PositionMode },
 })
 export type SessionControl = typeof SessionControl.Type

@@ -107,6 +107,12 @@ export const Aircraft = Schema.Struct({
   checkedIn: Schema.Boolean,
   clearedToLand: Schema.Boolean,
   landed: Schema.Boolean,
+  /** taxiway the controller asked the aircraft to exit at, taken up at touchdown (EXIT on final) */
+  exitVia: Schema.NullOr(Schema.String),
+  /** on the landing roll: index in `path` of the node where the aircraft leaves the runway */
+  exitLeg: Schema.NullOr(Schema.Number),
+  /** sim time at which a pilot stopped at a hold reports "holding short", unless cleared on before then */
+  shortCallAt: Schema.NullOr(Schema.Number),
   goingAround: Schema.Boolean,
   airborneAt: Schema.NullOr(Schema.Number),
   radar: Schema.NullOr(RadarReturn),
@@ -178,6 +184,9 @@ export const makeAircraft = (fields: Partial<Aircraft> & Pick<Aircraft, 'callsig
   checkedIn: false,
   clearedToLand: false,
   landed: false,
+  exitVia: null,
+  exitLeg: null,
+  shortCallAt: null,
   goingAround: false,
   airborneAt: null,
   radar: null,

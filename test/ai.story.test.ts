@@ -12,7 +12,9 @@ import { msp } from './helpers'
 
 const surfaceCount = (s: (typeof msp.scen)[number]) => s.ac.filter((a) => a.k !== 'A').length
 const big = msp.scen.reduce((best, s) => (surfaceCount(s) > surfaceCount(best) ? s : best), msp.scen[0]!)
-const keyed = { ...defaultSettings, key: 'sk-test', model: 'test/model', audioModel: 'test/audio' }
+const keyed = { ...defaultSettings, ttsEngine: 'browser' as const, key: 'sk-test', model: 'test/model', audioModel: 'test/audio' }
+/** the shipped key is on by default; these stories want plain-English commands off */
+const keyless = { ...defaultSettings, ttsEngine: 'browser' as const, key: '' }
 
 const ready = (settings = defaultSettings): Model => {
   let m = update(initialModel, Message.CompletedLoadSettings({ settings })).model
@@ -57,7 +59,7 @@ describe('plain English', () => {
   test('without a key, unknown text is refused; with a key it goes to the model', () => {
     story(
       update,
-      given(ready()),
+      given(ready(keyless)),
       message(Message.UpdatedCommandText({ value: 'American 894 push back approved' })),
       message(Message.SubmittedCommand()),
       Command.expectNone(),
@@ -170,14 +172,14 @@ describe('push-to-talk', () => {
   test('without a key: browser recognition when available, otherwise a hint', () => {
     story(
       update,
-      given({ ...ready(), recognitionAvailable: false }),
+      given({ ...ready(keyless), recognitionAvailable: false }),
       message(Message.PressedPtt()),
       Command.expectNone(),
       model((m) => expect(m.log[0]?.text).toMatch(/^no speech recognition/)),
     )
     story(
       update,
-      given({ ...ready(), recognitionAvailable: true }),
+      given({ ...ready(keyless), recognitionAvailable: true }),
       message(Message.PressedPtt()),
       Command.expectExact(StartRecognition),
       Command.resolve(StartRecognition, Message.CompletedStartRecognition()),
@@ -210,7 +212,7 @@ describe('settings actions', () => {
       Command.expectExact(TestVoice),
       Command.resolve(TestVoice, Message.CompletedTestVoice({ ok: true, detail: 'playing browser voice' })),
       model((m) => expect(m.settingsStatus.text).toBe('playing browser voice')),
-      message(Message.UpdatedDraft({ draft: { ...defaultSettings, ttsEngine: 'openrouter' } })),
+      message(Message.UpdatedDraft({ draft: { ...defaultSettings, ttsEngine: 'openrouter', key: '' } })),
       message(Message.ClickedTestVoice()),
       Command.expectNone(),
       model((m) => expect(m.settingsStatus).toEqual({ text: 'OpenRouter voices need an API key', kind: 'bad' })),

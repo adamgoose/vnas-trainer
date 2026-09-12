@@ -509,6 +509,13 @@ const applyControl = (model: Model, control: SessionControl): Return =>
         model: pushLog(next, 'sys', null, enabled ? `arrival generator on — ${world.airport.fleet.length > 0 ? `${world.airport.id} fleet mix` : 'generic GA mix'}` : 'arrival generator off'),
       }
     },
+    SetAutoTrack: ({ enabled }) => {
+      const world = worldOf(model)
+      if (world === null || world.autoTrack === enabled) {
+        return { model }
+      }
+      return { model: pushLog(withWorldChange(model, { ...world, autoTrack: enabled }, enabled ? 'auto-track on' : 'auto-track off'), 'sys', null, enabled ? 'auto-track on — targets are tracked as radar acquires them' : 'auto-track off — TRACK starts a track') }
+    },
     SetPosition: ({ mode }) => {
       const settings = { ...model.settings, mode }
       const world = worldOf(model)
@@ -695,8 +702,6 @@ const selectScenario = (model: Model, scenarioId: string | null): Return => {
   }
 }
 
-const cycleRate = (rate: number): number => (rate >= 8 ? 1 : rate * 2)
-
 /** The STARS Submodel: its messages fold into the parent, its OutMessages select targets or log. */
 const foldStars = (artcc: string) =>
   Update.foldChild({
@@ -853,7 +858,7 @@ export const update = (model: Model, message: Message): Return =>
         return { model }
       }
       const artcc = artccOf(model)
-      const world = makeWorld(airport, rulesFor(model.settings.mode), WORLD_SEED, artcc !== null && artcc.id === airport.artcc ? artcc : null)
+      const world: World = { ...makeWorld(airport, rulesFor(model.settings.mode), WORLD_SEED, artcc !== null && artcc.id === airport.artcc ? artcc : null), autoTrack: model.settings.autoTrack }
       const info = airportInfo(airport)
       const pavement = pavementFor(airport.asdex, airport.twrmap, model.settings.asdexCabMap)
       const radar = starsInit(model.stars, airport.artcc, airport.stars, positionFor(model.settings.mode).scopeRangeNm, model.settings.starsMaps[airport.id] ?? null)
@@ -962,7 +967,18 @@ export const update = (model: Model, message: Message): Return =>
 
     ClickedTogglePlay: () => control(model, SessionControl.SetRunning({ running: !model.running })),
 
-    ClickedRate: () => control(model, SessionControl.SetRate({ rate: cycleRate(model.rate) })),
+    /** 0× pauses; another rate is applied and, when paused, runs the sim (rewound, that forks like the play button) */
+    ChangedRate: ({ rate }) => {
+      if (rate <= 0) {
+        return model.running ? control(model, SessionControl.SetRunning({ running: false })) : { model }
+      }
+      const set = rate === model.rate ? { model } : control(model, SessionControl.SetRate({ rate }))
+      if (model.running) {
+        return set
+      }
+      const run = control(set.model, SessionControl.SetRunning({ running: true }))
+      return { model: run.model, commands: [...(set.commands ?? []), ...(run.commands ?? [])] }
+    },
 
     ClickedArrivals: () => {
       const world = worldOf(model)
@@ -1155,7 +1171,7 @@ export const update = (model: Model, message: Message): Return =>
       const d = model.draft
       const settings: Settings = {
         ...d,
-        key: d.key.trim(),
+        key: d.key.trim() || defaultSettings.key,
         model: d.model.trim() || defaultSettings.model,
         audioModel: d.audioModel.trim() || defaultSettings.audioModel,
         ttsModel: d.ttsModel.trim() || defaultSettings.ttsModel,
@@ -1170,9 +1186,11 @@ export const update = (model: Model, message: Message): Return =>
         aiEnabled(settings) ? `plain-English commands on via OpenRouter (${settings.model})` : 'plain-English commands off — command syntax only',
       )
       const proxyChanged = settings.proxy !== model.settings.proxy
+      /** the auto-track preference lives on the World too, so it travels with the session like the arrival generator */
+      const tracked = settings.autoTrack !== model.settings.autoTrack ? control(logged, SessionControl.SetAutoTrack({ enabled: settings.autoTrack })) : { model: logged }
       return {
-        model: proxyChanged ? evo(logged, { index: () => IndexLoad.Loading(), airport: () => AirportLoad.Idle() }) : logged,
-        commands: [SaveSettings({ settings: logged.settings }), ...(proxyChanged ? [LoadIndex({ source: sourceForProxy(settings.proxy) })] : [])],
+        model: proxyChanged ? evo(tracked.model, { index: () => IndexLoad.Loading(), airport: () => AirportLoad.Idle() }) : tracked.model,
+        commands: [...(tracked.commands ?? []), SaveSettings({ settings: tracked.model.settings }), ...(proxyChanged ? [LoadIndex({ source: sourceForProxy(settings.proxy) })] : [])],
       }
     },
 

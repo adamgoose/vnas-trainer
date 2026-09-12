@@ -4,7 +4,7 @@ import type { Aircraft } from '../src/domain/aircraft'
 import { type AirportFile, type ArtccFile, decodeAirportFile, decodeArtccFile } from '../src/domain/catalog'
 import { AtcCommand, executeCommand, parseCommandLine } from '../src/domain/commands'
 import { written } from '../src/domain/phrase'
-import { stepWorld } from '../src/domain/physics'
+import { HOLD_SHORT_PATIENCE_S, stepWorld } from '../src/domain/physics'
 import { GROUND_RULES, type PositionRules } from '../src/domain/rules'
 import { loadScenario } from '../src/domain/scenario'
 import { type SimEvent, type World, findAircraft, makeWorld } from '../src/domain/world'
@@ -56,6 +56,13 @@ export const run = (world: World, seconds: number): Run => {
     events.push(...out.events)
   }
   return { world: current, events, seconds }
+}
+
+/** Step until the aircraft is holding short and its patience has run out, so the "holding short" call is among the events. */
+export const runUntilShort = (world: World, callsign: string, maxSeconds: number): Run => {
+  const stopped = runUntil(world, stateOf(callsign, 'SHORT'), maxSeconds)
+  const called = run(stopped.world, HOLD_SHORT_PATIENCE_S + 0.1)
+  return { world: called.world, events: [...stopped.events, ...called.events], seconds: stopped.seconds + called.seconds }
 }
 
 /** Step until `done` holds, or fail after `maxSeconds`. */

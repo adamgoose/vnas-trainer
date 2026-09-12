@@ -57,6 +57,8 @@ export const World = Schema.Struct({
   tick: Schema.Number,
   arrivalsEnabled: Schema.Boolean,
   nextArrivalAt: Schema.Number,
+  /** every target is tracked as radar acquires it (a Settings preference the app mirrors here) */
+  autoTrack: Schema.Boolean,
   scenario: Schema.NullOr(ScenarioInfo),
   /** fixes and procedures around the airport (Phase 8); empty for a catalog built without them */
   nav: AirportNav,
@@ -115,6 +117,7 @@ export const makeWorld = (airport: AirportFile, rules: PositionRules, seed: numb
     tick: 0,
     arrivalsEnabled: false,
     nextArrivalAt: 0,
+    autoTrack: false,
     scenario: null,
     nav: mergeNav(airport.nav ?? emptyNav, artcc?.nav ?? null),
   }

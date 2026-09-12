@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { Command, given, message, model, story } from 'foldkit/story'
 
-import { FocusCommand, LoadAirport, LoadArtcc, LoadBrowserVoices, LoadIndex, LoadPavement, LoadScenario, LoadSettings, ProbeRecognition, ReadDeepLink, ReplaceDeepLink, SaveSettings, Speak } from '../src/app/commands'
+import { FocusCommand, LoadAirport, LoadArtcc, LoadBrowserVoices, LoadIndex, LoadModels, LoadPavement, LoadScenario, LoadSettings, ProbeRecognition, ReadDeepLink, ReplaceDeepLink, SaveSettings, Speak } from '../src/app/commands'
 import { close, placement } from '../src/app/layout'
 import { Message } from '../src/app/message'
 import { type Model, initialModel, worldOf } from '../src/app/model'
@@ -194,12 +194,11 @@ describe('clock', () => {
     )
   })
 
-  test('rate cycles 1, 2, 4, 8, 1 and pausing stops steps without a catch-up burst', () => {
+  test('the rate picker sets the rate, 0× pauses, and pausing stops steps without a catch-up burst', () => {
     story(
       update,
       given(ready()),
-      message(Message.ClickedRate()),
-      message(Message.ClickedRate()),
+      message(Message.ChangedRate({ rate: 4 })),
       model((m) => expect(m.rate).toBe(4)),
       message(Message.Ticked({ now: 0 })),
       message(Message.Ticked({ now: 100 })),
@@ -215,9 +214,17 @@ describe('clock', () => {
       message(Message.Ticked({ now: 9000 })),
       message(Message.Ticked({ now: 9100 })),
       model((m) => expect(worldOf(m)?.tick).toBe(8)),
-      message(Message.ClickedRate()),
-      message(Message.ClickedRate()),
-      model((m) => expect(m.rate).toBe(1)),
+      message(Message.ChangedRate({ rate: 0 })),
+      model((m) => {
+        expect(m.running).toBe(false)
+        expect(m.rate).toBe(4)
+      }),
+      /** picking a rate while paused runs the sim again at that rate */
+      message(Message.ChangedRate({ rate: 1 })),
+      model((m) => {
+        expect(m.running).toBe(true)
+        expect(m.rate).toBe(1)
+      }),
     )
   })
 })
@@ -355,14 +362,32 @@ describe('Local position', () => {
 })
 
 describe('settings', () => {
+  test('saving the auto-track preference mirrors it onto the World', () => {
+    story(
+      update,
+      given(ready()),
+      model((m) => expect(worldOf(m)?.autoTrack).toBe(true)),
+      message(Message.UpdatedDraft({ draft: { ...defaultSettings, autoTrack: false } })),
+      message(Message.ClickedSaveSettings()),
+      Command.expectExact(SaveSettings({ settings: { ...defaultSettings, autoTrack: false } })),
+      Command.resolve(SaveSettings, Message.CompletedSaveSettings()),
+      model((m) => {
+        expect(worldOf(m)?.autoTrack).toBe(false)
+        expect(m.log.some((l) => l.text.startsWith('auto-track off'))).toBe(true)
+      }),
+    )
+  })
+
   test('saving trims and defaults fields, logs the AI state, and reloads the index when the proxy changes', () => {
     story(
       update,
       given(ready()),
       message(Message.ClickedSettings()),
-      Command.expectExact(SaveSettings, LoadBrowserVoices),
+      /** the shipped key means the model list loads as soon as Settings opens */
+      Command.expectExact(SaveSettings, LoadBrowserVoices, LoadModels),
       Command.resolve(SaveSettings, Message.CompletedSaveSettings()),
       Command.resolve(LoadBrowserVoices, Message.CompletedLoadBrowserVoices({ voices: [{ name: 'Samantha', lang: 'en-US' }] })),
+      Command.resolve(LoadModels, Message.FailedLoadModels({ error: 'offline' })),
       model((m) => {
         expect(placement(m.settings.layouts.ground, 'settings')).toBe('floating')
         expect(m.browserVoices).toEqual([{ name: 'Samantha', lang: 'en-US' }])

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 
 import { API, FILES } from '../src/domain/vnas'
 import { HttpTextFromRecord } from '../src/services/http'
-import { SettingsStore, SettingsStoreMemory, defaultSettings, mergeSettings } from '../src/services/settings'
+import { DEFAULT_KEY, SettingsStore, SettingsStoreMemory, defaultSettings, mergeSettings } from '../src/services/settings'
 import { VideoMaps, VideoMapsLive } from '../src/services/videoMaps'
 import { DataSource, VnasData, VnasDataLive, sourceForProxy, viaProxy } from '../src/services/vnasData'
 
@@ -108,6 +108,10 @@ describe('Settings', () => {
   test('merges stored values over defaults and ignores bad ones', () => {
     expect(mergeSettings(null)).toEqual(defaultSettings)
     expect(mergeSettings({ key: 'abc', mode: 'tower', tts: 'yes', ttsEngine: 'nope', view: 'stars' })).toEqual({ ...defaultSettings, key: 'abc', mode: 'tower' })
+    /** an empty stored key means the shipped one */
+    expect(mergeSettings({ key: '' }).key).toBe(DEFAULT_KEY)
+    expect(mergeSettings({}).key).toBe(DEFAULT_KEY)
+    expect(defaultSettings.ttsEngine).toBe('openrouter')
   })
 
   test('round-trips through a storage under the legacy key', async () => {

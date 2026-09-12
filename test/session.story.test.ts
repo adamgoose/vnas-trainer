@@ -194,7 +194,7 @@ describe('joining', () => {
       Command.expectExact(SendSession({ event: SessionEvent.RequestedCommand({ callsign: 'AAL894', command: AtcCommand.Hold(), said: 'AAL894 HOLD' }), target: 'host-1' })),
       Command.resolve(SendSession, Message.CompletedSendSession()),
       model((m) => expect(worldOf(m)!.aircraft.find((a) => a.callsign === 'AAL894')!.state).toBe('PUSH')),
-      message(Message.ClickedRate()),
+      message(Message.ChangedRate({ rate: 2 })),
       Command.expectExact(SendSession({ event: SessionEvent.RequestedControl({ control: SessionControl.SetRate({ rate: 2 }) }), target: 'host-1' })),
       Command.resolve(SendSession, Message.CompletedSendSession()),
       model((m) => expect(m.rate).toBe(1)),
