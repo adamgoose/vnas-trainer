@@ -134,6 +134,10 @@ export const initialSession: SessionState = { role: 'solo', room: null, status: 
 export const PttState = Schema.Literals(['idle', 'tx', 'busy', 'listen'])
 export type PttState = typeof PttState.Type
 
+/** A pilot transmission that arrived while the controller's mic was keyed. */
+export const HeldSpeech = Schema.Struct({ callsign: Schema.String, text: Schema.String })
+export type HeldSpeech = typeof HeldSpeech.Type
+
 export const ModelCatalogue = Schema.Struct({
   ids: Schema.Array(Schema.String),
   audioIds: Schema.Array(Schema.String),
@@ -192,6 +196,8 @@ export const Model = Schema.Struct({
   models: Schema.NullOr(ModelCatalogue),
   browserVoices: Schema.Array(BrowserVoice),
   ptt: PttState,
+  /** pilot lines that came up under a keyed mic; spoken in order once it un-keys */
+  heldSpeech: Schema.Array(HeldSpeech),
   /** the transient "translating…" line shown at the top of the log */
   pendingAi: Schema.NullOr(Schema.String),
   recognitionAvailable: Schema.Boolean,
@@ -234,6 +240,7 @@ export const initialModel: Model = {
   models: null,
   browserVoices: [],
   ptt: 'idle',
+  heldSpeech: [],
   pendingAi: null,
   recognitionAvailable: false,
   session: initialSession,

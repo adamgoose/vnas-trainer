@@ -222,7 +222,7 @@ export const settingsView = (model: Model, h: HtmlBuilder<Message>): Html =>
       datalist(h, 'ttsmodels', Object.keys(model.models?.speech ?? {}).sort()),
       h.h3([], ['Audio · push-to-talk and pilot voices']),
       h.p([], [
-        'Hold the ', h.b([], ['PTT']), ' button (or hold ', h.b([], ['Space']), ' while the command box isn\'t focused), say the transmission, release. With an OpenRouter key, the recording goes to an audio-capable model that transcribes it and translates it into commands in one step. Without a key, the browser\'s own speech recognition is used where available and the words are treated as typed. Pilots read back through an OpenRouter speech model by default; the browser\'s own speech synthesis is the offline fallback.',
+        'Hold the ', h.b([], ['PTT']), ' button (or hold ', h.b([], ['Space']), ' while the command box isn\'t focused), say the transmission, release. With an OpenRouter key, the recording goes to an audio-capable model that transcribes it and translates it into commands in one step. Without a key, the browser\'s own speech recognition is used where available and the words are treated as typed. Pilots read back through an OpenRouter speech model by default; the browser\'s own speech synthesis is the offline fallback. The frequency is half-duplex: no pilot starts talking while you hold the mic — a call that comes up under it is logged at once and spoken when you release.',
       ]),
       h.div([h.Class('field')], [
         ...field(h, 's-audio', 'Audio model', textInput(h, model, 's-audio', 'audioModel', 'google/gemini-3.5-flash-lite', 'text', 'audiomodels'), 'Must accept audio input — Load list above fills this picker with only those models. Gemini Flash models are fast and cheap for this.'),

@@ -26,6 +26,13 @@ const ready = (settings = defaultSettings): Model => {
   return m
 }
 
+type Sim = Readonly<{ model: Model }>
+/** A tick's worth of pilot line, applied to the running story the way Ticked would. */
+const pilotSaid =
+  (who: string, text: string) =>
+  <S extends Sim>(sim: S): S => ({ ...sim, model: applyEvents(sim.model, [SimEvent.PilotSaid({ callsign: who, phrase: phrase(text) })]).model })
+const mute = <S extends Sim>(sim: S): S => ({ ...sim, model: { ...sim.model, settings: { ...sim.model.settings, tts: false } } })
+
 describe('pilot voices', () => {
   test('a pilot line becomes a Speak command with the callsign appended, unless the phrase carries it', () => {
     expect(utteranceFor('DAL1047', phrase('holding short of', runway('30L')))).toBe('holding short of three zero left, Delta ten forty-seven')
@@ -185,12 +192,63 @@ describe('push-to-talk', () => {
       Command.resolve(StartRecognition, Message.CompletedStartRecognition()),
       model((m) => expect(m.ptt).toBe('listen')),
       message(Message.HeardRecognition({ text: 'AAL894 PUSH' })),
+      Command.expectNone(),
+      model((m) => {
+        expect(worldOf(m)!.aircraft.find((a) => a.callsign === 'AAL894')!.state).toBe('PUSH')
+        expect(m.heldSpeech.map((h) => h.callsign)).toEqual(['AAL894'])
+      }),
+      message(Message.ReleasedPtt()),
+      Command.expectHas(StopRecognition),
+      Command.expectHas(Speak),
+      Command.resolve(StopRecognition, Message.CompletedStopRecognition()),
       Command.resolve(Speak, Message.CompletedSpeak()),
-      model((m) => expect(worldOf(m)!.aircraft.find((a) => a.callsign === 'AAL894')!.state).toBe('PUSH')),
+      model((m) => {
+        expect(m.ptt).toBe('idle')
+        expect(m.heldSpeech).toEqual([])
+      }),
+    )
+  })
+
+  test('a pilot who comes up under a keyed mic is held, then heard on release', () => {
+    story(
+      update,
+      given({ ...ready(keyed), selected: 'AAL894' }),
+      message(Message.PressedPtt()),
+      Command.resolve(StartRecording, Message.CompletedStartRecording()),
+      model((m) => expect(m.ptt).toBe('tx')),
+      // the sim keeps running under the mic: the line is logged, the voice waits
+      pilotSaid('AAL894', 'ready to taxi'),
+      model((m) => {
+        expect(m.log[0]).toMatchObject({ kind: 'pilot', who: 'AAL894', text: 'ready to taxi' })
+        expect(m.heldSpeech).toEqual([{ callsign: 'AAL894', text: 'ready to taxi, American eight ninety-four' }])
+      }),
+      message(Message.ReleasedPtt()),
+      Command.resolve(StopRecording, Message.CompletedStopRecording({ wavBase64: 'UklGRg==', seconds: 1.5 })),
+      // the mic is shut: the held call goes out ahead of the readback still being transcribed
+      Command.expectHas(Speak({ callsign: 'AAL894', text: 'ready to taxi, American eight ninety-four', engine: 'browser', key: 'sk-test', model: defaultSettings.ttsModel, providerVoice: '', browserVoice: '', radio: true })),
+      Command.resolve(Speak, Message.CompletedSpeak()),
+      Command.resolve(
+        TranslateAudio,
+        Message.CompletedTranslate({ translation: { transcript: 'AAL894 hold position', callsign: 'AAL894', commands: ['HOLD'], readback: 'Holding, American 894', spoken: 'Holding, American eight ninety-four' }, said: 'AAL894 hold position' }),
+      ),
+      Command.expectExact(Speak),
+      Command.resolve(Speak, Message.CompletedSpeak()),
+      model((m) => expect(m.heldSpeech).toEqual([])),
+    )
+  })
+
+  test('held pilot lines are dropped rather than replayed when the speaker is off', () => {
+    story(
+      update,
+      given({ ...ready(keyless), recognitionAvailable: true }),
+      message(Message.PressedPtt()),
+      Command.resolve(StartRecognition, Message.CompletedStartRecognition()),
+      pilotSaid('AAL894', 'ready to taxi'),
+      mute,
       message(Message.ReleasedPtt()),
       Command.expectExact(StopRecognition),
       Command.resolve(StopRecognition, Message.CompletedStopRecognition()),
-      model((m) => expect(m.ptt).toBe('idle')),
+      model((m) => expect(m.heldSpeech).toEqual([])),
     )
   })
 })
