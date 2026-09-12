@@ -58,11 +58,16 @@ const heapPop = (heap: Heap): readonly [number, number] | undefined => {
   return top
 }
 
-/** Node path from `from` to `to` inclusive, or null when unreachable. */
+/**
+ * Node path from `from` to `to` inclusive, or null when unreachable. Several
+ * destinations mean "whichever is cheapest": the search stops at the first one it
+ * settles, so a hold point on this side of a runway beats the same point on the
+ * far side by the crossing penalty alone.
+ */
 export const findPath = (
   graph: Graph,
   from: number,
-  to: number,
+  to: number | ReadonlyArray<number>,
   options: RouteOptions = {},
 ): ReadonlyArray<number> | null => {
   const runwayPenalty = options.runwayPenalty ?? RUNWAY_PENALTY_FT
@@ -70,13 +75,19 @@ export const findPath = (
   const cleared = options.cleared ?? []
   /** entering this runway costs the penalty */
   const penalised = (name: string): boolean => !cleared.includes(name)
+  const goals = typeof to === 'number' ? new Set([to]) : new Set(to)
+  if (goals.size === 0) {
+    return null
+  }
   const dist = new Array<number>(graph.nodes.length).fill(Infinity)
   const prev = new Array<number>(graph.nodes.length).fill(-1)
   dist[from] = 0
   const heap: Heap = [[0, from]]
+  let goal: number | null = null
   while (heap.length > 0) {
     const [d, n] = heapPop(heap)!
-    if (n === to) {
+    if (goals.has(n)) {
+      goal = n
       break
     }
     if (d > dist[n]!) {
@@ -95,11 +106,11 @@ export const findPath = (
       }
     }
   }
-  if (dist[to] === Infinity) {
+  if (goal === null) {
     return null
   }
   const path: Array<number> = []
-  for (let n = to; n !== -1; n = prev[n]!) {
+  for (let n = goal; n !== -1; n = prev[n]!) {
     path.push(n)
     if (n === from) {
       break
@@ -111,15 +122,15 @@ export const findPath = (
 export type RouteResult = Readonly<{ path: ReadonlyArray<number> }> | Readonly<{ error: string }>
 
 /**
- * One shortest path to `finalNode`, or to the farthest node of the last named
- * taxiway when no destination is given, biased toward the named taxiways and free
- * to cross the `cleared` runways.
+ * One shortest path to `finalNode` (the cheapest of them when several are given),
+ * or to the farthest node of the last named taxiway when no destination is given,
+ * biased toward the named taxiways and free to cross the `cleared` runways.
  */
 export const routeVia = (
   graph: Graph,
   from: number,
   names: ReadonlyArray<string>,
-  finalNode: number | null,
+  finalNode: number | ReadonlyArray<number> | null,
   cleared: ReadonlyArray<string> = [],
 ): RouteResult => {
   for (const name of names) {
@@ -127,7 +138,7 @@ export const routeVia = (
       return { error: `unfamiliar with ${name}` }
     }
   }
-  let goal = finalNode
+  let goal: number | ReadonlyArray<number> | null = finalNode
   if (goal === null) {
     const last = names[names.length - 1]
     if (last === undefined) {
