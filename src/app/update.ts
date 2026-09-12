@@ -106,8 +106,14 @@ const withWorld = (model: Model, world: World): Model =>
 /** Replace the World after a change that was not a step, and mark it on the time graph. */
 const withWorldChange = (model: Model, world: World, label: string): Model => evo(withWorld(model, world), { timeline: (t) => recordChange(t, world, label) })
 
+/**
+ * Newest first, and never trimmed: the log is the session's record, so rewinding
+ * to the start still reads back what was said there. A line is a few short
+ * strings, and the deck memoises the list it draws (view/deck.ts), so the cost
+ * of a long session is the lines themselves.
+ */
 const pushLog = (model: Model, kind: LogLine['kind'], who: string | null, text: string): Model =>
-  evo(model, { log: (log) => [{ kind, time: worldOf(model)?.simTime ?? 0, who, text }, ...log].slice(0, 140) })
+  evo(model, { log: (log) => [{ kind, time: worldOf(model)?.simTime ?? 0, who, text }, ...log] })
 
 const REWOUND_HINT = 'rewound — Resume forks the timeline here; Live returns to the present'
 
@@ -187,13 +193,16 @@ const dispatchCommand = (model: Model, callsign: string | null, command: AtcComm
  * A command line, typed or picked from the radial menu: into the history, parsed
  * (a leading callsign selects), logged as the controller's line, then dispatched;
  * text that is not a command goes to the AI translator when a key is set.
+ *
+ * The recall history keeps every line of the session, like the log: a stack of
+ * strings costs nothing to hold, and Up should reach back as far as the session did.
  */
 const submitLine = (model: Model, text: string): Return => {
   const world = worldOf(model)
   if (world === null || text === '') {
     return { model }
   }
-  const entered = evo(model, { history: (h) => [text, ...h].slice(0, 50), historyIndex: () => -1 })
+  const entered = evo(model, { history: (h) => [text, ...h], historyIndex: () => -1 })
   const parsed = parseCommandLine(world, model.selected, text)
   if (parsed._tag === 'Empty') {
     return { model: entered }

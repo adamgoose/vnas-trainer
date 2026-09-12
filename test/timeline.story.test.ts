@@ -138,6 +138,23 @@ describe('rewinding', () => {
     const m = update(played(), Message.ScrubbedTimeline({ fx: 0.02, fy: 0.5 })).model
     expect(m.review).toMatchObject({ branch: 0, tick: 12 })
   })
+
+  test('a long session keeps every line, so a rewind to the start still reads back what was said there', () => {
+    let m = tick(ready(), 10)
+    const opening = [...m.log]
+    expect(opening.length).toBeGreaterThan(0)
+    for (let i = 0; i < 150; i++) {
+      m = line(m, 'AAL894 PUSH')
+    }
+    // two lines a command (the controller's, then the reply), all of them kept
+    expect(m.log.length).toBeGreaterThan(300)
+    expect(m.log.slice(-opening.length)).toEqual(opening)
+    // and Up reaches back over every one of them
+    expect(m.history).toHaveLength(150)
+    const rewound = update(update(m, Message.ClickedTimeline()).model, Message.JumpedTimeline({ to: 'start' })).model
+    expect(rewound.review).toMatchObject({ tick: 0 })
+    expect(rewound.log).toEqual(opening)
+  })
 })
 
 describe('forking', () => {

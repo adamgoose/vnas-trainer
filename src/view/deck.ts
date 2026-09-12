@@ -1,7 +1,8 @@
 import { Option } from 'effect'
-import type { Html, HtmlBuilder } from 'foldkit/html'
+import { type Html, type HtmlBuilder, createLazy, inertHtml as ih } from 'foldkit/html'
 
 import { COMMAND_INPUT } from '../app/commands'
+import type { LogLine } from '../app/log'
 import { Message } from '../app/message'
 import type { Model } from '../app/model'
 import { aiEnabled } from '../app/update'
@@ -17,26 +18,38 @@ const hint = (model: Model): Readonly<{ text: string; ai: boolean }> =>
 
 const PTT_LABEL: Readonly<Record<Model['ptt'], string>> = { idle: 'PTT', tx: 'TX', busy: '…', listen: 'REC' }
 
+/**
+ * The whole log, however long the session ran. Nothing in it is interactive, so
+ * it builds on the inert builder and is memoised below: a session's worth of
+ * lines is rebuilt when a line arrives or the rewound point moves, not on every
+ * tick. The column is reversed in CSS, so the newest line (index 0) sits at the
+ * bottom.
+ */
+const logList = (log: ReadonlyArray<LogLine>, pendingAi: string | null): Html =>
+  ih.div(
+    [ih.Id('log')],
+    [
+      ...(pendingAi === null ? [] : [ih.div([ih.Class('line ai')], [ih.span([ih.Class('t')], ['']), ih.span([ih.Class('m')], [pendingAi])])]),
+      ...log.map((line) =>
+        ih.div(
+          [ih.Class(`line ${line.kind}`)],
+          [
+            ih.span([ih.Class('t')], [clock(line.time)]),
+            ih.span([ih.Class('m')], [line.who === null ? ih.empty : ih.span([ih.Class('who')], [line.who, ' ']), line.text]),
+          ],
+        ),
+      ),
+    ],
+  )
+
+const lazyLog = createLazy()
+
 export const deckView = (model: Model, h: HtmlBuilder<Message>): Html => {
   const hintText = hint(model)
   return h.div(
     [h.Class('deck')],
     [
-      h.div(
-        [h.Id('log')],
-        [
-          ...(model.pendingAi === null ? [] : [h.div([h.Class('line ai')], [h.span([h.Class('t')], ['']), h.span([h.Class('m')], [model.pendingAi])])]),
-          ...model.log.map((line) =>
-          h.div(
-            [h.Class(`line ${line.kind}`)],
-            [
-              h.span([h.Class('t')], [clock(line.time)]),
-              h.span([h.Class('m')], [line.who === null ? h.empty : h.span([h.Class('who')], [line.who, ' ']), line.text]),
-            ],
-          ),
-        ),
-        ],
-      ),
+      lazyLog(logList, [model.log, model.pendingAi]),
       h.div(
         [h.Class('cmdbar')],
         [
