@@ -137,10 +137,16 @@ const routeShapes = (model: StarsModel, world: World, selected: string | null): 
   return shapes
 }
 
-const targetShapes = (model: StarsModel, world: World, selected: string | null, accent: string): ReadonlyArray<Canvas.Shape> => {
+/**
+ * Targets first, data blocks after: the Canvas paints in list order, so a block
+ * emitted next to its own target would be overdrawn by every target built later.
+ * Leaders go with the block they carry.
+ */
+export const targetShapes = (model: StarsModel, world: World, selected: string | null, accent: string): ReadonlyArray<Canvas.Shape> => {
   const size = 4
   const font = 11
   const shapes: Array<Canvas.Shape> = [...routeShapes(model, world, selected)]
+  const blocks: Array<Canvas.Shape> = []
   for (const a of world.aircraft) {
     const r = a.radar
     if (r === null) {
@@ -171,7 +177,7 @@ const targetShapes = (model: StarsModel, world: World, selected: string | null, 
     )
     const lx = c.x + size * 3.2
     const ly = c.y - size * 3.2
-    shapes.push(
+    blocks.push(
       Canvas.Group({
         opacity: 0.8,
         shapes: [Canvas.Path({ instructions: [Canvas.MoveTo({ x: c.x + size, y: c.y - size }), Canvas.LineTo({ x: lx, y: ly })], stroke: colour, lineWidth: size * 0.2 })],
@@ -188,7 +194,7 @@ const targetShapes = (model: StarsModel, world: World, selected: string | null, 
           : a.type
     const lines = a.tracked ? [`${a.handoff ? 'H/' : ''}${a.callsign}`, `${alt3} ${spd2}`, scratch] : [a.squawk, alt3]
     lines.forEach((text, i) => {
-      shapes.push(
+      blocks.push(
         Canvas.Text({
           x: lx + size * 0.4,
           y: ly + font * (i + 0.85),
@@ -201,7 +207,7 @@ const targetShapes = (model: StarsModel, world: World, selected: string | null, 
       )
     })
   }
-  return shapes
+  return [...shapes, ...blocks]
 }
 
 /** Maps, rings and runways: repainted only when the view, size, map set or field changes. */

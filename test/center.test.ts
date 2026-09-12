@@ -13,7 +13,7 @@ import { loadScenario } from '../src/domain/scenario'
 import { assembleArtcc, sectorId } from '../src/domain/vnas'
 import { checkInRadioName, findAircraft, makeWorld, nextFacility, withArtcc } from '../src/domain/world'
 import { EramMessage, EramOut, applyDisplay, defaultFilters, eramInit, eramUpdate, initialEram, initialGeoMap, mapsToShow, routesShown } from '../src/positions/center/eram'
-import { altitudeLine, fdbLines, fieldE, ldbLines } from '../src/view/eram'
+import { altitudeLine, fdbLines, fieldE, ldbLines, targetShapes } from '../src/view/eram'
 import { AtcCommand, aircraftNamed, command, msp, pilotLines, refusal, run, runUntil, scenarioNamed, systemLines, zmp } from './helpers'
 
 const APP = 'Ancient MSP APP North'
@@ -313,5 +313,17 @@ describe('the ERAM pane', () => {
     const switched = applyDisplay(m, zmp, null, DisplayCommand.GeoMap({ name: 'AREA1' }), 0)
     expect(switched.model.geoMap).toBe(zmp.geoMaps[1]!.id)
     expect(applyDisplay(m, zmp, null, DisplayCommand.GeoMap({ name: 'NOPE' }), 0).model.feedback).toEqual({ ok: false, text: 'NO GEOMAP NOPE' })
+  })
+
+  test('every target is drawn before any data block, so one track never covers another block', () => {
+    const { world } = run(centerWorld().world, 30)
+    const shown = world.aircraft.filter((a) => a.radar !== null)
+    expect(shown.length).toBeGreaterThan(1)
+    const shapes = targetShapes(eramInit(initialEram, zmp).model, world, null)
+    const lastTarget = shapes.map((s) => s._tag === 'Group' && s.translate !== undefined).lastIndexOf(true)
+    const firstBlock = shapes.findIndex((s) => s._tag === 'Text')
+    expect(lastTarget).toBeGreaterThanOrEqual(0)
+    expect(firstBlock).toBeGreaterThan(lastTarget)
+    expect(shapes.flatMap((s) => (s._tag === 'Text' ? [s.content] : []))).toContain(shown[0]!.callsign)
   })
 })
