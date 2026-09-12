@@ -135,6 +135,10 @@ Hold **PTT** in the command bar, or hold **Space** while the command box isn't f
 
 Pilots read back out loud: readbacks, hold-short calls, ready-to-taxi and clear-of-runway
 calls, each ending with the spoken callsign (a model-written readback is spoken as is).
+The frequency is half-duplex, as it is in real life: no pilot starts a transmission while
+your mic is keyed. A call that comes up under the mic is written to the log straight away
+and spoken once you release, in the order it was said.
+
 Two voice engines, chosen in Settings:
 
 - **Browser speech synthesis** (default, free, offline). Every aircraft gets a consistent

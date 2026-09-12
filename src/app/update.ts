@@ -132,17 +132,35 @@ export const utteranceFor = (callsign: string, phrase: Phrase): string =>
 
 export type Applied = Readonly<{ model: Model; commands: Commands }>
 
+/** The controller's mic is open. A frequency is half-duplex: nothing from a pilot is heard until it closes. */
+export const keyed = (model: Model): boolean => model.ptt === 'tx' || model.ptt === 'listen'
+
+/** How many held transmissions survive a long key-down; the oldest fall off, the way they would on frequency. */
+const HELD_SPEECH_LIMIT = 12
+
+/**
+ * A pilot line goes out now, or waits: a readback that starts while the
+ * controller is transmitting is one they never hear. The log line is written
+ * either way — only the voice is held.
+ */
+const sayPilot = (model: Model, callsign: string, text: string): Applied =>
+  !model.settings.tts
+    ? { model, commands: [] }
+    : keyed(model)
+      ? { model: evo(model, { heldSpeech: (held) => [...held, { callsign, text }].slice(-HELD_SPEECH_LIMIT) }), commands: [] }
+      : { model, commands: [speakCommand(model.settings, callsign, text)] }
+
 export const applyEvents = (model: Model, events: ReadonlyArray<SimEvent>, options: Readonly<{ quiet?: boolean }> = {}): Applied =>
   events.reduce<Applied>(
     ({ model: m, commands }, event) =>
       SimEvent.match<Applied>(event, {
-        PilotSaid: ({ callsign, phrase }) =>
-          options.quiet === true
-            ? { model: m, commands }
-            : {
-                model: pushLog(m, 'pilot', callsign, written(phrase)),
-                commands: m.settings.tts ? [...commands, speakCommand(m.settings, callsign, utteranceFor(callsign, phrase))] : commands,
-              },
+        PilotSaid: ({ callsign, phrase }) => {
+          if (options.quiet === true) {
+            return { model: m, commands }
+          }
+          const said = sayPilot(pushLog(m, 'pilot', callsign, written(phrase)), callsign, utteranceFor(callsign, phrase))
+          return { model: said.model, commands: [...commands, ...said.commands] }
+        },
         SystemNote: ({ text }) => ({ model: pushLog(m, 'sys', null, text), commands }),
         Removed: ({ callsign, text }) => ({ model: pushLog(evo(m, { selected: (s) => (s === callsign ? null : s) }), 'sys', null, text), commands }),
         SetRunning: ({ running }) => ({ model: evo(m, { running: () => running, lastTickAt: () => null }), commands }),
@@ -784,10 +802,8 @@ export const applyTranslation = (model: Model, translation: Translation, said: s
     return { model: ran.model, commands: ran.commands }
   }
   const spokenText = translation.spoken ?? spokenFreeText(translation.readback)
-  return {
-    model: pushLog(ran.model, 'pilot', callsign, translation.readback),
-    commands: ran.model.settings.tts ? [...ran.commands, speakCommand(ran.model.settings, callsign, spokenText)] : ran.commands,
-  }
+  const readback = sayPilot(pushLog(ran.model, 'pilot', callsign, translation.readback), callsign, spokenText)
+  return { model: readback.model, commands: [...ran.commands, ...readback.commands] }
 }
 
 const status = (model: Model, text: string, kind: Model['settingsStatus']['kind']): Model => evo(model, { settingsStatus: () => ({ text, kind }) })
@@ -806,7 +822,24 @@ const draftUtterance = (model: Model, callsign: string, text: string) =>
 
 // UPDATE
 
-export const update = (model: Model, message: Message): Return =>
+/**
+ * Whatever was held under the mic goes out the moment it un-keys, in the order
+ * it was said — and is dropped, unspoken, if the speaker was switched off while
+ * it waited. Every path back to an un-keyed PTT passes through here, so no
+ * handler has to remember the queue.
+ */
+const flushHeldSpeech = (returned: Return): Return => {
+  const { model } = returned
+  if (model.heldSpeech.length === 0 || keyed(model)) {
+    return returned
+  }
+  const held = model.settings.tts ? model.heldSpeech.map((line) => speakCommand(model.settings, line.callsign, line.text)) : []
+  return { model: evo(model, { heldSpeech: () => [] }), commands: [...(returned.commands ?? []), ...held] }
+}
+
+export const update = (model: Model, message: Message): Return => flushHeldSpeech(updateMessage(model, message))
+
+const updateMessage = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
     CompletedLoadSettings: ({ settings: stored }) => {
       const settings = { ...stored, layouts: loadedLayouts(stored.layouts) }
