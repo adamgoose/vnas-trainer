@@ -7,9 +7,8 @@ import { Schema } from 'effect'
 import { defineTaggedUnion } from 'foldkit/schema'
 
 import { type Aircraft, handoffAccepted } from './aircraft'
-import type { LonLat } from './catalog'
 import { distanceFt } from './geo'
-import { type Graph, departureHold, edgeName, isRunwayName, nearestNode, nearestOn, runwaysEntered } from './graph'
+import { type Graph, departureHold, departureHolds, edgeName, isRunwayName, nearestNode, nearestOn, runwaysEntered } from './graph'
 import {
   type Phrase,
   type PhrasePart,
@@ -577,8 +576,17 @@ const taxiStart = (graph: Graph, a: Aircraft): number => {
   return a.state === 'PARKED' && home !== undefined ? home.node : nearestNode(graph, a.position)
 }
 
-/** Position the hold nearest to: the gate when parked, else where the aircraft is. */
-const taxiOrigin = (graph: Graph, a: Aircraft): LonLat => graph.nodes[taxiStart(graph, a)]!
+/**
+ * Which of the hold points on either side of the runway a clearance may end at:
+ * the ones on the last taxiway it named, the way a route with no destination ends
+ * on that taxiway, else all of them. Between what is left the router decides, and
+ * its crossing penalty keeps the aircraft on the side it is already on.
+ */
+const holdsNamed = (graph: Graph, holds: ReadonlyArray<number>, names: ReadonlyArray<string>): ReadonlyArray<number> => {
+  const last = names[names.length - 1]
+  const named = last === undefined ? [] : holds.filter((n) => (graph.nodeTaxiways[n] ?? []).includes(last))
+  return named.length > 0 ? named : holds
+}
 
 const beginTaxi = (
   world: World,
@@ -592,15 +600,15 @@ const beginTaxi = (
   const graph = world.graph
   const home = a.gate !== null ? graph.parking[a.gate] : undefined
   const from = taxiStart(graph, a)
-  let finalNode: number | null = null
+  let finalNode: number | ReadonlyArray<number> | null = null
   if (gate !== null) {
     finalNode = graph.parking[gate]?.node ?? null
   } else if (runway !== null) {
-    const hold = departureHold(graph, runway, intersection, taxiOrigin(graph, a))
-    if ('error' in hold) {
-      return hold
+    const holds = departureHolds(graph, runway, intersection)
+    if ('error' in holds) {
+      return holds
     }
-    finalNode = hold.hold
+    finalNode = holdsNamed(graph, holds.holds, names)
   }
   const route = routeVia(graph, from, names, finalNode, cleared)
   if ('error' in route) {

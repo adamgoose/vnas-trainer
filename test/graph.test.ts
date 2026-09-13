@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 
 import { bearingDeg, distanceFt, headingDiff } from '../src/domain/geo'
-import { buildGraph, departureHold, edgeName, farthestOn, gateNames, holdNodeAt, holdNodeFor, isRunwayName, nearestNode, nearestOn, nodesNamed, runwayCourse, runwayEntries } from '../src/domain/graph'
+import { buildGraph, departureHold, departureHolds, edgeName, farthestOn, gateNames, holdNodeAt, holdNodeFor, isRunwayName, nearestNode, nearestOn, nodesNamed, runwayCourse, runwayEntries } from '../src/domain/graph'
 import { msp } from './helpers'
 
 describe('MSP graph', () => {
@@ -85,6 +85,23 @@ describe('MSP graph', () => {
     expect(departureHold(graph, '30L', null, null)).toEqual({ entry: chain[0]!, hold: holdNodeFor(graph, '30L')! })
     expect(departureHold(graph, '30L', 'A2', null)).toEqual({ entry: chain[1]!, hold: entries[2]!.holds[0]! })
     expect(departureHold(graph, '99', null, null)).toEqual({ error: 'no runway 99' })
+  })
+
+  test('a departure may hold on either side of the runway end, and one side only when the taxiway is named', () => {
+    const full = departureHolds(graph, '12R', null)
+    if ('error' in full) {
+      throw new Error(full.error)
+    }
+    expect(full.entry).toBe(graph.runwayEnds['12R']!.chain[0]!)
+    expect(full.holds).toHaveLength(2)
+    expect(full.holds[0]).toBe(holdNodeFor(graph, '12R')!)
+    expect(full.holds.map((n) => graph.nodeTaxiways[n]!.filter((t) => t.endsWith('10')))).toEqual([['A10'], ['W10']])
+    expect(full.holds.every((n) => graph.nodeRunways[n]!.length === 0)).toBe(true)
+    expect(departureHolds(graph, '12R', 'A10')).toEqual({ entry: full.entry, holds: [full.holds[0]!] })
+    expect(departureHolds(graph, '12R', 'W10')).toEqual({ entry: full.entry, holds: [full.holds[1]!] })
+    expect(departureHolds(graph, '30L', 'D')).toEqual({ entry: runwayEntries(graph, '30L').find((e) => e.taxiway === 'D')!.node, holds: runwayEntries(graph, '30L').find((e) => e.taxiway === 'D')!.holds })
+    expect(departureHolds(graph, '12R', 'ZZ')).toEqual({ error: 'ZZ does not meet runway 12R' })
+    expect(departureHolds(graph, '99', null)).toEqual({ error: 'no runway 99' })
   })
 
   test('runway course follows the chain from the threshold', () => {

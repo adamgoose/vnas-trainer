@@ -275,20 +275,26 @@ const extremeOn = (
   }, null)
 }
 
+/**
+ * Where a full-length departure waits: the runway node it enters from (the first
+ * of the chain with a way off it) and that node's non-runway neighbours, nearest
+ * edge first — one on each side when taxiways meet the threshold from both.
+ */
+const fullLengthHolds = (graph: Graph, end: RunwayEnd): Readonly<{ entry: number; holds: ReadonlyArray<number> }> => {
+  for (const n of end.chain) {
+    const exits = [...(graph.adjacency[n] ?? [])].filter((e) => !isRunwayName(graph, e.name)).sort((a, b) => a.w - b.w)
+    if (exits.length > 0) {
+      return { entry: n, holds: exits.map((e) => e.to) }
+    }
+  }
+  const entry = end.chain[0]!
+  return { entry, holds: [entry] }
+}
+
 /** The last non-runway node before entering the runway from this threshold. */
 export const holdNodeFor = (graph: Graph, designator: string): number | null => {
   const end = graph.runwayEnds[designator]
-  if (end === undefined) {
-    return null
-  }
-  for (const n of end.chain) {
-    const exits = (graph.adjacency[n] ?? []).filter((e) => !isRunwayName(graph, e.name))
-    const nearest = exits.reduce<Edge | null>((best, e) => (best === null || e.w < best.w ? e : best), null)
-    if (nearest !== null) {
-      return nearest.to
-    }
-  }
-  return end.chain[0] ?? null
+  return end === undefined ? null : fullLengthHolds(graph, end).holds[0]!
 }
 
 /** A taxiway meeting a runway: where an intersection departure enters it. */
@@ -331,41 +337,51 @@ export const runwayEntries = (graph: Graph, designator: string): ReadonlyArray<R
 
 export type IntersectionHold = Readonly<{ entry: number; hold: number }> | Readonly<{ error: string }>
 
+/** Every hold point for a departure and the runway node it enters from there, or why there is none. */
+export type DepartureHolds = Readonly<{ entry: number; holds: ReadonlyArray<number> }> | Readonly<{ error: string }>
+
+/**
+ * Where a departure can wait for `designator`: full length, or at the taxiway
+ * named. A taxiway that crosses the runway gives one hold on each side, so a
+ * route can stop on the side it is already on instead of crossing to the other.
+ */
+export const departureHolds = (graph: Graph, designator: string, intersection: string | null): DepartureHolds => {
+  const end = graph.runwayEnds[designator]
+  if (end === undefined) {
+    return { error: `no runway ${designator}` }
+  }
+  if (intersection === null) {
+    return fullLengthHolds(graph, end)
+  }
+  const entry = runwayEntries(graph, designator).find((e) => e.taxiway === intersection)
+  if (entry === undefined) {
+    const last = end.chain[end.chain.length - 1]!
+    const atFarEnd = (graph.adjacency[last] ?? []).some((e) => e.name === intersection && !isRunwayName(graph, e.name))
+    return { error: atFarEnd ? `no runway left at ${intersection}` : `${intersection} does not meet runway ${designator}` }
+  }
+  return { entry: entry.node, holds: entry.holds }
+}
+
+/** Of several holds at one runway entry, the one nearest `from`; the first when nowhere is given. */
+const holdNearest = (graph: Graph, holds: ReadonlyArray<number>, from: LonLat | null): number =>
+  from === null
+    ? holds[0]!
+    : holds.reduce((best, n) => (distanceFt(graph.projection, graph.nodes[n]!, from) < distanceFt(graph.projection, graph.nodes[best]!, from) ? n : best), holds[0]!)
+
 /**
  * Where an aircraft holds for runway `designator` at taxiway `taxiway`, and the
  * runway node it will enter from there. Where the taxiway crosses the runway the
  * hold nearest `from` is used.
  */
 export const holdNodeAt = (graph: Graph, designator: string, taxiway: string, from: LonLat | null): IntersectionHold => {
-  const end = graph.runwayEnds[designator]
-  if (end === undefined) {
-    return { error: `no runway ${designator}` }
-  }
-  const entry = runwayEntries(graph, designator).find((e) => e.taxiway === taxiway)
-  if (entry === undefined) {
-    const last = end.chain[end.chain.length - 1]!
-    const atFarEnd = (graph.adjacency[last] ?? []).some((e) => e.name === taxiway && !isRunwayName(graph, e.name))
-    return { error: atFarEnd ? `no runway left at ${taxiway}` : `${taxiway} does not meet runway ${designator}` }
-  }
-  const hold =
-    from === null
-      ? entry.holds[0]!
-      : entry.holds.reduce((best, n) => (distanceFt(graph.projection, graph.nodes[n]!, from) < distanceFt(graph.projection, graph.nodes[best]!, from) ? n : best), entry.holds[0]!)
-  return { entry: entry.node, hold }
+  const found = departureHolds(graph, designator, taxiway)
+  return 'error' in found ? found : { entry: found.entry, hold: holdNearest(graph, found.holds, from) }
 }
 
 /** The hold point of a departure: full length, or the intersection named. */
 export const departureHold = (graph: Graph, designator: string, intersection: string | null, from: LonLat | null): IntersectionHold => {
-  if (intersection !== null) {
-    return holdNodeAt(graph, designator, intersection, from)
-  }
-  const end = graph.runwayEnds[designator]
-  const hold = holdNodeFor(graph, designator)
-  if (end === undefined || hold === null) {
-    return { error: `no runway ${designator}` }
-  }
-  const entry = end.chain.find((n) => (graph.adjacency[n] ?? []).some((e) => e.to === hold)) ?? end.chain[0]!
-  return { entry, hold }
+  const found = departureHolds(graph, designator, intersection)
+  return 'error' in found ? found : { entry: found.entry, hold: holdNearest(graph, found.holds, from) }
 }
 
 /** True course of a runway from its threshold, or null when unknown. */

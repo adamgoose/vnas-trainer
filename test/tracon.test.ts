@@ -8,6 +8,8 @@ import { finalCourse, finalOffsets } from '../src/domain/physics'
 import { GROUND_RULES, TRACON_RULES } from '../src/domain/rules'
 import { DEPARTURE_GAP_S, departureRunwayFor, loadScenario, runwayFromApproach, trimPassed } from '../src/domain/scenario'
 import { findAircraft, makeWorld } from '../src/domain/world'
+import { initialStars } from '../src/positions/local/stars'
+import { targetShapes } from '../src/view/stars'
 import { aircraftNamed, command, msp, pilotLines, refusal, run, runUntil, scenarioNamed, systemLines } from './helpers'
 
 const APP = 'Ancient MSP APP North'
@@ -237,5 +239,19 @@ describe('STAR arrivals', () => {
     const bare = { ...makeWorld(msp, TRACON_RULES, 3), nav: { fixes: {}, stars: {}, sids: {} }, arrivalsEnabled: true, nextArrivalAt: 5 }
     const spawned = runUntil(bare, (w) => w.aircraft.length > 0, 10)
     expect(spawned.world.aircraft[0]!.state).toBe('FINAL')
+  })
+})
+
+describe('the STARS pane', () => {
+  test('every target is drawn before any data block, so one target never covers another block', () => {
+    const { world } = run(traconWorld().world, 30)
+    const shown = world.aircraft.filter((a) => a.radar !== null)
+    expect(shown.length).toBeGreaterThan(1)
+    const shapes = targetShapes(initialStars, world, null, '#e0a63a')
+    const lastTarget = shapes.map((s) => s._tag === 'Group' && s.translate !== undefined).lastIndexOf(true)
+    const firstBlock = shapes.findIndex((s) => s._tag === 'Text')
+    expect(lastTarget).toBeGreaterThanOrEqual(0)
+    expect(firstBlock).toBeGreaterThan(lastTarget)
+    expect(shapes.flatMap((s) => (s._tag === 'Text' ? [s.content] : []))).toContain(shown[0]!.callsign)
   })
 })

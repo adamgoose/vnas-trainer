@@ -268,8 +268,12 @@ const staticCanvas = (graph: Graph, view: ScopeView, pavementId: string | null, 
 
 const lazyStatic = createLazy()
 
-/** `font` is the data block size in CSS px: a display setting, not a function of the zoom. */
-const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: boolean, showTags: boolean, font: number, accent: string): ReadonlyArray<Canvas.Shape> => {
+/**
+ * The target and its data block as two layers: the caller paints every target
+ * before any block, so a block is never overdrawn by a later aircraft's symbol.
+ * `font` is the data block size in CSS px: a display setting, not a function of the zoom.
+ */
+const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: boolean, showTags: boolean, font: number, accent: string): Readonly<{ target: ReadonlyArray<Canvas.Shape>; block: ReadonlyArray<Canvas.Shape> }> => {
   const { w } = worldSize(graph)
   const s = viewWidthFt(view) / w
   const size = (7.5 * view.width) / 1000 * (Math.max(0.55, Math.min(1.6, s)) / s)
@@ -305,6 +309,7 @@ const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: bo
       ],
     }),
   )
+  const block: Array<Canvas.Shape> = []
   if (showTags || selected || a.state !== 'PARKED') {
     const tx = c.x + size * 1.9
     const ty = c.y - size * 0.5
@@ -315,7 +320,7 @@ const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: bo
           ? `${a.type} ${a.runway}${a.intersection !== null ? '/' + a.intersection : ''}`
           : `${a.type}${a.destinationGate !== null ? ' ' + a.destinationGate : ''}`
     const procedure = departureProcedure(a.flightPlan.sid, a.flightPlan.route)
-    shapes.push(
+    block.push(
       Canvas.Text({ x: tx, y: ty, content: a.callsign, font: `600 ${font.toFixed(1)}px ${MONO}`, fill: selected ? COLOURS.cyan : COLOURS.ink, align: 'Left', baseline: 'Alphabetic' }),
       Canvas.Text({ x: tx, y: ty + font * 1.12, content: second, font: `${(font * 0.86).toFixed(1)}px ${MONO}`, fill: COLOURS.ink3, align: 'Left', baseline: 'Alphabetic' }),
       ...(procedure === null
@@ -323,7 +328,7 @@ const aircraftShapes = (graph: Graph, view: ScopeView, a: Aircraft, selected: bo
         : [Canvas.Text({ x: tx, y: ty + font * 2.1, content: procedure, font: `${(font * 0.86).toFixed(1)}px ${MONO}`, fill: accent, align: 'Left', baseline: 'Alphabetic' })]),
     )
   }
-  return shapes
+  return { target: shapes, block }
 }
 
 export const accentFor = (mode: 'ground' | 'tower' | 'tracon' | 'center'): string => (mode === 'tower' ? '#b388ff' : mode === 'tracon' ? '#2dd4bf' : mode === 'center' ? '#e6dc5a' : COLOURS.amber)
@@ -443,14 +448,16 @@ const scopeCanvas = (model: Model, h: HtmlBuilder<Message>): Html => {
   const graph = world.graph
   const { asdexParkedTags, asdexTagSize } = model.settings
   const open = model.selected === model.radial?.callsign ? openPlan(world, model.settings.mode, model.radial) : null
+  const layers = world.aircraft
+    .filter((a) => a.delay <= 0)
+    .map((a) => aircraftShapes(graph, view, a, a.callsign === model.selected, asdexParkedTags, asdexTagSize, accentFor(model.settings.mode)))
   const shapes: ReadonlyArray<Canvas.Shape> = [
     Canvas.Group({
       scale: { x: dpr, y: dpr },
       shapes: [
         ...(open === null ? [] : planShapes(graph, view, open)),
-        ...world.aircraft
-          .filter((a) => a.delay <= 0)
-          .flatMap((a) => aircraftShapes(graph, view, a, a.callsign === model.selected, asdexParkedTags, asdexTagSize, accentFor(model.settings.mode))),
+        ...layers.flatMap((l) => l.target),
+        ...layers.flatMap((l) => l.block),
       ],
     }),
   ]

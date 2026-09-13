@@ -389,9 +389,15 @@ const routeShapes = (model: EramModel, world: World, callsign: string): Readonly
   return shapes
 }
 
-const targetShapes = (model: EramModel, world: World, selected: string | null): ReadonlyArray<Canvas.Shape> => {
+/**
+ * Targets first, data blocks after: the Canvas paints in list order, so a block
+ * emitted next to its own track would be overdrawn by every target, history
+ * trail, halo and vector built later. Leaders go with the block they carry.
+ */
+export const targetShapes = (model: EramModel, world: World, selected: string | null): ReadonlyArray<Canvas.Shape> => {
   const s = pxPerNm(model)
   const shapes: Array<Canvas.Shape> = routesShown(model, world.simTime).flatMap((c) => routeShapes(model, world, c))
+  const blocks: Array<Canvas.Shape> = []
   const size = 4.5
   for (const a of world.aircraft) {
     const r = a.radar
@@ -429,7 +435,7 @@ const targetShapes = (model: EramModel, world: World, selected: string | null): 
       const lines = ldbLines(a)
       const right = block.position === 1 || block.position === 4 || block.position === 7
       lines.forEach((text, i) => {
-        shapes.push(Canvas.Text({ x: right ? c.x - size - 4 : c.x + size + 4, y: c.y - 2 + i * LINE_PX, content: text, font: `${FONT_PX}px ${MONO}`, fill: ink, align: right ? 'Right' : 'Left', baseline: 'Middle' }))
+        blocks.push(Canvas.Text({ x: right ? c.x - size - 4 : c.x + size + 4, y: c.y - 2 + i * LINE_PX, content: text, font: `${FONT_PX}px ${MONO}`, fill: ink, align: right ? 'Right' : 'Left', baseline: 'Middle' }))
       })
       continue
     }
@@ -438,13 +444,13 @@ const targetShapes = (model: EramModel, world: World, selected: string | null): 
     const norm = Math.hypot(dx, dy) || 1
     const lx = c.x + (dx / norm) * (size + leaderPx)
     const ly = c.y + (dy / norm) * (size + leaderPx)
-    shapes.push(Canvas.Path({ instructions: [Canvas.MoveTo({ x: c.x + (dx / norm) * size, y: c.y + (dy / norm) * size }), Canvas.LineTo({ x: lx, y: ly })], stroke: ink, lineWidth: 1 }))
+    blocks.push(Canvas.Path({ instructions: [Canvas.MoveTo({ x: c.x + (dx / norm) * size, y: c.y + (dy / norm) * size }), Canvas.LineTo({ x: lx, y: ly })], stroke: ink, lineWidth: 1 }))
     const lines = fdbLines(world, a, block)
     const align: Canvas.TextAlign = dx < 0 ? 'Right' : dx > 0 ? 'Left' : 'Center'
     const top = dy < 0 ? ly - lines.length * LINE_PX + 4 : dy > 0 ? ly + 4 : ly - (lines.length * LINE_PX) / 2 + 6
     const textX = dx < 0 ? lx - 2 : dx > 0 ? lx + 2 : lx
     lines.forEach((text, i) => {
-      shapes.push(
+      blocks.push(
         Canvas.Text({
           x: textX,
           y: top + i * LINE_PX + LINE_PX / 2,
@@ -459,13 +465,13 @@ const targetShapes = (model: EramModel, world: World, selected: string | null): 
     const vci = block.vci ?? a.checkedIn
     const leftEdge = dx < 0 ? textX - FONT_PX * 0.62 * Math.max(...lines.map((l) => l.length)) : dx > 0 ? textX : textX - (FONT_PX * 0.62 * Math.max(...lines.map((l) => l.length))) / 2
     if (vci) {
-      shapes.push(vciShape(leftEdge - 2, top + LINE_PX * 1.5 + 3))
+      blocks.push(vciShape(leftEdge - 2, top + LINE_PX * 1.5 + 3))
     }
     if (!a.tracked) {
-      shapes.push(Canvas.Text({ x: leftEdge - 6, y: top + LINE_PX * 2.5, content: 'R', font: `${FONT_PX}px ${MONO}`, fill: ERAM.vci, align: 'Right', baseline: 'Middle' }))
+      blocks.push(Canvas.Text({ x: leftEdge - 6, y: top + LINE_PX * 2.5, content: 'R', font: `${FONT_PX}px ${MONO}`, fill: ERAM.vci, align: 'Right', baseline: 'Middle' }))
     }
   }
-  return shapes
+  return [...shapes, ...blocks]
 }
 
 const radarCanvas = (model: EramModel, inputs: EramInputs, h: HtmlBuilder<EramMessage>): Html => {

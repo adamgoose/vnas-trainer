@@ -9,7 +9,7 @@
  */
 import type { Aircraft } from '../domain/aircraft'
 import { executeCommand, parseCommandLine } from '../domain/commands'
-import { type Graph, type RunwayEntry, departureHold, edgeName, holdNodeFor, isRunwayName, nearestNode, runwayEntries, runwaysEntered } from '../domain/graph'
+import { type Graph, type RunwayEntry, departureHolds, edgeName, holdNodeFor, isRunwayName, nearestNode, runwayEntries, runwaysEntered } from '../domain/graph'
 import { findPath } from '../domain/route'
 import { type World, findAircraft } from '../domain/world'
 
@@ -63,11 +63,15 @@ const startNode = (graph: Graph, a: Aircraft): number => {
   return a.state === 'PARKED' && home !== undefined ? home.node : nearestNode(graph, a.position)
 }
 
-/** One path from `from` through every waypoint to `to`, or null when some leg is unreachable. */
-const throughPath = (graph: Graph, from: number, waypoints: ReadonlyArray<number>, to: number, cleared: ReadonlyArray<string>): ReadonlyArray<number> | null => {
+/**
+ * One path from `from` through every waypoint to `to`, or null when some leg is
+ * unreachable. The last leg may name a hold on either side of the runway; the
+ * router takes the cheaper, which is the one it does not cross to reach.
+ */
+const throughPath = (graph: Graph, from: number, waypoints: ReadonlyArray<number>, to: ReadonlyArray<number>, cleared: ReadonlyArray<string>): ReadonlyArray<number> | null => {
   const out: Array<number> = [from]
   let at = from
-  for (const next of [...waypoints, to]) {
+  for (const next of [...waypoints.map((n): number | ReadonlyArray<number> => n), to]) {
     if (next === at) {
       continue
     }
@@ -76,7 +80,7 @@ const throughPath = (graph: Graph, from: number, waypoints: ReadonlyArray<number
       return null
     }
     out.push(...leg.slice(1))
-    at = next
+    at = leg[leg.length - 1]!
   }
   return out
 }
@@ -96,8 +100,8 @@ export const routeNames = (graph: Graph, path: ReadonlyArray<number>): ReadonlyA
 /** The command line the plan stands for: `RWY 30L [AT twy] [TAXI twy…] [CROSS rwy…]`. */
 export const planLine = (graph: Graph, a: Aircraft, plan: RoutePlan): string => {
   const start = startNode(graph, a)
-  const hold = departureHold(graph, plan.runway, plan.at, graph.nodes[start] ?? null)
-  const path = plan.waypoints.length === 0 || 'error' in hold ? null : throughPath(graph, start, plan.waypoints, hold.hold, plan.cross)
+  const holds = departureHolds(graph, plan.runway, plan.at)
+  const path = plan.waypoints.length === 0 || 'error' in holds ? null : throughPath(graph, start, plan.waypoints, holds.holds, plan.cross)
   const names = path === null ? [] : routeNames(graph, path)
   return [
     'RWY',

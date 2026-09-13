@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { buildGraph, edgeName, holdNodeFor, isRunwayName, nearestOn, runwaysEntered } from '../src/domain/graph'
+import { buildGraph, departureHolds, edgeName, holdNodeFor, isRunwayName, nearestOn, runwaysEntered } from '../src/domain/graph'
 import { PUSHBACK_RUNWAY_PENALTY_FT, findPath, routeVia } from '../src/domain/route'
 import { msp } from './helpers'
 
@@ -52,6 +52,25 @@ describe('routing', () => {
     const onC = (p: ReadonlyArray<number>) => legs(p).filter((n) => n === 'C').length
     expect(onC(viaC)).toBeGreaterThanOrEqual(onC(plain))
     expect(legs(viaC)).toContain('C')
+  })
+
+  /** The hold points on either side of a runway end are asked for together; the near one wins by the crossing penalty. */
+  test('several destinations mean whichever is cheapest to reach', () => {
+    const holds = departureHolds(graph, '12R', null)
+    if ('error' in holds) {
+      throw new Error(holds.error)
+    }
+    const [onA10, onW10] = holds.holds as ReadonlyArray<number>
+    const fromTerminal = findPath(graph, e16, holds.holds)!
+    expect(entered(fromTerminal)).not.toContain('12R-30L')
+    expect(fromTerminal[fromTerminal.length - 1]).toBe(onA10!)
+    const cargo = graph.parking['UPS1']!.node
+    const fromCargo = findPath(graph, cargo, holds.holds)!
+    expect(entered(fromCargo)).not.toContain('12R-30L')
+    expect(fromCargo[fromCargo.length - 1]).toBe(onW10!)
+    // asked for one side only, the route crosses to reach it
+    expect(entered(findPath(graph, cargo, onA10!)!)).toContain('12R-30L')
+    expect(findPath(graph, e16, [])).toBeNull()
   })
 
   test('routeVia ends at the farthest node of the last taxiway when no destination is given', () => {

@@ -130,6 +130,28 @@ describe('pushback and taxi', () => {
     expect(short.seconds).toBeGreaterThan(60)
   })
 
+  test('a departure holds short of its runway from the side it is already on', () => {
+    const world = groundWorld()
+    const graph = world.graph
+    const entered = (path: ReadonlyArray<number>) => path.slice(0, -1).flatMap((n, i) => runwaysEntered(graph, n, path[i + 1]!))
+    // UPS496 parks on the cargo ramp, the far side of 12R-30L from the full-length hold on A10
+    const UPS = 'UPS496'
+    const taxied = command(world, `${UPS} RWY 12R`)
+    const a = aircraftNamed(taxied.world, UPS)
+    expect(entered(a.path!)).not.toContain('12R-30L')
+    expect(graph.nodeTaxiways[a.path![a.path!.length - 1]!]).toContain('W10')
+    const short = runUntilShort(taxied.world, UPS, 900)
+    expect(pilotLines(short.events)).toContain(`${UPS}: holding short of 12R`)
+    // the terminal side is unchanged: it still holds at the full-length node on A10
+    expect(aircraftNamed(command(world, `${AAL} RWY 12R`).world, AAL).path!.at(-1)).toBe(holdNodeFor(graph, '12R')!)
+    // naming the far side still sends it across, by the taxi clearance or by AT
+    for (const line of [`${UPS} RWY 12R TAXI T Y A10`, `${UPS} RWY 12R AT A10`]) {
+      const across = aircraftNamed(command(world, line).world, UPS)
+      expect(across.path!.at(-1)).toBe(holdNodeFor(graph, '12R')!)
+      expect(entered(across.path!)).toContain('12R-30L')
+    }
+  })
+
   test('taxi speed is 16 kt, 9 kt into a sharp turn', () => {
     const world = groundWorld()
     const taxied = command(world, `${AAL} RWY 30L`)
